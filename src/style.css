@@ -1,0 +1,282 @@
+:root {
+  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color: #242424;
+  background: #f9f9f9;
+  font-synthesis: none;
+  font-size: 13px;
+  color-scheme: light;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input {
+  font: inherit;
+}
+button {
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+button:hover {
+  background: #eaeaea;
+}
+button:active {
+  background: #dedede;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid #0067c0;
+  outline-offset: 1px;
+}
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.toolbar {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-bottom: 1px solid #e5e5e5;
+  background: #f3f3f3;
+  flex-wrap: wrap;
+}
+.document-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 260px;
+  padding: 0 8px;
+  font-weight: 500;
+}
+.spacer {
+  flex: 1;
+}
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  min-height: 28px;
+  padding: 4px 16px;
+  border-top: 1px solid #e5e5e5;
+  background: #f3f3f3;
+  color: #555;
+  font-size: 12px;
+}
+.editor-host {
+  flex: 1;
+  overflow: auto;
+  cursor: text;
+}
+.editor-host > div {
+  min-height: 100%;
+}
+.tiptap {
+  outline: none;
+  min-height: calc(100vh - 72px);
+  padding: 20px 24px 40vh;
+  font:
+    16px/1.6 Consolas,
+    "Microsoft YaHei",
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+  caret-color: #151515;
+}
+.tiptap p {
+  margin: 0;
+  min-height: 1.6em;
+}
+.tiptap ::selection {
+  background: #b7d9f8;
+}
+.tiptap .ProseMirror-selectednode {
+  outline: 2px solid #0067c0;
+}
+.ProseMirror-gapcursor {
+  display: none;
+  pointer-events: none;
+  position: absolute;
+}
+.ProseMirror-gapcursor:after {
+  content: "";
+  display: block;
+  position: absolute;
+  top: -2px;
+  width: 20px;
+  border-top: 1px solid #222;
+  animation: blink 1.1s steps(2, start) infinite;
+}
+.ProseMirror-focused .ProseMirror-gapcursor {
+  display: block;
+}
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #fff1e8;
+  color: #793414;
+  border-bottom: 1px solid #e8c5ae;
+}
+.error-banner p {
+  margin: 0;
+  flex: 1;
+}
+.disabled {
+  pointer-events: none;
+  opacity: 0.65;
+}
+.toolbar-divider {
+  height: 18px;
+  border-left: 1px solid #ddd;
+  margin: 0 4px;
+}
+.notice-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 16px;
+  background: #eef4f8;
+  color: #345268;
+}
+.loading {
+  flex: 1;
+  padding: 24px;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.image-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  max-width: 100%;
+  cursor: default;
+}
+.image-tile {
+  padding: 0;
+  border: 1px solid #ddd;
+  background: #f0f0f0;
+  overflow: hidden;
+  max-width: 100%;
+  flex-shrink: 0;
+}
+.image-tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.image-error {
+  font:
+    13px/1.5 "Microsoft YaHei",
+    sans-serif;
+  padding: 8px;
+  color: #793414;
+}
+.image-preview {
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0;
+  max-width: 94vw;
+  max-height: 94vh;
+  background: #f9f9f9;
+}
+.image-preview::backdrop {
+  background: #0009;
+}
+.image-preview header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #ddd;
+}
+.image-preview img {
+  display: block;
+  max-width: 90vw;
+  max-height: 82vh;
+  object-fit: contain;
+  margin: auto;
+}
+.image-preview p {
+  padding: 24px;
+}
+.export-menu {
+  position: relative;
+}
+.export-menu summary {
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none;
+}
+.export-menu summary:hover {
+  background: #eaeaea;
+}
+.menu-items {
+  position: absolute;
+  top: 30px;
+  left: 0;
+  z-index: 5;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  padding: 4px;
+  min-width: 150px;
+  box-shadow: 0 3px 12px #0001;
+}
+.menu-items button {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+.export-menu summary:focus-visible {
+  outline: 2px solid #0067c0;
+}
+@media (max-width: 760px) {
+  .document-name {
+    display: none;
+  }
+  .toolbar {
+    gap: 0;
+    padding: 4px;
+  }
+  .toolbar button {
+    padding: 5px 8px;
+  }
+  .statusbar {
+    gap: 12px;
+    padding: 4px 8px;
+  }
+  .tiptap {
+    padding: 16px 16px 40vh;
+  }
+}
