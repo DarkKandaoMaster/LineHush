@@ -45,7 +45,7 @@ export function imageGroup(preview: (pic: Picture) => void) {
             })
             .catch(() => {
               if (!destroyed) {
-                button.textContent = "附件缺失或无法读取";
+                button.textContent = "无法显示此图片";
                 button.classList.add("image-error");
               }
             });

@@ -1,3 +1,4 @@
+mod db;
 mod fsx;
 mod images;
 mod model;
@@ -5,83 +6,102 @@ mod store;
 #[cfg(test)]
 mod store_tests;
 
-use model::{Diary, Picture, Result};
+use model::{Diary, ExportImage, Picture, Result};
 use std::{
     fs::{File, OpenOptions},
     path::PathBuf,
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
 };
 use store::{Opened, Store};
-use tauri::Manager;
+use tauri::{ipc::Response, AppHandle, Manager};
 
 struct AppState {
     store: Mutex<Store>,
     _lock: File,
 }
+fn lock_store(app: &AppHandle) -> Result<MutexGuard<'_, Store>> {
+    app.state::<AppState>()
+        .inner()
+        .store
+        .lock()
+        .map_err(|e| e.to_string())
+}
+/// Runs blocking work off the async runtime.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
+}
 /// Runs a storage action off the async runtime, one at a time.
 async fn with_store<T: Send + 'static>(
-    app: tauri::AppHandle,
+    app: AppHandle,
     action: impl FnOnce(&mut Store) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        let mut store = state.store.lock().map_err(|e| e.to_string())?;
-        action(&mut store)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    blocking(move || action(&mut *lock_store(&app)?)).await
 }
 #[tauri::command]
-async fn restore(app: tauri::AppHandle) -> Result<Opened> {
+async fn restore(app: AppHandle) -> Result<Opened> {
     with_store(app, |store| store.restore()).await
 }
 #[tauri::command]
-async fn new_document(app: tauri::AppHandle) -> Result<Opened> {
+async fn new_document(app: AppHandle) -> Result<Opened> {
     with_store(app, |store| store.new_document()).await
 }
 #[tauri::command]
-async fn open_document(path: PathBuf, app: tauri::AppHandle) -> Result<Opened> {
+async fn open_document(path: PathBuf, app: AppHandle) -> Result<Opened> {
     with_store(app, move |store| store.open(&path)).await
 }
 #[tauri::command]
-async fn save_document(document: Diary, app: tauri::AppHandle) -> Result<()> {
+async fn save_document(document: Diary, app: AppHandle) -> Result<()> {
     with_store(app, move |store| store.save(&document)).await
 }
 #[tauri::command]
-async fn save_as(path: PathBuf, document: Diary, app: tauri::AppHandle) -> Result<Opened> {
+async fn save_as(path: PathBuf, document: Diary, app: AppHandle) -> Result<Opened> {
     with_store(app, move |store| store.save_as(&path, &document)).await
 }
 #[tauri::command]
 async fn export_document(
     path: PathBuf,
     content: String,
-    html: bool,
-    document: Diary,
-    app: tauri::AppHandle,
+    images: Vec<ExportImage>,
+    app: AppHandle,
 ) -> Result<()> {
-    with_store(app, move |store| {
-        store.export(&path, &content, html, &document)
-    })
-    .await
+    with_store(app, move |store| store.export(&path, &content, &images)).await
 }
 #[tauri::command]
-async fn import_image(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<Picture> {
+async fn import_image(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<Picture> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("图片数据无效".into());
     };
     let bytes = bytes.clone();
-    with_store(app, move |store| images::import(store, &bytes)).await
-}
-#[tauri::command]
-async fn read_image(
-    app: tauri::AppHandle,
-    path: String,
-    original: bool,
-) -> Result<tauri::ipc::Response> {
-    with_store(app, move |store| {
-        images::read(store, &path, original).map(tauri::ipc::Response::new)
+    blocking(move || {
+        // Decoding happens outside the lock so autosave is never held up by it.
+        let (picture, thumbnail) = images::prepare(&bytes)?;
+        lock_store(&app)?.add_image(&picture.id, &bytes, thumbnail)?;
+        Ok(picture)
     })
     .await
+}
+#[tauri::command]
+async fn read_image(app: AppHandle, id: String, original: bool) -> Result<Response> {
+    blocking(move || {
+        if original {
+            return lock_store(&app)?.image(&id).map(Response::new);
+        }
+        let store = &app.state::<AppState>().inner().store;
+        Store::thumbnail(store, &id, images::thumbnail).map(Response::new)
+    })
+    .await
+}
+#[tauri::command]
+async fn export_image(id: String, path: PathBuf, app: AppHandle) -> Result<()> {
+    with_store(app, move |store| store.export_image(&id, &path)).await
+}
+#[tauri::command]
+async fn close_document(app: AppHandle) -> Result<()> {
+    with_store(app, |store| store.close()).await
 }
 
 pub fn run() {
@@ -117,7 +137,9 @@ pub fn run() {
             save_as,
             export_document,
             import_image,
-            read_image
+            read_image,
+            export_image,
+            close_document
         ])
         .run(tauri::generate_context!())
         .expect("无法启动 LineHush");

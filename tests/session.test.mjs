@@ -14,7 +14,7 @@ test("会话初始化只恢复一次，订阅快照稳定，更新后保存最�
       restores++;
       return {
         document: fromText("旧日记\n\n"),
-        path: "D:/测试.linehush",
+        path: "D:/测试.hush",
         recovered: true,
       };
     }

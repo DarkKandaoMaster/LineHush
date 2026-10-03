@@ -1,7 +1,8 @@
 import type { JSONContent } from "@tiptap/core";
 
 export interface Picture {
-  path: string;
+  /** SHA-256 of the original bytes, which the .hush file stores unchanged. */
+  id: string;
   name: string;
   width: number;
   height: number;
@@ -9,13 +10,11 @@ export interface Picture {
 export type Block =
   { type: "line"; text: string } | { type: "images"; images: Picture[] };
 export interface Diary {
-  version: 1;
   blocks: Block[];
 }
 
 export function fromText(text: string): Diary {
   return {
-    version: 1,
     blocks: text
       .replace(/\r\n?/g, "\n")
       .split("\n")
@@ -48,7 +47,6 @@ export function toEditor(doc: Diary): JSONContent {
 }
 export function fromEditor(doc: JSONContent): Diary {
   return {
-    version: 1,
     blocks: (doc.content ?? []).map((node): Block =>
       node.type === "imageGroup"
         ? { type: "images", images: node.attrs?.images }
@@ -92,12 +90,32 @@ function escapeHtml(text: string): string {
       ]!,
   );
 }
+/**
+ * File name of an exported original inside `附件/`. The id prefix keeps
+ * different images apart; a nameless picture gets no extension rather than a
+ * guessed one (`.img` would open as a disk image on Windows).
+ */
+export function exportFile(pic: Picture): string {
+  const prefix = pic.id.slice(0, 12);
+  return pic.name ? `${prefix}-${pic.name}` : prefix;
+}
+/** Originals an HTML export writes next to it, once per id and file name. */
+export function exportImages(doc: Diary): { id: string; file: string }[] {
+  const images = new Map<string, { id: string; file: string }>();
+  for (const block of doc.blocks)
+    if (block.type === "images")
+      for (const pic of block.images) {
+        const file = exportFile(pic);
+        images.set(`${pic.id}/${file}`, { id: pic.id, file });
+      }
+  return [...images.values()];
+}
 export function toHtml(doc: Diary): string {
   const body = doc.blocks
     .map((block) =>
       block.type === "line"
         ? `<div class="line">${escapeHtml(block.text) || "<br>"}</div>`
-        : `<div class="images">${block.images.map((pic) => `<img src="${escapeHtml(pic.path)}" alt="${escapeHtml(pic.name)}" width="${pic.width}" height="${pic.height}">`).join("")}</div>`,
+        : `<div class="images">${block.images.map((pic) => `<img src="附件/${escapeHtml(encodeURIComponent(exportFile(pic)))}" alt="${escapeHtml(pic.name)}" width="${pic.width}" height="${pic.height}">`).join("")}</div>`,
     )
     .join("\n");
   return (

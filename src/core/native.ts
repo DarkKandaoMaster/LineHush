@@ -18,16 +18,20 @@ export const saveDocument = (document: Diary) =>
   invoke<void>("save_document", { document });
 export const saveAs = (path: string, document: Diary) =>
   invoke<Opened>("save_as", { path, document });
-/** `content` is the rendered export; `document` lets Rust copy referenced images for HTML. */
+/** Writes `content` to `path` and each original to `<its folder>/附件/<file>`. */
 export const exportDocument = (
   path: string,
   content: string,
-  html: boolean,
-  document: Diary,
-) => invoke<void>("export_document", { path, content, html, document });
-/** The file bytes are sent as the raw request body. */
+  images: { id: string; file: string }[],
+) => invoke<void>("export_document", { path, content, images });
+/** The file bytes are sent as the raw request body; the returned name is empty. */
 export const importImage = (bytes: ArrayBuffer) =>
   invoke<Picture>("import_image", bytes);
+/** Writes the original bytes of an image unchanged to `path`. */
+export const exportImage = (id: string, path: string) =>
+  invoke<void>("export_image", { id, path });
+/** Drops images no longer referenced by the document; called before the window closes. */
+export const closeDocument = () => invoke<void>("close_document");
 
 /** Reads a thumbnail (or the original) into a Blob URL the caller must revoke. */
 export async function imageUrl(
@@ -35,7 +39,7 @@ export async function imageUrl(
   original = false,
 ): Promise<string> {
   const bytes = await invoke<ArrayBuffer>("read_image", {
-    path: pic.path,
+    id: pic.id,
     original,
   });
   return URL.createObjectURL(new Blob([bytes]));

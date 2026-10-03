@@ -105,6 +105,8 @@ export default function App() {
         dialogRef={preview.dialog}
         name={preview.name}
         source={preview.source}
+        canSave={desktop}
+        onSave={() => void preview.saveOriginal()}
         onClose={preview.close}
       />
     </main>

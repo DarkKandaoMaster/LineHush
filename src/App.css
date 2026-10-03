@@ -219,6 +219,10 @@ input:focus-visible {
   padding: 8px 16px;
   border-bottom: 1px solid #ddd;
 }
+.image-preview-actions {
+  display: flex;
+  gap: 4px;
+}
 .image-preview img {
   display: block;
   max-width: 90vw;

@@ -2,6 +2,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save, ask } from "@tauri-apps/plugin-dialog";
 import {
+  exportImages,
   fileName,
   fromText,
   isEmpty,
@@ -13,7 +14,7 @@ import * as native from "./native.ts";
 import type { Opened } from "./native.ts";
 import { SaveQueue } from "./save-queue.ts";
 
-const filter = [{ name: "LineHush 日记", extensions: ["linehush"] }];
+const filter = [{ name: "LineHush 日记", extensions: ["hush"] }];
 type ExportFormat = "txt" | "html";
 export interface SessionState {
   document: Diary;
@@ -126,7 +127,7 @@ export function createSession() {
       title: "保存日记",
       filters: filter,
       defaultPath:
-        state.path ?? `${new Date().toLocaleDateString("sv-SE")}.linehush`,
+        state.path ?? `${new Date().toLocaleDateString("sv-SE")}.hush`,
     });
     if (!target) return false;
     // Save As must remain available after a failed write to the current file.
@@ -167,14 +168,14 @@ export function createSession() {
       const target = await open({
         title: "打开日记",
         multiple: false,
-        filters: [...filter, { name: "日记备份", extensions: ["bak"] }],
+        filters: filter,
       });
       if (typeof target === "string") adopt(await native.openDocument(target));
     });
   }
   function persist(forceDialog: boolean) {
     return guarded(async () => {
-      // Finish any in-flight write before changing the backend document directory.
+      // Finish any in-flight write before switching the backend to another file.
       try {
         await flush();
       } catch (e) {
@@ -187,25 +188,23 @@ export function createSession() {
     return guarded(async () => {
       const target = await save({
         title: "导出日记",
-        defaultPath: `${fileName(state.path).replace(/\.linehush$/, "")}.${format}`,
+        defaultPath: `${fileName(state.path).replace(/\.hush$/, "")}.${format}`,
         filters: [{ name: format.toUpperCase(), extensions: [format] }],
       });
       if (target) {
-        const html = format === "html";
-        await native.exportDocument(
-          target,
-          html ? toHtml(state.document) : toText(state.document),
-          html,
-          state.document,
-        );
+        const doc = state.document;
+        await (format === "html"
+          ? native.exportDocument(target, toHtml(doc), exportImages(doc))
+          : native.exportDocument(target, toText(doc), []));
         set({ notice: "已导出。" });
       }
     });
   }
-  /** Saves pending edits, then closes the window; a failure keeps it open. */
+  /** Saves pending edits and drops unreferenced images, then closes the window; a failure keeps it open. */
   function close() {
     return guarded(async () => {
       await flush();
+      await native.closeDocument();
       await getCurrentWindow().destroy();
     }, "未关闭窗口：");
   }

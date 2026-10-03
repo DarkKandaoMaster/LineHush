@@ -4,6 +4,9 @@ interface Props {
   dialogRef: Ref<HTMLDialogElement>;
   name: string;
   source: string;
+  /** Saving the original needs the desktop backend. */
+  canSave: boolean;
+  onSave: () => void;
   onClose: () => void;
 }
 
@@ -19,9 +22,12 @@ export default function ImagePreviewDialog(props: Props) {
     >
       <header>
         <span>{props.name}</span>
-        <button autoFocus aria-label="关闭原图" onClick={props.onClose}>
-          关闭
-        </button>
+        <div className="image-preview-actions">
+          {props.canSave && <button onClick={props.onSave}>保存原图</button>}
+          <button autoFocus aria-label="关闭原图" onClick={props.onClose}>
+            关闭
+          </button>
+        </div>
       </header>
       {props.source ? (
         <img src={props.source} alt={props.name} />
