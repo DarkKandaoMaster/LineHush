@@ -14,14 +14,7 @@ export default function Banners({ session, error, notice, status }: Props) {
         <div className="error-banner" role="alert">
           <p>{error}</p>
           {status === "保存失败" && (
-            <button
-              onClick={() =>
-                void session
-                  .flush()
-                  .then(() => session.setError(""))
-                  .catch(() => {})
-              }
-            >
+            <button onClick={() => void session.saveDocument()}>
               重试保存
             </button>
           )}

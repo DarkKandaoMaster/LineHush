@@ -54,6 +54,10 @@ async fn open_document(path: PathBuf, app: AppHandle) -> Result<Opened> {
     with_store(app, move |store| store.open(&path)).await
 }
 #[tauri::command]
+async fn stash_document(document: Diary, app: AppHandle) -> Result<()> {
+    with_store(app, move |store| store.stash(&document)).await
+}
+#[tauri::command]
 async fn save_document(document: Diary, app: AppHandle) -> Result<()> {
     with_store(app, move |store| store.save(&document)).await
 }
@@ -77,7 +81,7 @@ async fn import_image(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resul
     };
     let bytes = bytes.clone();
     blocking(move || {
-        // Decoding happens outside the lock so autosave is never held up by it.
+        // Decoding happens outside the lock so stashing is never held up by it.
         let (picture, thumbnail) = images::prepare(&bytes)?;
         lock_store(&app)?.add_image(&picture.id, &bytes, thumbnail)?;
         Ok(picture)
@@ -133,6 +137,7 @@ pub fn run() {
             restore,
             new_document,
             open_document,
+            stash_document,
             save_document,
             save_as,
             export_document,

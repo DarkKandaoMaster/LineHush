@@ -1,5 +1,8 @@
 //! The `.hush` container: one SQLite file holding the body JSON and the original
 //! image bytes. Every SQLite read and write goes through this module.
+//!
+//! The working copy in the app data folder uses the same schema. Its `doc` row
+//! exists only while it holds a stashed (unsaved) body.
 use crate::fsx::sidecar;
 use crate::model::{Diary, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -8,6 +11,8 @@ use std::{collections::HashSet, fs, path::Path};
 /// "HUSH" in the SQLite header, so the file can be identified without opening it.
 const APPLICATION_ID: u32 = 0x4855_5348;
 const FORMAT_VERSION: u32 = 1;
+/// Writes the body, inserting the row when the working copy has none yet.
+const WRITE_BODY: &str = "INSERT OR REPLACE INTO main.doc (id, body) VALUES (1, ?1)";
 
 fn sql(e: rusqlite::Error) -> String {
     e.to_string()
@@ -15,12 +20,24 @@ fn sql(e: rusqlite::Error) -> String {
 fn body_json(doc: &Diary) -> Result<String> {
     serde_json::to_string(doc).map_err(|e| e.to_string())
 }
+fn connect(path: &Path) -> Result<Connection> {
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("无法打开 {}：{e}", path.display()))
+}
+fn read_body(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT body FROM doc WHERE id = 1", [], |row| row.get(0))
+        .optional()
+}
 
 pub struct Db {
     conn: Connection,
 }
 impl Db {
-    /// Creates a new empty document at `path`, which must not exist yet.
+    /// Creates an empty container (no body row) at `path`, which must not exist yet.
+    /// Used for the working copy; a user file always gets its body from `copy_to`.
     pub fn create(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).map_err(sql)?;
         // auto_vacuum only takes effect before the first page is written.
@@ -34,11 +51,6 @@ impl Db {
              COMMIT;"
         ))
         .map_err(sql)?;
-        conn.execute(
-            "INSERT INTO doc (id, body) VALUES (1, ?1)",
-            [body_json(&Diary::empty())?],
-        )
-        .map_err(sql)?;
         Ok(Self { conn })
     }
     /// Opens an existing document. Only the serde structure of the body is checked.
@@ -47,30 +59,59 @@ impl Db {
             "无法打开 {}：不是 LineHush 日记或文件已损坏",
             path.display()
         );
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|e| format!("无法打开 {}：{e}", path.display()))?;
-        let body: String = conn
-            .query_row("SELECT body FROM doc WHERE id = 1", [], |row| row.get(0))
-            .map_err(|_| unreadable.clone())?;
+        let conn = connect(path)?;
+        let body = read_body(&conn)
+            .ok()
+            .flatten()
+            .ok_or_else(|| unreadable.clone())?;
         let doc = serde_json::from_str(&body).map_err(|_| unreadable)?;
         Ok((Self { conn }, doc))
     }
+    /// Opens the working copy and its stashed body, if any.
+    pub fn open_stash(path: &Path) -> Result<(Self, Option<Diary>)> {
+        let conn = connect(path)?;
+        let stash = match read_body(&conn).map_err(sql)? {
+            Some(body) => Some(serde_json::from_str(&body).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        Ok((Self { conn }, stash))
+    }
     pub fn body(&self) -> Result<Diary> {
-        let body: String = self
-            .conn
-            .query_row("SELECT body FROM doc WHERE id = 1", [], |row| row.get(0))
-            .map_err(sql)?;
+        let body = read_body(&self.conn)
+            .map_err(sql)?
+            .ok_or("日记中缺少正文")?;
         serde_json::from_str(&body).map_err(|e| e.to_string())
     }
     /// Rewrites only the body; image rows are left untouched.
     pub fn save(&self, doc: &Diary) -> Result<()> {
         self.conn
-            .execute("UPDATE doc SET body = ?1 WHERE id = 1", [body_json(doc)?])
+            .execute(WRITE_BODY, [body_json(doc)?])
             .map(drop)
             .map_err(sql)
+    }
+    /// In one transaction, copies every image of the working copy at `work` that
+    /// this file lacks and rewrites the body.
+    pub fn save_with_images(&self, doc: &Diary, work: &Path) -> Result<()> {
+        let body = body_json(doc)?;
+        self.conn
+            .execute("ATTACH DATABASE ?1 AS work", [work.to_string_lossy()])
+            .map_err(sql)?;
+        let result = (|| {
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute(
+                "INSERT OR IGNORE INTO main.images (id, data) SELECT id, data FROM work.images",
+                [],
+            )?;
+            tx.execute(WRITE_BODY, [&body])?;
+            tx.commit()
+        })()
+        .map_err(sql);
+        let detached = self
+            .conn
+            .execute("DETACH DATABASE work", [])
+            .map(drop)
+            .map_err(sql);
+        result.and(detached)
     }
     /// Stores an original under its hash; an identical image is kept only once.
     pub fn insert_image(&self, id: &str, bytes: &[u8]) -> Result<()> {
@@ -82,18 +123,18 @@ impl Db {
             .map(drop)
             .map_err(sql)
     }
-    pub fn image(&self, id: &str) -> Result<Vec<u8>> {
+    pub fn image(&self, id: &str) -> Result<Option<Vec<u8>>> {
         self.conn
             .query_row("SELECT data FROM images WHERE id = ?1", [id], |row| {
                 row.get(0)
             })
             .optional()
-            .map_err(sql)?
-            .ok_or_else(|| "日记中缺少这张图片的数据".into())
+            .map_err(sql)
     }
-    /// Writes a compacted copy holding `doc` to `target`, replacing any file there.
+    /// Writes a compacted copy holding `doc` to `target`, replacing any file there,
+    /// plus the images of the working copy at `work` when given.
     /// The open file itself is not modified.
-    pub fn copy_to(&self, target: &Path, doc: &Diary) -> Result<()> {
+    pub fn copy_to(&self, target: &Path, doc: &Diary, work: Option<&Path>) -> Result<()> {
         // VACUUM INTO refuses an existing file, so build next to the target and rename.
         let tmp = sidecar(target, ".tmp");
         let _ = fs::remove_file(&tmp);
@@ -101,8 +142,13 @@ impl Db {
             self.conn
                 .execute("VACUUM INTO ?1", [tmp.to_string_lossy()])
                 .map_err(sql)?;
-            let (copy, _) = Self::open(&tmp)?;
-            copy.save(doc)?;
+            let copy = Self {
+                conn: connect(&tmp)?,
+            };
+            match work {
+                Some(work) => copy.save_with_images(doc, work)?,
+                None => copy.save(doc)?,
+            }
             drop(copy);
             fs::rename(&tmp, target).map_err(|e| format!("保存失败，原文件保留：{e}"))
         })();

@@ -1,31 +1,53 @@
 import { chromium, expect } from "@playwright/test";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 const root = path.resolve("test-results/native-" + Date.now());
+const appData = path.join(root, "app");
+const working = path.join(appData, "working.hush");
 await mkdir(root, { recursive: true });
 const profile = process.argv.includes("--release") ? "release" : "debug";
 const exe = path.resolve(`src-tauri/target/${profile}/linehush.exe`);
 const errors = [];
+const checks = [];
+const passed = (name) => checks.push(name);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let processHandle, browser;
+const cdp = "http://127.0.0.1:9223";
 async function start() {
+  // A killed instance may still be releasing the debugging port.
+  for (let i = 0; i < 40; i++) {
+    try {
+      await fetch(`${cdp}/json/version`);
+      await sleep(250);
+    } catch {
+      break;
+    }
+  }
   processHandle = spawn(exe, [], {
     windowsHide: true,
     env: {
       ...process.env,
-      LINEHUSH_TEST_DATA_DIR: path.join(root, "app"),
+      LINEHUSH_TEST_DATA_DIR: appData,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--remote-debugging-port=9223",
     },
   });
   for (let i = 0; i < 60; i++) {
     try {
-      browser = await chromium.connectOverCDP("http://127.0.0.1:9223");
+      browser = await chromium.connectOverCDP(cdp);
       break;
     } catch {
-      await new Promise((r) => setTimeout(r, 500));
+      await sleep(500);
     }
   }
   if (!browser) throw Error("无法连接 WebView2");
@@ -39,17 +61,148 @@ async function start() {
   await page.getByRole("textbox", { name: "日记正文" }).waitFor();
   return page;
 }
-async function stop(page) {
-  await call(page, "plugin:window|close");
-  if (processHandle.exitCode === null)
+async function exited() {
+  if (processHandle.exitCode === null && processHandle.signalCode === null)
     await new Promise((r) => processHandle.once("exit", r));
-  await browser.close();
+  await browser?.close().catch(() => {});
   browser = undefined;
+}
+/** Closes a window without unsaved changes; no question is asked. */
+async function stop(page) {
+  await requestClose(page);
+  await exited();
+}
+/** Same as clicking the title bar ×: the frontend's close guard decides. */
+const requestClose = (page) => call(page, "plugin:window|close");
+/** Simulates a crash: the process gets no chance to clean up. */
+async function kill() {
+  await new Promise((resolve, reject) =>
+    execFile("taskkill", ["/F", "/PID", String(processHandle.pid)], (e) =>
+      e ? reject(e) : resolve(),
+    ),
+  );
+  await exited();
 }
 const call = (page, cmd, args = {}) =>
   page.evaluate(
     ({ cmd, args }) => window.__TAURI_INTERNALS__.invoke(cmd, args),
     { cmd, args },
+  );
+/**
+ * Answers the native "保存日记" file dialog the way a user would: types the
+ * file name into its box, presses 保存 and, with `replace`, confirms 是 in the
+ * "already exists" question. Resolves with the name the dialog suggested.
+ */
+const SAVE_DIALOG = `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class SaveDialog {
+  delegate bool Visit(IntPtr hwnd, IntPtr data);
+  [DllImport("user32.dll")] static extern bool EnumWindows(Visit visit, IntPtr data);
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, Visit visit, IntPtr data);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder text, int max);
+  [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr hwnd);
+  [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr dialog, int id);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr hwnd, uint msg, IntPtr w, StringBuilder l);
+  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+  static string Class(IntPtr hwnd) { var b = new StringBuilder(256); GetClassName(hwnd, b, 256); return b.ToString(); }
+  static string Title(IntPtr hwnd) { var b = new StringBuilder(256); GetWindowText(hwnd, b, 256); return b.ToString(); }
+  static string Text(IntPtr edit) { var b = new StringBuilder(1024); SendMessage(edit, 0x000D, new IntPtr(1024), b); return b.ToString(); } // WM_GETTEXT
+  /** A visible dialog box of the process: titled title, or (title null) any title but except. */
+  static IntPtr Find(uint pid, string title, string except) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, _) => {
+      uint owner; GetWindowThreadProcessId(h, out owner);
+      if (owner != pid || Class(h) != "#32770" || !IsWindowVisible(h)) return true;
+      string t = Title(h);
+      if (title != null ? t == title : t != except) { found = h; return false; }
+      return true;
+    }, IntPtr.Zero);
+    return found;
+  }
+  /** Returns the suggested name once the name is typed and 保存 pressed; null while not ready. */
+  public static string Answer(uint pid, string title, string path) {
+    IntPtr dialog = Find(pid, title, null), edit = IntPtr.Zero;
+    if (dialog == IntPtr.Zero) return null;
+    EnumChildWindows(dialog, (h, _) => {
+      if (Class(h) == "Edit" && GetDlgCtrlID(h) == 1001) { edit = h; return false; }
+      return true;
+    }, IntPtr.Zero);
+    IntPtr button = GetDlgItem(dialog, 1);
+    if (edit == IntPtr.Zero || button == IntPtr.Zero) return null;
+    // Wait until the dialog has filled in its default name, or it overwrites ours.
+    string suggested = Text(edit);
+    if (suggested.Length == 0) return null;
+    System.Threading.Thread.Sleep(300);
+    // The dialog only takes typed text, but typing a whole path races its
+    // autocomplete; so set all but the last character and type that one.
+    SendMessage(edit, 0x000C, IntPtr.Zero, new StringBuilder(path.Substring(0, path.Length - 1))); // WM_SETTEXT
+    SendMessage(edit, 0x00B1, new IntPtr(path.Length), new IntPtr(path.Length)); // EM_SETSEL: caret at end
+    SendMessage(edit, 0x0102, new IntPtr(path[path.Length - 1]), IntPtr.Zero); // WM_CHAR
+    string typed = Text(edit);
+    if (typed != path) {
+      // Never let the dialog save under its default name somewhere else.
+      PostMessage(GetDlgItem(dialog, 2), 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK 取消
+      throw new Exception("file name not accepted: " + typed);
+    }
+    PostMessage(button, 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK 保存
+    return suggested;
+  }
+  /** Presses 是 in the "replace the existing file?" task dialog. */
+  public static bool Confirm(uint pid, string title) {
+    IntPtr question = Find(pid, null, title);
+    if (question == IntPtr.Zero) return false;
+    PostMessage(question, 0x0466, new IntPtr(6), IntPtr.Zero); // TDM_CLICK_BUTTON IDYES
+    return true;
+  }
+}
+'@
+$deadline = [DateTime]::Now.AddSeconds(20)
+while (($suggested = [SaveDialog]::Answer([uint32]$env:LH_PID, $env:LH_TITLE, $env:LH_PATH)) -eq $null) {
+  if ([DateTime]::Now -gt $deadline) { throw 'save dialog not found' }
+  Start-Sleep -Milliseconds 200
+}
+if ($env:LH_REPLACE -eq '1') {
+  while (-not [SaveDialog]::Confirm([uint32]$env:LH_PID, $env:LH_TITLE)) {
+    if ([DateTime]::Now -gt $deadline) { throw 'replace question not found' }
+    Start-Sleep -Milliseconds 200
+  }
+}
+[Console]::Out.Write($suggested)
+`;
+const answerSaveDialog = (target, { replace = false } = {}) =>
+  new Promise((resolve, reject) =>
+    execFile(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-OutputFormat",
+        "Text",
+        "-EncodedCommand",
+        Buffer.from(SAVE_DIALOG, "utf16le").toString("base64"),
+      ],
+      {
+        timeout: 30000,
+        env: {
+          ...process.env,
+          LH_PID: String(processHandle.pid),
+          LH_TITLE: "保存日记",
+          LH_PATH: target,
+          LH_REPLACE: replace ? "1" : "0",
+        },
+      },
+      (e, stdout, stderr) =>
+        e ? reject(Error(stderr || e.message)) : resolve(stdout),
+    ),
   );
 // Short read-only connections, so the app's own writes are never held up.
 function query(file, sql, ...params) {
@@ -62,6 +215,11 @@ function query(file, sql, ...params) {
 }
 const body = (file) =>
   JSON.parse(query(file, "SELECT body FROM doc WHERE id = 1")[0].body);
+/** The stashed body of the working copy, or null when nothing is stashed. */
+const stash = (file = working) => {
+  const rows = query(file, "SELECT body FROM doc WHERE id = 1");
+  return rows.length ? JSON.parse(rows[0].body) : null;
+};
 const storedIds = (file) =>
   query(file, "SELECT id FROM images ORDER BY id").map((r) => r.id);
 const stored = (file, id) =>
@@ -69,9 +227,26 @@ const stored = (file, id) =>
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const pictures = (doc) =>
   doc.blocks.filter((b) => b.type === "images").flatMap((b) => b.images);
+const lines = (doc) =>
+  doc.blocks.filter((b) => b.type === "line").map((b) => b.text);
+/** Bytes and modification time: proof that a file was not written at all. */
+const fingerprint = async (file) => ({
+  sha: sha256(await readFile(file)),
+  mtime: (await stat(file)).mtimeMs,
+});
+/** Waits until the debounced stash (650 ms after the last edit) has landed. */
+const stashed = (predicate) =>
+  expect
+    .poll(() => {
+      const doc = stash();
+      return doc !== null && predicate(doc);
+    })
+    .toBe(true);
 try {
+  // --- Unnamed draft: stashed, recovered after a crash, saved via Save As ---
   let page = await start();
   let editor = page.getByRole("textbox", { name: "日记正文" });
+  const status = (text) => page.getByText(text, { exact: true });
   await editor.click();
   await page.keyboard.insertText("桌面端中文日记");
   await page.keyboard.press("Enter");
@@ -79,27 +254,36 @@ try {
   await page.keyboard.insertText("第二行");
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
-  await expect(page.getByText("草稿已保留", { exact: true })).toBeVisible();
-  // The unnamed draft is itself a .hush file in the data folder.
-  const draftFile = path.join(root, "app/draft.hush");
-  const draft = body(draftFile);
-  expect(draft.blocks.map((b) => b.text)).toEqual([
-    "桌面端中文日记",
-    "",
-    "第二行",
-    "",
-    "",
-  ]);
-  expect(
-    JSON.parse(await readFile(path.join(root, "app/recovery.json"), "utf8")),
-  ).toEqual({ path: null });
+  const draftLines = ["桌面端中文日记", "", "第二行", "", ""];
+  await expect(status("尚未保存")).toBeVisible();
+  // The unnamed draft lives only in the working copy, a .hush file in the data folder.
+  await stashed((doc) => JSON.stringify(lines(doc)) === JSON.stringify(draftLines));
+  expect(existsSync(path.join(appData, "draft.hush"))).toBe(false);
+  await kill();
+  page = await start();
+  editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect(page.getByText("已恢复未保存的修改。")).toBeVisible();
+  await expect(status("尚未保存")).toBeVisible();
+  await expect(editor.locator("p")).toHaveText(draftLines);
+  passed("草稿崩溃恢复");
+  // Ctrl+S on an unnamed document goes through the Save As dialog.
   const file = path.join(root, "测试.hush");
-  await call(page, "save_as", { path: file, document: draft });
-  expect(existsSync(file + ".tmp")).toBe(false);
-  expect(existsSync(draftFile)).toBe(false);
-  await page.reload();
-  await editor.waitFor();
+  await editor.click();
+  await page.keyboard.press("Control+s");
+  const suggestedForDraft = await answerSaveDialog(file);
+  await expect(status("已保存")).toBeVisible();
   await expect(page.getByText("测试.hush", { exact: true })).toBeVisible();
+  expect(lines(body(file))).toEqual(draftLines);
+  expect(existsSync(file + ".tmp")).toBe(false);
+  expect(stash()).toBeNull();
+  expect(
+    JSON.parse(await readFile(path.join(appData, "recovery.json"), "utf8"))
+      .path,
+  ).toMatch(/测试\.hush$/);
+  passed("中文换行");
+  passed("未命名保存走另存为");
+
+  // --- Named file: edits and imports reach it only on Ctrl+S ---
   await editor.click();
   await page.keyboard.press("Control+End");
   // Distinct real images on disk, so each one can be compared byte for byte.
@@ -112,28 +296,32 @@ try {
     ["追加.jpg", { type: "jpeg", quality: 80 }],
     ["空行之后.png", { clip: { x: 0, y: 0, width: 180, height: 120 } }],
     ["将删除.png", { clip: { x: 0, y: 0, width: 160, height: 110 } }],
+    ["崩溃前.png", { clip: { x: 0, y: 0, width: 150, height: 100 } }],
   ]) {
     const bytes = await page.screenshot(options);
     const file = path.join(sources, name);
     await writeFile(file, bytes);
     source[name] = { file, bytes, id: sha256(bytes) };
   }
-  const input = page.locator("input[type=file]");
-  await input.setInputFiles([
+  const savedFile = await fingerprint(file);
+  const savedBody = body(file);
+  const savedIds = storedIds(file);
+  const input = () => page.locator("input[type=file]");
+  await input().setInputFiles([
     source["第一张.png"].file,
     source["第二张.png"].file,
   ]);
   await expect(editor.locator(".image-group")).toHaveCount(1);
   await expect(editor.locator(".image-tile img")).toHaveCount(2);
   await editor.locator(".image-tile").first().click();
-  await input.setInputFiles(source["追加.jpg"].file);
+  await input().setInputFiles(source["追加.jpg"].file);
   await expect(editor.locator(".image-tile img")).toHaveCount(3);
   await page.keyboard.press("Control+z");
   await expect(editor.locator(".image-tile img")).toHaveCount(2);
   await editor.click();
   await page.keyboard.press("Control+End");
   const blankLines = await editor.locator("p").count();
-  await input.setInputFiles(source["空行之后.png"].file);
+  await input().setInputFiles(source["空行之后.png"].file);
   await expect(editor.locator(".image-group")).toHaveCount(2);
   expect(await editor.locator("p").count()).toBeGreaterThanOrEqual(blankLines);
   await page.keyboard.press("Control+z");
@@ -158,8 +346,29 @@ try {
   await page.keyboard.insertText("图片之后");
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
-  await expect(page.getByText("已保存", { exact: true })).toBeVisible();
+  await page.keyboard.press("Control+z");
+  await page.keyboard.press("Control+y");
+  await expect(status("尚未保存")).toBeVisible();
+  await stashed(
+    (doc) =>
+      pictures(doc).length === 2 &&
+      doc.blocks.at(-1).text === "" &&
+      doc.blocks.some((b) => b.text === "图片之后"),
+  );
+  // The stash and the imported originals are in the working copy only.
+  expect(await fingerprint(file)).toEqual(savedFile);
+  expect(body(file)).toEqual(savedBody);
+  expect(storedIds(file)).toEqual(savedIds);
+  for (const name of ["第一张.png", "第二张.png", "追加.jpg", "空行之后.png"])
+    expect(stored(working, source[name].id).equals(source[name].bytes)).toBe(
+      true,
+    );
+  passed("只在保存时写文件");
+  const edited = stash();
+  await page.keyboard.press("Control+s");
+  await expect(status("已保存")).toBeVisible();
   const saved = body(file);
+  expect(saved).toEqual(edited);
   expect(saved.blocks.at(-1)).toEqual({ type: "line", text: "" });
   expect(pictures(saved)).toEqual(
     ["第一张.png", "第二张.png"].map((name) =>
@@ -167,8 +376,14 @@ try {
     ),
   );
   // Originals are stored unchanged; undone imports stay until the file is closed.
-  for (const name of Object.keys(source).filter((n) => n !== "将删除.png"))
+  for (const name of ["第一张.png", "第二张.png", "追加.jpg", "空行之后.png"])
     expect(stored(file, source[name].id).equals(source[name].bytes)).toBe(true);
+  // Saving empties the working copy, so a restart would not report a recovery.
+  expect(stash()).toBeNull();
+  expect(storedIds(working)).toEqual([]);
+  await thumbnailsLoaded();
+  passed("保存写入正文与新图片");
+  passed("撤销重做");
   const exported = path.join(root, "导出");
   await mkdir(exported);
   const first = source["第一张.png"];
@@ -190,70 +405,233 @@ try {
       first.bytes,
     ),
   ).toBe(true);
-  await page.keyboard.press("Control+z");
-  await page.keyboard.press("Control+y");
-  await expect(page.getByText("已保存", { exact: true })).toBeVisible();
-  await page.screenshot({ path: path.join(root, "desktop.png") });
-  // An image deleted from the body stays in the file until it is closed.
-  const doomed = source["将删除.png"];
+  passed("多图原图");
+  // Save As onto the open file itself: the dialog asks to replace, then it just saves.
+  await editor.click();
   await page.keyboard.press("Control+End");
-  await input.setInputFiles(doomed.file);
+  await page.keyboard.insertText("另存为同一文件");
+  await page.keyboard.press("Enter");
+  await expect(status("尚未保存")).toBeVisible();
+  await page.keyboard.press("Control+Shift+S");
+  const suggestedForFile = await answerSaveDialog(file, { replace: true });
+  await expect(status("已保存")).toBeVisible();
+  await expect(page.getByText("测试.hush", { exact: true })).toBeVisible();
+  expect(body(file).blocks.slice(-2)).toEqual([
+    { type: "line", text: "另存为同一文件" },
+    { type: "line", text: "" },
+  ]);
+  expect(existsSync(file + ".tmp")).toBe(false);
+  expect(stash()).toBeNull();
+  passed("另存为当前文件");
+  await page.screenshot({ path: path.join(root, "desktop.png") });
+  // A saved image deleted from the body stays in the file until it is closed.
+  const doomed = source["将删除.png"];
+  await editor.click();
+  await page.keyboard.press("Control+End");
+  await input().setInputFiles(doomed.file);
   await expect(editor.locator(".image-group")).toHaveCount(2);
   await thumbnailsLoaded();
+  await page.keyboard.press("Control+s");
+  await expect(status("已保存")).toBeVisible();
+  expect(pictures(body(file)).map((p) => p.id)).toContain(doomed.id);
   await editor.locator(".image-group").last().locator(".image-tile").click();
   await page.keyboard.press("Delete");
   await expect(editor.locator(".image-group")).toHaveCount(1);
-  await expect(page.getByText("已保存", { exact: true })).toBeVisible();
+  await page.keyboard.press("Control+s");
+  await expect(status("已保存")).toBeVisible();
   const before = body(file);
   expect(pictures(before).map((p) => p.id)).not.toContain(doomed.id);
   expect(storedIds(file)).toContain(doomed.id);
   expect(before.blocks.at(-1).type).toBe("line");
+
+  // --- Close with unsaved changes: Esc / 取消 keep the window, 不保存 discards ---
+  const savedBeforeClose = await fingerprint(file);
   await editor.click();
   await page.keyboard.press("Control+End");
   await page.keyboard.insertText("关闭前输入");
-  before.blocks.at(-1).text += "关闭前输入";
-  await stop(page);
-  // Closing leaves a single plain SQLite file with only the referenced images.
-  expect(
-    (await readdir(root)).filter((n) => n.startsWith("测试.hush")),
-  ).toEqual(["测试.hush"]);
-  const header = (await readFile(file)).subarray(0, 16).toString("latin1");
-  expect(header).toBe("SQLite format 3\0");
-  expect(query(file, "PRAGMA application_id")[0].application_id).toBe(
-    0x48555348,
-  );
-  expect(query(file, "PRAGMA user_version")[0].user_version).toBe(1);
-  expect(query(file, "PRAGMA auto_vacuum")[0].auto_vacuum).toBe(2);
-  expect(query(file, "PRAGMA freelist_count")[0].freelist_count).toBe(0);
+  await expect(status("尚未保存")).toBeVisible();
+  await expect(page.getByText("● 测试.hush", { exact: true })).toBeVisible();
+  const prompt = () =>
+    page.getByRole("dialog", { name: "是否保存对“测试.hush”的更改？" });
+  await requestClose(page);
+  await expect(prompt()).toBeVisible();
+  // Ctrl+S behind the modal does nothing; the question stays open.
+  await page.keyboard.press("Control+s");
+  await page.keyboard.press("Escape");
+  await expect(prompt()).toBeHidden();
+  await requestClose(page);
+  await expect(prompt()).toBeVisible();
+  await prompt().getByRole("button", { name: "取消", exact: true }).click();
+  await expect(prompt()).toBeHidden();
+  expect(processHandle.exitCode).toBeNull();
+  // Focus is back in the editor: typing continues where it stopped.
+  await page.keyboard.insertText("，取消后继续");
+  await expect(editor.locator("p").last()).toHaveText("关闭前输入，取消后继续");
+  expect(await fingerprint(file)).toEqual(savedBeforeClose);
+  await requestClose(page);
+  await expect(prompt()).toBeVisible();
+  await prompt()
+    .getByRole("button", { name: "不保存", exact: true })
+    .click({ noWaitAfter: true })
+    .catch(() => {});
+  await exited();
   expect(body(file)).toEqual(before);
+  expect(stash()).toBeNull();
+  passed("关闭弹窗");
+  // Closing drops the images the saved body no longer references.
   expect(storedIds(file)).toEqual(
     [...new Set(pictures(before).map((p) => p.id))].sort(),
   );
   expect(storedIds(file)).not.toContain(doomed.id);
+  expect(storedIds(file)).not.toContain(source["追加.jpg"].id);
+  passed("关闭清理");
+  // A single plain SQLite file; the data folder holds only the app's own files.
+  expect(
+    (await readdir(root)).filter((n) => n.startsWith("测试.hush")),
+  ).toEqual(["测试.hush"]);
+  expect((await readdir(appData)).sort()).toEqual([
+    "recovery.json",
+    "session.lock",
+    "working.hush",
+  ]);
+  const header = (await readFile(file)).subarray(0, 16).toString("latin1");
+  expect(header).toBe("SQLite format 3\0");
+  expect((await readFile(working)).subarray(0, 16).toString("latin1")).toBe(
+    "SQLite format 3\0",
+  );
+  for (const target of [file, working]) {
+    expect(query(target, "PRAGMA application_id")[0].application_id).toBe(
+      0x48555348,
+    );
+    expect(query(target, "PRAGMA user_version")[0].user_version).toBe(1);
+    expect(query(target, "PRAGMA auto_vacuum")[0].auto_vacuum).toBe(2);
+  }
+  expect(query(file, "PRAGMA freelist_count")[0].freelist_count).toBe(0);
+  passed("文件结构");
+
+  // --- Reopen: not reported as recovered; 保存 in the close prompt writes ---
   page = await start();
   editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect(status("已保存")).toBeVisible();
+  await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
   await expect(editor.locator(".image-tile img")).toHaveCount(2);
   await thumbnailsLoaded();
-  expect(body(file)).toEqual(before);
+  await expect(editor.locator("p").last()).toHaveText("");
+  await editor.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.insertText("保存后关闭");
+  await requestClose(page);
+  await expect(prompt()).toBeVisible();
+  await prompt()
+    .getByRole("button", { name: "保存", exact: true })
+    .click({ noWaitAfter: true })
+    .catch((e) => console.error("CLICK", e.message.slice(0, 200)));
+  await exited();
+  const afterSaveClose = body(file);
+  expect(afterSaveClose.blocks.slice(0, -1)).toEqual(before.blocks.slice(0, -1));
+  expect(afterSaveClose.blocks.at(-1)).toEqual({
+    type: "line",
+    text: "保存后关闭",
+  });
+  expect(stash()).toBeNull();
+  passed("关闭时保存");
+
+  // --- Crash with unsaved text and a new image: the file keeps its saved state ---
+  page = await start();
+  editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect(status("已保存")).toBeVisible();
+  const crashed = source["崩溃前.png"];
+  await editor.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("崩溃前输入");
+  await page.keyboard.press("Enter");
+  await input().setInputFiles(crashed.file);
+  await expect(editor.locator(".image-group")).toHaveCount(2);
+  await thumbnailsLoaded();
+  await stashed(
+    (doc) =>
+      pictures(doc).some((p) => p.id === crashed.id) &&
+      doc.blocks.some((b) => b.text === "崩溃前输入"),
+  );
+  const crashStash = stash();
+  const beforeCrash = await fingerprint(file);
+  await kill();
+  expect(await fingerprint(file)).toEqual(beforeCrash);
+  expect(body(file)).toEqual(afterSaveClose);
+  expect(storedIds(file)).not.toContain(crashed.id);
+  page = await start();
+  editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect(page.getByText("已恢复未保存的修改。")).toBeVisible();
+  await expect(status("尚未保存")).toBeVisible();
+  await expect(page.getByText("● 测试.hush", { exact: true })).toBeVisible();
+  await expect(editor.getByText("崩溃前输入")).toBeVisible();
+  await expect(editor.locator(".image-group")).toHaveCount(2);
+  await expect(editor.locator(".image-tile img")).toHaveCount(3);
+  await thumbnailsLoaded();
+  expect(await fingerprint(file)).toEqual(beforeCrash);
+  passed("崩溃恢复");
+  await editor.click();
+  await page.keyboard.press("Control+s");
+  await expect(status("已保存")).toBeVisible();
+  await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
+  expect(body(file)).toEqual(crashStash);
+  expect(stored(file, crashed.id).equals(crashed.bytes)).toBe(true);
+  expect(stash()).toBeNull();
+  await stop(page);
+  page = await start();
+  editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect(status("已保存")).toBeVisible();
+  await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
+  await expect(editor.locator(".image-tile img")).toHaveCount(3);
+  await thumbnailsLoaded();
+  expect(body(file)).toEqual(crashStash);
+  passed("保存重开");
+
+  // --- Crash, then the file is moved away: the unsaved changes come back unnamed ---
+  await editor.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.insertText("搬走前输入");
+  await stashed((doc) => doc.blocks.some((b) => b.text === "搬走前输入"));
+  const movedStash = stash();
+  await kill();
+  const moved = path.join(root, "搬走.hush");
+  await rename(file, moved);
+  const movedFile = await fingerprint(moved);
+  page = await start();
+  editor = page.getByRole("textbox", { name: "日记正文" });
+  const lost = page.getByRole("status").filter({
+    hasText: "未保存的修改已作为未命名文档恢复",
+  });
+  await expect(lost).toBeVisible();
+  await expect(lost).toContainText("测试.hush");
+  await expect(status("尚未保存")).toBeVisible();
+  await expect(page.getByText("● 未命名", { exact: true })).toBeVisible();
+  await expect
+    .poll(() => call(page, "plugin:window|title", { label: "main" }))
+    .toBe("● 未命名 — LineHush");
+  await expect(editor.getByText("搬走前输入")).toBeVisible();
+  // The images were saved into the moved file only, so they show a placeholder.
+  await expect(editor.getByText("无法显示此图片")).toHaveCount(3);
+  expect(stash()).toEqual(movedStash);
+  expect(
+    JSON.parse(await readFile(path.join(appData, "recovery.json"), "utf8")),
+  ).toEqual({ path: null });
+  expect(await fingerprint(moved)).toEqual(movedFile);
+  passed("原文件丢失恢复");
+  await kill();
   expect(errors).toEqual([]);
   console.log(
     JSON.stringify({
       passed: true,
       profile,
       root,
-      checks: [
-        "中文换行",
-        "草稿恢复",
-        "保存重开",
-        "多图原图",
-        "撤销重做",
-        "关闭保护",
-        "关闭清理",
-        "文件结构",
-      ],
+      checks,
+      suggested: [suggestedForDraft, suggestedForFile],
     }),
   );
 } finally {
-  if (browser) await browser.close();
+  if (browser) await browser.close().catch(() => {});
   if (processHandle?.exitCode === null) processHandle.kill();
 }

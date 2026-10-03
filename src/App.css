@@ -284,3 +284,40 @@ input:focus-visible {
     padding: 16px 16px 40vh;
   }
 }
+.unsaved-dialog {
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 20px 20px 16px;
+  min-width: 320px;
+  background: #f9f9f9;
+  color: inherit;
+  box-shadow: 0 8px 24px #0002;
+}
+.unsaved-dialog::backdrop {
+  background: #0003;
+}
+.unsaved-dialog p {
+  margin: 0 0 20px;
+  font-size: 14px;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.dialog-actions button {
+  min-width: 72px;
+  border-color: #d1d1d1;
+  background: #fff;
+}
+.dialog-actions button:hover {
+  background: #f0f0f0;
+}
+.dialog-actions button.primary {
+  border-color: #0067c0;
+  background: #0067c0;
+  color: #fff;
+}
+.dialog-actions button.primary:hover {
+  background: #1975c5;
+}

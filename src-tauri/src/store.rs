@@ -1,5 +1,10 @@
-//! The editing session: which `.hush` file is open, the unnamed draft in the
-//! app data folder, and the in-memory thumbnail cache.
+//! The editing session: which `.hush` file is open, the working copy in the app
+//! data folder, and the in-memory thumbnail cache.
+//!
+//! The user's file changes only on `save` / `save_as`. Everything in between
+//! lives in the working copy `working.hush`: the stashed body (present only
+//! while there are unsaved changes) and the images imported since the last
+//! save. For an unnamed document the working copy is the whole draft.
 use crate::db::Db;
 use crate::fsx::ensure_extension;
 use crate::model::{Diary, ExportImage, Result};
@@ -13,7 +18,7 @@ use std::{
 
 pub const EXTENSION: &str = "hush";
 const RECOVERY_FILE: &str = "recovery.json";
-const DRAFT_FILE: &str = "draft.hush";
+const WORKING_FILE: &str = "working.hush";
 /// Folder, next to an exported HTML file, that receives the originals.
 const EXPORT_ATTACHMENTS: &str = "附件";
 
@@ -27,15 +32,18 @@ struct Recovery {
 pub struct Opened {
     pub document: Diary,
     pub path: Option<PathBuf>,
+    /// The document has unsaved changes recovered from the working copy.
     pub recovered: bool,
+    /// Shown to the user instead of the plain "recovered" notice.
+    pub notice: Option<String>,
 }
 pub struct Store {
-    /// App data folder holding recovery.json and the draft.
+    /// App data folder holding recovery.json and the working copy.
     root: PathBuf,
     /// The open `.hush` file; `None` while editing the draft.
-    path: Option<PathBuf>,
+    file: Option<(PathBuf, Db)>,
     /// `None` only before `restore` or after a failed switch.
-    db: Option<Db>,
+    work: Option<Db>,
     /// Thumbnails (or why they failed) by image id, kept until the document is switched.
     thumbnails: HashMap<String, Thumbnail>,
 }
@@ -46,55 +54,67 @@ impl Store {
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         Ok(Self {
             root,
-            path: None,
-            db: None,
+            file: None,
+            work: None,
             thumbnails: HashMap::new(),
         })
     }
-    fn db(&self) -> Result<&Db> {
-        self.db.as_ref().ok_or_else(|| "没有打开的日记".into())
+    fn work(&self) -> Result<&Db> {
+        self.work.as_ref().ok_or_else(|| "没有打开的日记".into())
     }
-    fn draft_file(&self) -> PathBuf {
-        self.root.join(DRAFT_FILE)
+    fn working_file(&self) -> PathBuf {
+        self.root.join(WORKING_FILE)
     }
     fn opened(&self, document: Diary, recovered: bool) -> Opened {
         Opened {
             document,
-            path: self.path.clone(),
+            path: self.file.as_ref().map(|(path, _)| path.clone()),
             recovered,
+            notice: None,
         }
     }
     /// Records which document is open so the next launch can resume it.
     fn checkpoint(&self) -> Result<()> {
         let bytes = serde_json::to_vec(&Recovery {
-            path: self.path.clone(),
+            path: self.file.as_ref().map(|(path, _)| path.clone()),
         })
         .map_err(|e| e.to_string())?;
         fs::write(self.root.join(RECOVERY_FILE), bytes).map_err(|e| e.to_string())
     }
-    /// Leaves the current document: a file drops images its body no longer
-    /// references; the draft is discarded (the UI only switches away from an
-    /// empty draft or after saving it as a file).
+    /// Discards the working copy: no stashed body, no pending images.
+    fn reset_work(&mut self) -> Result<()> {
+        // Closes the old copy before its file is removed.
+        self.work = None;
+        let file = self.working_file();
+        remove_if_exists(&file)?;
+        self.work = Some(Db::create(&file)?);
+        Ok(())
+    }
+    /// Opens the working copy left by the last session and returns its stashed body.
+    fn resume_work(&mut self) -> Result<Option<Diary>> {
+        self.work = None;
+        let file = self.working_file();
+        if !file.exists() {
+            self.work = Some(Db::create(&file)?);
+            return Ok(None);
+        }
+        let (db, stash) = Db::open_stash(&file)?;
+        self.work = Some(db);
+        Ok(stash)
+    }
+    /// Leaves the current file, dropping the images its saved body no longer
+    /// references. The working copy is reset by whatever comes next.
     fn leave(&mut self) -> Result<()> {
-        let Some(db) = &self.db else {
-            return Ok(());
-        };
-        if self.path.is_some() {
+        if let Some((_, db)) = &self.file {
             db.collect_garbage()?;
         }
-        // Closes the file before the draft is removed.
-        self.db = None;
+        self.file = None;
         self.thumbnails.clear();
-        if self.path.is_none() {
-            remove_if_exists(&self.draft_file())?;
-        }
         Ok(())
     }
     fn start_draft(&mut self) -> Result<()> {
-        let draft = self.draft_file();
-        remove_if_exists(&draft)?;
-        self.db = Some(Db::create(&draft)?);
-        self.path = None;
+        self.file = None;
+        self.reset_work()?;
         self.checkpoint()
     }
     pub fn restore(&mut self) -> Result<Opened> {
@@ -103,25 +123,34 @@ impl Store {
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Recovery>(&bytes).ok());
         if let Some(path) = recovery.and_then(|r| r.path) {
-            return match self.open(&path) {
-                Ok(opened) => Ok(opened),
+            let (db, saved) = match Db::open(&path) {
+                Ok(opened) => opened,
                 Err(e) => {
+                    // Unsaved changes outlive their file: keep them as the draft.
+                    self.file = None;
+                    if let Some(stash) = self.resume_work()? {
+                        self.checkpoint()?;
+                        return Ok(Opened {
+                            notice: Some(format!(
+                                "原文件无法打开，未保存的修改已作为未命名文档恢复。{e}"
+                            )),
+                            ..self.opened(stash, true)
+                        });
+                    }
                     self.start_draft()?;
-                    Err(e)
+                    return Err(e);
                 }
             };
+            let stash = self.resume_work()?;
+            self.file = Some((path, db));
+            let recovered = stash.is_some();
+            return Ok(self.opened(stash.unwrap_or(saved), recovered));
         }
-        let draft = self.draft_file();
-        if draft.exists() {
-            let (db, document) = Db::open(&draft)?;
-            self.db = Some(db);
-            self.path = None;
-            // Same as before the move to .hush: an untouched draft is not "recovered".
-            let recovered = document != Diary::empty();
-            return Ok(self.opened(document, recovered));
-        }
-        self.start_draft()?;
-        Ok(self.opened(Diary::empty(), false))
+        self.file = None;
+        let document = self.resume_work()?.unwrap_or_else(Diary::empty);
+        // An untouched draft is not "recovered".
+        let recovered = document != Diary::empty();
+        Ok(self.opened(document, recovered))
     }
     pub fn new_document(&mut self) -> Result<Opened> {
         self.leave()?;
@@ -134,13 +163,23 @@ impl Store {
         // Read the new file first so a failed open leaves the current one in use.
         let (db, document) = Db::open(&path)?;
         self.leave()?;
-        self.db = Some(db);
-        self.path = Some(path);
+        // Reset before the checkpoint, so a crash in between never pairs the old
+        // document's unsaved changes with the new file.
+        self.reset_work()?;
+        self.file = Some((path, db));
         self.checkpoint()?;
         Ok(self.opened(document, false))
     }
-    pub fn save(&self, doc: &Diary) -> Result<()> {
-        self.db()?.save(doc)
+    /// Keeps the body in the working copy only; the user's file is not touched.
+    pub fn stash(&self, doc: &Diary) -> Result<()> {
+        self.work()?.save(doc)
+    }
+    /// Writes the body and the images imported since the last save into the
+    /// open file in one transaction, then empties the working copy.
+    pub fn save(&mut self, doc: &Diary) -> Result<()> {
+        let (_, db) = self.file.as_ref().ok_or("尚未保存为文件，请使用另存为")?;
+        db.save_with_images(doc, &self.working_file())?;
+        self.reset_work()
     }
     pub fn save_as(&mut self, path: &Path, doc: &Diary) -> Result<Opened> {
         let path = ensure_extension(path, EXTENSION);
@@ -148,35 +187,49 @@ impl Store {
             fs::canonicalize(path.parent().ok_or("保存路径无效")?).map_err(|e| e.to_string())?;
         let path = directory.join(path.file_name().ok_or("文件名无效")?);
         let path = fs::canonicalize(&path).unwrap_or(path);
-        if self.path.as_ref() == Some(&path) {
+        if self.file.as_ref().is_some_and(|(open, _)| *open == path) {
             self.save(doc)?;
             return Ok(self.opened(doc.clone(), false));
         }
         // Unreferenced images are copied too; they are dropped when the new file is left.
-        self.db()?.copy_to(&path, doc)?;
-        let (db, _) = Db::open(&path)?;
-        self.db = Some(db);
-        if self.path.is_none() {
-            // The draft now lives in the file. A leftover draft is replaced by the next one.
-            let _ = fs::remove_file(self.draft_file());
+        match &self.file {
+            Some((_, db)) => db.copy_to(&path, doc, Some(&self.working_file()))?,
+            None => self.work()?.copy_to(&path, doc, None)?,
         }
-        self.path = Some(path);
+        let (db, _) = Db::open(&path)?;
+        self.file = Some((path, db));
+        // Checkpoint first: a crash before the reset then reopens the new file
+        // (which already holds everything) rather than an emptied draft.
         self.checkpoint()?;
+        self.reset_work()?;
         Ok(self.opened(doc.clone(), false))
     }
-    /// Called when the window closes; the document stays usable if closing is cancelled.
-    pub fn close(&self) -> Result<()> {
-        self.db()?.collect_garbage()
+    /// Called when the window closes, after the user saved or chose to discard:
+    /// drops the unsaved changes and the images the saved body no longer uses.
+    pub fn close(&mut self) -> Result<()> {
+        if let Some((_, db)) = &self.file {
+            db.collect_garbage()?;
+        }
+        self.reset_work()
     }
-    /// Stores an original (once per distinct content) and caches its thumbnail.
+    /// Stores an original in the working copy (once per distinct content) and
+    /// caches its thumbnail.
     pub fn add_image(&mut self, id: &str, bytes: &[u8], thumbnail: Vec<u8>) -> Result<()> {
-        self.db()?.insert_image(id, bytes)?;
+        self.work()?.insert_image(id, bytes)?;
         self.thumbnails
             .insert(id.to_owned(), Arc::new(OnceLock::from(Ok(thumbnail))));
         Ok(())
     }
+    /// An original, from the working copy or else from the open file.
     pub fn image(&self, id: &str) -> Result<Vec<u8>> {
-        self.db()?.image(id)
+        if let Some(bytes) = self.work()?.image(id)? {
+            return Ok(bytes);
+        }
+        match &self.file {
+            Some((_, db)) => db.image(id)?,
+            None => None,
+        }
+        .ok_or_else(|| "日记中缺少这张图片的数据".into())
     }
     /// Thumbnail of `id`, built by `build` once per document; concurrent callers
     /// wait for the first build. `build` runs without the store lock so a slow

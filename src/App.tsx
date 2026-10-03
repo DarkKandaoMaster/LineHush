@@ -11,15 +11,18 @@ import { createSession, type Session } from "./core/session";
 import DiaryEditor, { type DiaryEditorHandle } from "./editor/DiaryEditor";
 import { useImageImport } from "./hooks/useImageImport";
 import { useImagePreview } from "./hooks/useImagePreview";
+import { useUnsavedPrompt } from "./hooks/useUnsavedPrompt";
 import { useWindowGuards } from "./hooks/useWindowGuards";
 import Banners from "./components/Banners";
 import ImagePreviewDialog from "./components/ImagePreviewDialog";
 import StatusBar from "./components/StatusBar";
 import Toolbar from "./components/Toolbar";
+import UnsavedDialog from "./components/UnsavedDialog";
 import "./App.css";
 
 export default function App() {
-  const [session] = useState(createSession);
+  const unsaved = useUnsavedPrompt();
+  const [session] = useState(() => createSession(unsaved.ask));
   const {
     document,
     path,
@@ -48,6 +51,10 @@ export default function App() {
     setPosition({ line: 1, column: 1 });
     if (ready) editor.current?.focus();
   }, [generation, ready]);
+  // A disabled editor cannot take focus back from a closing dialog, so return it here.
+  useEffect(() => {
+    if (!busy) editor.current?.focus();
+  }, [busy]);
   const fileDisabled = !desktop || busy || importing;
   return (
     <main className="app">
@@ -108,6 +115,11 @@ export default function App() {
         canSave={desktop}
         onSave={() => void preview.saveOriginal()}
         onClose={preview.close}
+      />
+      <UnsavedDialog
+        dialogRef={unsaved.dialog}
+        name={unsaved.name}
+        onClose={unsaved.closed}
       />
     </main>
   );

@@ -1,11 +1,10 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open, save, ask } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   exportImages,
   fileName,
   fromText,
-  isEmpty,
   toHtml,
   toText,
   type Diary,
@@ -15,7 +14,10 @@ import type { Opened } from "./native.ts";
 import { SaveQueue } from "./save-queue.ts";
 
 const filter = [{ name: "LineHush 日记", extensions: ["hush"] }];
+const recoveredNotice = "已恢复未保存的修改。";
 type ExportFormat = "txt" | "html";
+/** The answer to "save changes to <name>?" before the document is replaced or closed. */
+export type UnsavedChoice = "save" | "discard" | "cancel";
 export interface SessionState {
   document: Diary;
   path: string | null;
@@ -23,6 +25,7 @@ export interface SessionState {
   ready: boolean;
   busy: boolean;
   importing: boolean;
+  /** Changed since the last save to the user's file (stashing does not count). */
   dirty: boolean;
   error: string;
   notice: string;
@@ -30,8 +33,13 @@ export interface SessionState {
 }
 export type Session = ReturnType<typeof createSession>;
 
-/** One document session owns its queue; React only subscribes to snapshots. */
-export function createSession() {
+/**
+ * One document session owns its stash queue; React only subscribes to snapshots.
+ * `confirmUnsaved` asks the user what to do with unsaved changes to the named file.
+ */
+export function createSession(
+  confirmUnsaved: (name: string) => Promise<UnsavedChoice>,
+) {
   let state: SessionState = {
     document: fromText(""),
     path: null,
@@ -50,33 +58,43 @@ export function createSession() {
     listeners.forEach((listener) => listener());
   }
   const desktop = isTauri();
-  const savedStatus = (path: string | null) =>
-    path ? "已保存" : "草稿已保留";
   let initialization: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let queue = makeQueue();
+  /** The stash error banner is cleared by the next successful stash. */
+  let stashFailed = false;
+  /** The notice about recovered changes, cleared once they are saved. */
+  let recoveryNotice = "";
+  /** Edits go to the crash-recovery working copy; the user's file is left alone. */
   function makeQueue() {
     return new SaveQueue<Diary>(async (snapshot) => {
       if (!desktop) {
         set({ status: "浏览器预览 · 不写入磁盘" });
         return;
       }
-      set({ status: "正在保存…" });
-      await native.saveDocument(snapshot);
+      await native.stashDocument(snapshot);
     });
   }
   async function flush() {
     clearTimeout(timer);
     try {
       await queue.flush();
-      set({
-        dirty: queue.dirty,
-        ...(desktop ? { status: savedStatus(state.path) } : {}),
-      });
+      if (stashFailed) {
+        stashFailed = false;
+        set({ error: "", ...(state.dirty ? { status: "尚未保存" } : {}) });
+      }
     } catch (e) {
-      set({ error: String(e), status: "保存失败" });
+      stashFailed = true;
+      set({
+        error: `暂存失败，程序意外退出时可能无法恢复最近的修改：${e}`,
+        status: "暂存失败",
+      });
       throw e;
     }
+  }
+  /** Lets the pending stash land first so it can never overwrite a later save, switch or close. */
+  async function settleStash() {
+    await flush().catch(() => {});
   }
   function update(doc: Diary) {
     queue.update(doc);
@@ -87,14 +105,22 @@ export function createSession() {
   function adopt(result: Opened) {
     clearTimeout(timer);
     queue = makeQueue();
+    stashFailed = false;
+    recoveryNotice = result.recovered
+      ? (result.notice ?? recoveredNotice)
+      : "";
     set({
       document: result.document,
       path: result.path,
       generation: state.generation + 1,
-      dirty: false,
+      dirty: result.recovered,
       error: "",
-      status: savedStatus(result.path),
-      notice: result.recovered ? "已恢复上次编辑内容。" : "",
+      status: result.recovered
+        ? "尚未保存"
+        : result.path
+          ? "已保存"
+          : "准备就绪",
+      notice: recoveryNotice,
     });
   }
   function initialize() {
@@ -122,49 +148,58 @@ export function createSession() {
       set({ busy: false });
     }
   }
-  async function saveAs() {
-    const target = await save({
-      title: "保存日记",
-      filters: filter,
-      defaultPath:
-        state.path ?? `${new Date().toLocaleDateString("sv-SE")}.hush`,
-    });
-    if (!target) return false;
-    // Save As must remain available after a failed write to the current file.
-    const result = await native.saveAs(target, state.document);
+  /** Writes the user's file; an untitled document (or `dialog`) asks for a target. False if that is cancelled. */
+  async function saveFile(dialog: boolean) {
+    let path = state.path;
+    const pick = dialog || !path;
+    if (pick) {
+      path = await save({
+        title: "保存日记",
+        filters: filter,
+        defaultPath:
+          state.path ?? `${new Date().toLocaleDateString("sv-SE")}.hush`,
+      });
+      if (!path) return false;
+    }
+    await settleStash();
+    try {
+      // Save As stays available after a failed write to the current file.
+      if (pick) path = (await native.saveAs(path!, state.document)).path;
+      else await native.saveDocument(state.document);
+    } catch (e) {
+      set({ status: "保存失败" });
+      throw e;
+    }
     queue = makeQueue();
+    stashFailed = false;
     set({
-      path: result.path,
+      path,
       dirty: false,
       error: "",
-      status: savedStatus(result.path),
+      status: "已保存",
+      // The recovered changes are now in the user's file; other notices stay.
+      notice: state.notice === recoveryNotice ? "" : state.notice,
     });
     return true;
   }
-  async function persistBeforeSwitch() {
-    await flush();
-    if (!state.path && !isEmpty(state.document)) {
-      const shouldSave = await ask(
-        "当前草稿尚未保存为文件。是否先保存？选择“取消”将保留当前草稿并停止切换。",
-        {
-          title: "保存草稿",
-          kind: "info",
-          okLabel: "保存",
-          cancelLabel: "取消",
-        },
-      );
-      if (!shouldSave || !(await saveAs())) return false;
+  /** Asks about unsaved changes before they are replaced or closed; false means stop. */
+  async function resolveUnsaved() {
+    if (state.dirty) {
+      const choice = await confirmUnsaved(fileName(state.path));
+      if (choice === "cancel") return false;
+      if (choice === "save") return saveFile(false);
     }
+    await settleStash();
     return true;
   }
   function newDocument() {
     return guarded(async () => {
-      if (await persistBeforeSwitch()) adopt(await native.newDocument());
+      if (await resolveUnsaved()) adopt(await native.newDocument());
     });
   }
   function openDocument() {
     return guarded(async () => {
-      if (!(await persistBeforeSwitch())) return;
+      if (!(await resolveUnsaved())) return;
       const target = await open({
         title: "打开日记",
         multiple: false,
@@ -173,15 +208,9 @@ export function createSession() {
       if (typeof target === "string") adopt(await native.openDocument(target));
     });
   }
-  function persist(forceDialog: boolean) {
+  function persist(dialog: boolean) {
     return guarded(async () => {
-      // Finish any in-flight write before switching the backend to another file.
-      try {
-        await flush();
-      } catch (e) {
-        if (!forceDialog) throw e;
-      }
-      if (forceDialog || !state.path) await saveAs();
+      await saveFile(dialog);
     });
   }
   function exportDocument(format: ExportFormat) {
@@ -200,10 +229,10 @@ export function createSession() {
       }
     });
   }
-  /** Saves pending edits and drops unreferenced images, then closes the window; a failure keeps it open. */
+  /** Asks about unsaved changes, lets Rust drop the working copy and unreferenced images, then closes; a failure keeps the window. */
   function close() {
     return guarded(async () => {
-      await flush();
+      if (!(await resolveUnsaved())) return;
       await native.closeDocument();
       await getCurrentWindow().destroy();
     }, "未关闭窗口：");
@@ -221,13 +250,14 @@ export function createSession() {
     setImporting: (importing: boolean) => set({ importing }),
     desktop,
     update,
+    /** Stashes pending edits to the working copy now instead of after the debounce. */
     flush,
     initialize,
     newDocument,
     openDocument,
-    /** Saves to the current file, or asks for one if this is a draft. */
+    /** Saves to the current file, or asks for one if the document is untitled. */
     saveDocument: () => persist(false),
-    /** Always asks for a target, even if flushing the current file failed. */
+    /** Always asks for a target. */
     saveDocumentAs: () => persist(true),
     exportDocument,
     close,

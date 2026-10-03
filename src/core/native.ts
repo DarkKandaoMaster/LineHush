@@ -8,12 +8,18 @@ export interface Opened {
   document: Diary;
   path: string | null;
   recovered: boolean;
+  /** Replaces the plain "recovered" notice, e.g. when the recorded file could not be reopened. */
+  notice: string | null;
 }
 
 export const restore = () => invoke<Opened>("restore");
 export const newDocument = () => invoke<Opened>("new_document");
 export const openDocument = (path: string) =>
   invoke<Opened>("open_document", { path });
+/** Stashes unsaved edits to the crash-recovery working copy; the user's file is unchanged. */
+export const stashDocument = (document: Diary) =>
+  invoke<void>("stash_document", { document });
+/** Writes the current (named) file. */
 export const saveDocument = (document: Diary) =>
   invoke<void>("save_document", { document });
 export const saveAs = (path: string, document: Diary) =>
@@ -30,7 +36,7 @@ export const importImage = (bytes: ArrayBuffer) =>
 /** Writes the original bytes of an image unchanged to `path`. */
 export const exportImage = (id: string, path: string) =>
   invoke<void>("export_image", { id, path });
-/** Drops images no longer referenced by the document; called before the window closes. */
+/** Discards unsaved changes and drops unreferenced images; called right before the window closes. */
 export const closeDocument = () => invoke<void>("close_document");
 
 /** Reads a thumbnail (or the original) into a Blob URL the caller must revoke. */
