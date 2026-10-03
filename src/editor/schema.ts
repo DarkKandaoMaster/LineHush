@@ -1,20 +1,12 @@
-import { Node, Extension, type AnyExtension } from "@tiptap/core";
+import { Extension } from "@tiptap/core";
 import Document from "@tiptap/extension-document";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
 import { UndoRedo, Gapcursor } from "@tiptap/extensions";
 import { Plugin, TextSelection } from "@tiptap/pm/state";
 import type { Picture } from "../core/document";
+import { imageGroup } from "./image-view";
 
-export const ImageGroup = Node.create({
-  name: "imageGroup",
-  group: "block",
-  atom: true,
-  selectable: true,
-  addAttributes: () => ({ images: { default: [] } }),
-  parseHTML: () => [],
-  renderHTML: () => ["div", { "data-image-group": "" }],
-});
 // An empty paragraph is a real line and must stop image merging.
 const MergeImages = Extension.create({
   name: "mergeImages",
@@ -70,13 +62,12 @@ const PlainKeys = Extension.create({
     };
   },
 });
-/** `image` is ImageGroup extended with a node view (see image-view.ts). */
-export function extensions(image: AnyExtension) {
+export function extensions(preview: (pic: Picture) => void) {
   return [
     Document,
     Paragraph.extend({ content: "text*", marks: "", whitespace: "pre" }),
     Text,
-    image,
+    imageGroup(preview),
     UndoRedo.configure({ depth: 300 }),
     Gapcursor,
     PlainKeys,

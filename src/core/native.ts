@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Diary, Picture } from "./document.ts";
 
-/** Serialized `storage::Opened`. */
+/** Serialized `store::Opened`. */
 export interface Opened {
   document: Diary;
   path: string | null;

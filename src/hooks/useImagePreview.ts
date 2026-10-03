@@ -19,7 +19,6 @@ export function useImagePreview(session: Session) {
   }, []);
   const show = useCallback(
     async (pic: Picture) => {
-      close();
       const current = request.current;
       const version = ++current.version;
       setName(pic.name);

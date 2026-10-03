@@ -16,7 +16,6 @@ import {
 } from "@tiptap/pm/state";
 import { closeHistory } from "@tiptap/pm/history";
 import { extensions } from "./schema";
-import { imageExtension } from "./image-view";
 import {
   fromEditor,
   fromText,
@@ -39,7 +38,7 @@ interface Props {
   disabled: boolean;
   ref: Ref<DiaryEditorHandle>;
   onChange: (doc: Diary) => void;
-  onSelection: (line: number, column: number) => void;
+  onSelection: (position: { line: number; column: number }) => void;
   onFiles: (files: File[]) => void;
   onPreview: (pic: Picture) => void;
 }
@@ -57,9 +56,7 @@ function DiaryEditor(props: Props) {
     latest.current = props;
   });
   const [options] = useState((): UseEditorOptions => ({
-    extensions: extensions(
-      imageExtension((pic) => latest.current.onPreview(pic)),
-    ),
+    extensions: extensions((pic) => latest.current.onPreview(pic)),
     content: toEditor(props.initial),
     editorProps: {
       attributes: {
@@ -71,14 +68,14 @@ function DiaryEditor(props: Props) {
       clipboardTextSerializer: (slice) =>
         slice.content.textBetween(0, slice.content.size, "\n", "[图片]"),
       handlePaste(view, event) {
-        const files = imageFiles(event.clipboardData?.files);
+        const data = event.clipboardData;
+        if (!data) return true;
+        const files = imageFiles(data.files);
         if (files.length) {
           latest.current.onFiles(files);
           return true;
         }
-        const text = event.clipboardData?.getData("text/plain");
-        if (text === undefined) return true;
-        const nodes = fromText(text).blocks.map((block) =>
+        const nodes = fromText(data.getData("text/plain")).blocks.map((block) =>
           view.state.schema.nodes.paragraph.create(
             null,
             block.type === "line" && block.text
@@ -106,49 +103,16 @@ function DiaryEditor(props: Props) {
     shouldRerenderOnTransaction: false,
     editable: !props.disabled,
     ...options,
-    enableInputRules: false,
-    enablePasteRules: false,
     onUpdate: ({ editor }) =>
       latest.current.onChange(fromEditor(editor.getJSON())),
     onSelectionUpdate: ({ editor }) => {
       const pos = editor.state.selection.$from;
-      latest.current.onSelection(pos.index(0) + 1, pos.parentOffset + 1);
+      latest.current.onSelection({
+        line: pos.index(0) + 1,
+        column: pos.parentOffset + 1,
+      });
     },
   });
-  function insertImages(images: Picture[]) {
-    const { state, view } = editor;
-    const tr = closeHistory(state.tr);
-    if (
-      state.selection instanceof NodeSelection &&
-      state.selection.node.type.name === "imageGroup"
-    ) {
-      tr.setNodeMarkup(state.selection.from, undefined, {
-        images: [...state.selection.node.attrs.images, ...images],
-      });
-    } else if (
-      state.selection.empty &&
-      state.selection.$from.parent.type.name === "paragraph" &&
-      !state.selection.$from.parent.content.size &&
-      state.doc.childCount > 1
-    ) {
-      // Existing blank lines are content. Insert after one instead of consuming it.
-      tr.insert(
-        state.selection.$from.after(),
-        state.schema.nodes.imageGroup.create({ images }),
-      );
-    } else
-      tr.replaceSelectionWith(state.schema.nodes.imageGroup.create({ images }));
-    if (tr.doc.lastChild?.type.name === "imageGroup")
-      tr.insert(tr.doc.content.size, state.schema.nodes.paragraph.create());
-    tr.setSelection(
-      TextSelection.near(
-        tr.doc.resolve(Math.min(tr.selection.to, tr.doc.content.size)),
-        1,
-      ),
-    );
-    view.dispatch(tr.scrollIntoView());
-    view.focus();
-  }
   useEffect(() => {
     // Changing editability is not a document edit and must not enqueue a save.
     editor.setEditable(!props.disabled, false);
@@ -166,7 +130,33 @@ function DiaryEditor(props: Props) {
         editor.view.dispatch(
           editor.state.tr.setSelection(bookmark.resolve(editor.state.doc)),
         );
-        insertImages(pictures);
+        const { state, view } = editor;
+        const tr = closeHistory(state.tr);
+        const group = state.schema.nodes.imageGroup;
+        if (
+          state.selection instanceof NodeSelection &&
+          state.selection.node.type === group
+        ) {
+          tr.setNodeMarkup(state.selection.from, undefined, {
+            images: [...state.selection.node.attrs.images, ...pictures],
+          });
+        } else if (
+          state.selection.empty &&
+          state.selection.$from.parent.type.name === "paragraph" &&
+          !state.selection.$from.parent.content.size &&
+          state.doc.childCount > 1
+        ) {
+          // Existing blank lines are content. Insert after one instead of consuming it.
+          tr.insert(
+            state.selection.$from.after(),
+            group.create({ images: pictures }),
+          );
+        } else tr.replaceSelectionWith(group.create({ images: pictures }));
+        if (tr.doc.lastChild?.type === group)
+          tr.insert(tr.doc.content.size, state.schema.nodes.paragraph.create());
+        tr.setSelection(TextSelection.near(tr.doc.resolve(tr.selection.to), 1));
+        view.dispatch(tr.scrollIntoView());
+        view.focus();
       },
     };
   }

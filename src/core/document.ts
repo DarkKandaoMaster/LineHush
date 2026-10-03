@@ -63,7 +63,11 @@ export function fromEditor(doc: JSONContent): Diary {
 }
 /** A document with a single empty line; switching away from it never asks to save. */
 export function isEmpty(doc: Diary): boolean {
-  return doc.blocks.length <= 1 && toText(doc) === "";
+  return (
+    doc.blocks.length === 1 &&
+    doc.blocks[0].type === "line" &&
+    doc.blocks[0].text === ""
+  );
 }
 /** Status bar counts: characters are Unicode code points in text lines. */
 export function stats(doc: Diary): { characters: number; images: number } {

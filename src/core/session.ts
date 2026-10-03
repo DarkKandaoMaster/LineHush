@@ -1,4 +1,5 @@
 import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save, ask } from "@tauri-apps/plugin-dialog";
 import {
   fileName,
@@ -13,13 +14,14 @@ import type { Opened } from "./native.ts";
 import { SaveQueue } from "./save-queue.ts";
 
 const filter = [{ name: "LineHush 日记", extensions: ["linehush"] }];
-export type ExportFormat = "txt" | "html";
+type ExportFormat = "txt" | "html";
 export interface SessionState {
   document: Diary;
   path: string | null;
   generation: number;
   ready: boolean;
   busy: boolean;
+  importing: boolean;
   dirty: boolean;
   error: string;
   notice: string;
@@ -35,6 +37,7 @@ export function createSession() {
     generation: 0,
     ready: false,
     busy: false,
+    importing: false,
     dirty: false,
     error: "",
     notice: "",
@@ -46,6 +49,8 @@ export function createSession() {
     listeners.forEach((listener) => listener());
   }
   const desktop = isTauri();
+  const savedStatus = (path: string | null) =>
+    path ? "已保存" : "草稿已保留";
   let initialization: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let queue = makeQueue();
@@ -65,7 +70,7 @@ export function createSession() {
       await queue.flush();
       set({
         dirty: queue.dirty,
-        ...(desktop ? { status: state.path ? "已保存" : "草稿已保留" } : {}),
+        ...(desktop ? { status: savedStatus(state.path) } : {}),
       });
     } catch (e) {
       set({ error: String(e), status: "保存失败" });
@@ -87,7 +92,7 @@ export function createSession() {
       generation: state.generation + 1,
       dirty: false,
       error: "",
-      status: result.path ? "已保存" : "草稿已保留",
+      status: savedStatus(result.path),
       notice: result.recovered ? "已恢复上次编辑内容。" : "",
     });
   }
@@ -104,13 +109,14 @@ export function createSession() {
       set({ ready: true });
     }
   }
-  async function guarded(action: () => Promise<void>) {
-    if (state.busy) return;
+  /** File operations are desktop-only and never overlap. */
+  async function guarded(action: () => Promise<void>, failure = "") {
+    if (state.busy || !desktop) return;
     set({ busy: true });
     try {
       await action();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: `${failure}${e}` });
     } finally {
       set({ busy: false });
     }
@@ -126,7 +132,12 @@ export function createSession() {
     // Save As must remain available after a failed write to the current file.
     const result = await native.saveAs(target, state.document);
     queue = makeQueue();
-    set({ path: result.path, dirty: false, error: "", status: "已保存" });
+    set({
+      path: result.path,
+      dirty: false,
+      error: "",
+      status: savedStatus(result.path),
+    });
     return true;
   }
   async function persistBeforeSwitch() {
@@ -163,7 +174,6 @@ export function createSession() {
   }
   function persist(forceDialog: boolean) {
     return guarded(async () => {
-      clearTimeout(timer);
       // Finish any in-flight write before changing the backend document directory.
       try {
         await flush();
@@ -192,6 +202,13 @@ export function createSession() {
       }
     });
   }
+  /** Saves pending edits, then closes the window; a failure keeps it open. */
+  function close() {
+    return guarded(async () => {
+      await flush();
+      await getCurrentWindow().destroy();
+    }, "未关闭窗口：");
+  }
   return {
     getSnapshot: () => state,
     subscribe: (listener: () => void) => {
@@ -202,8 +219,7 @@ export function createSession() {
     },
     setError: (error: string) => set({ error }),
     setNotice: (notice: string) => set({ notice }),
-    setBusy: (busy: boolean) => set({ busy }),
-    dispose: () => clearTimeout(timer),
+    setImporting: (importing: boolean) => set({ importing }),
     desktop,
     update,
     flush,
@@ -215,5 +231,6 @@ export function createSession() {
     /** Always asks for a target, even if flushing the current file failed. */
     saveDocumentAs: () => persist(true),
     exportDocument,
+    close,
   };
 }

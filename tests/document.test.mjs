@@ -41,11 +41,13 @@ test("图片组前后的空行往返完整", () => {
   assert.deepEqual(fromEditor(toEditor(doc)), doc);
   assert.equal(toText(doc), "\n[图片：图.png]\n\n");
 });
-test("HTML 导出转义正文、文件名，保留换行", () => {
+test("HTML 导出转义正文，保留换行", () => {
   const html = toHtml(fromText('<script>\n\n & "\n'));
   assert.ok(html.includes("&lt;script&gt;"));
   assert.ok(!html.includes("<script>"));
   assert.ok(html.includes("white-space:pre-wrap"));
+});
+test("文件名只取路径最后一段，无路径时为未命名", () => {
   // Windows paths (including the \\?\ prefix Rust returns) show only the file name.
   assert.equal(fileName("\\\\?\\D:\\日记\\测试.linehush"), "测试.linehush");
   assert.equal(fileName("D:/日记/测试.linehush"), "测试.linehush");

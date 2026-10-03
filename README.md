@@ -6,14 +6,14 @@ Windows 本地优先图文日记编辑器。Tauri 2 + React + TypeScript，正�
 
 - 开发：`pnpm tauri dev`
 - 检查前端：`pnpm build`
-- 构建可独立启动的程序：`pnpm tauri build --no-bundle`
+- 构建可独立启动的程序：`pnpm tauri build --no-bundle`；`pnpm tauri build` 只生成 NSIS 安装包（`bundle.targets = ["nsis"]`）。
 - 程序位置：`src-tauri/target/release/linehush.exe`。运行需要 Windows WebView2（当前机器已安装）。
 
 ## 使用
 
 直接输入正文，使用“保存”选择 `.linehush` 文件。随后停止输入约 650 毫秒自动保存。尚未保存为文件的内容也会保存到本机恢复草稿，下一次启动恢复。右下角区分“尚未保存”“正在保存”“已保存”“草稿已保留”和“保存失败”。关闭窗口会等待最后一次保存；保存失败时保留窗口和当前内容。
 
-图片可以通过“插入图片”、粘贴剪贴板中的图片或拖入文件添加。支持 JPG、PNG、GIF、WebP、BMP；单张解码上限 16000 像素边长、256 MB 内存。多图同次插入形成图片组，选中图片组后插入会追加。真实空行阻止组自动合并。双击缩略图查看原图，Esc 关闭。选中组后 Delete / Backspace 删除，Ctrl+Z 撤销。
+图片可以通过“插入图片”、粘贴剪贴板中的图片或拖入文件添加。支持 JPG、PNG、GIF、WebP、BMP（由 Cargo `image` 启用的格式决定，其他格式或损坏、超限文件统一提示“无法读取此图片”）；单张解码上限 16000 像素边长、256 MB 内存。多图同次插入形成图片组，选中图片组后插入会追加。真实空行阻止组自动合并。双击缩略图查看原图，Esc 关闭。选中组后 Delete / Backspace 删除，Ctrl+Z 撤销。
 
 Enter / Shift+Enter 产生一个逻辑换行，没有段落间距。连续和末尾空行保留。网页粘贴只取纯文本，不解析 Markdown。Tab 插入制表符。Ctrl+Z 撤销，Ctrl+Y 或 Ctrl+Shift+Z 重做。
 
@@ -28,7 +28,7 @@ Enter / Shift+Enter 产生一个逻辑换行，没有段落间距。连续和末
 
 ## 文件与恢复
 
-- `.linehush` 是 UTF-8 JSON，格式公开于 [docs/file-format.md](docs/file-format.md)。
+- `.linehush` 是 UTF-8 JSON，格式公开于 [docs/file-format.md](docs/file-format.md)。打开文件时只做结构反序列化（拒绝未知字段和节点）。
 - 原图在日记同目录的 `附件` 文件夹，缩略图在 `.linehush-cache`，可删除后自动重建。
 - 整体移动日记目录时，一并移动附件。程序不自动清理原图，以保留撤销及备份引用。
 - 保存前写入临时文件并同步，随后替换。每次打开文件时把打开前的内容复制到 `文件名.linehush.bak`，可从“打开”的备份筛选器打开后另存为。
@@ -38,10 +38,10 @@ Enter / Shift+Enter 产生一个逻辑换行，没有段落间距。连续和末
 
 ## 验证
 
-- `pnpm test`（7 项）：Node 24 直接运行 `tests/*.test.mjs`，导入 `src/core/*.ts`（类型剥离，无构建步骤）；覆盖文档格式、换行、导出转义、保存队列及会话订阅。
+- `pnpm test`（8 项）：Node 24 直接运行 `tests/*.test.mjs`，导入 `src/core/*.ts`（类型剥离，无构建步骤）；覆盖文档格式、换行、导出转义、保存队列及会话订阅。
 - `pnpm test:browser`（7 项，`tests/browser/*.spec.ts`，自动启动或复用 `pnpm dev`）：通过本机 Edge 验证编辑与粘贴、初始化、自动保存后的光标及撤销、文件切换、保存故障、关闭保护及导出。会话集成测试替换原生 IPC 边界，编辑器与保存队列使用真实实现。
 - `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked`（7 项）：真实临时目录中的保存、备份、故障与图片测试。
-- `pnpm dev` 运行时，先 `cargo build --manifest-path src-tauri/Cargo.toml --offline --locked`，再 `node tests/native.mjs`：隔离测试数据，用真实 WebView2 检查输入、图片、原图、关闭重开和重开备份。设置 `LINEHUSH_TEST_DATA_DIR` 后数据目录改到该处，测试不访问个人日记。
+- `pnpm dev` 运行时，先 `cargo build --manifest-path src-tauri/Cargo.toml --offline --locked`，再 `node tests/native.mjs`：隔离测试数据，用真实 WebView2 检查输入、图片、原图、关闭重开和重开备份。`src-tauri/capabilities/default.json` 中的 `core:window:allow-close` 只为该脚本模拟关闭窗口所需。设置 `LINEHUSH_TEST_DATA_DIR` 后数据目录改到该处，测试不访问个人日记。
 - `pnpm tauri build --no-bundle` 后运行 `node tests/native.mjs --release`：对独立 Release 程序执行同样的桌面回归，不需要开发服务器。
 - 测试记录都放在 `test-results/`：`native-*`（桌面回归）、`playwright/`（Playwright 输出，每次运行前只清空这个子目录）。
 

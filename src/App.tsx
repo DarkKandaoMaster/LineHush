@@ -1,17 +1,17 @@
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { fileName, stats } from "./core/document";
-import { createSession } from "./core/session";
+import { createSession, type Session } from "./core/session";
 import DiaryEditor, { type DiaryEditorHandle } from "./editor/DiaryEditor";
 import { useImageImport } from "./hooks/useImageImport";
 import { useImagePreview } from "./hooks/useImagePreview";
-import { useWindowGuards, useWindowTitle } from "./hooks/useWindowGuards";
+import { useWindowGuards } from "./hooks/useWindowGuards";
 import Banners from "./components/Banners";
 import ImagePreviewDialog from "./components/ImagePreviewDialog";
 import StatusBar from "./components/StatusBar";
@@ -26,6 +26,7 @@ export default function App() {
     generation,
     ready,
     busy,
+    importing,
     dirty,
     error,
     notice,
@@ -38,21 +39,15 @@ export default function App() {
   const [position, setPosition] = useState({ line: 1, column: 1 });
   const counts = useMemo(() => stats(document), [document]);
   const preview = useImagePreview(session);
-  const { importing, importLock, importFiles } = useImageImport(
-    session,
-    editor,
-  );
+  const importFiles = useImageImport(session, editor);
 
-  // Effect order matters: session start + shortcuts + close guard, then title, then focus.
-  useWindowGuards(session, importLock, preview.dialog, preview.close);
+  useWindowGuards(session, preview.dialog);
   useWindowTitle(session, title, dirty);
+  // Focus waits for `ready` through the dependency list, not through hook order.
   useEffect(() => {
     setPosition({ line: 1, column: 1 });
     if (ready) editor.current?.focus();
   }, [generation, ready]);
-  const selection = useCallback((line: number, column: number) => {
-    setPosition({ line, column });
-  }, []);
   const fileDisabled = !desktop || busy || importing;
   return (
     <main className="app">
@@ -67,7 +62,12 @@ export default function App() {
         onUndo={() => editor.current?.undo()}
         onRedo={() => editor.current?.redo()}
       />
-      <Banners session={session} error={error} notice={notice} />
+      <Banners
+        session={session}
+        error={error}
+        notice={notice}
+        status={status}
+      />
       {ready ? (
         <DiaryEditor
           key={generation}
@@ -77,7 +77,7 @@ export default function App() {
           onChange={session.update}
           onFiles={importFiles}
           onPreview={preview.show}
-          onSelection={selection}
+          onSelection={setPosition}
         />
       ) : (
         <div className="loading">正在打开…</div>
@@ -109,4 +109,14 @@ export default function App() {
       />
     </main>
   );
+}
+
+/** Window title: "● " marks unsaved changes. */
+function useWindowTitle(session: Session, title: string, dirty: boolean) {
+  useEffect(() => {
+    if (session.desktop)
+      void getCurrentWindow()
+        .setTitle(`${dirty ? "● " : ""}${title} — LineHush`)
+        .catch(console.error);
+  }, [session, title, dirty]);
 }

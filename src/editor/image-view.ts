@@ -1,10 +1,16 @@
+import { Node } from "@tiptap/core";
 import { NodeSelection } from "@tiptap/pm/state";
 import { imageUrl } from "../core/native";
-import { ImageGroup } from "./schema";
 import type { Picture } from "../core/document";
 
-export function imageExtension(preview: (pic: Picture) => void) {
-  return ImageGroup.extend({
+export function imageGroup(preview: (pic: Picture) => void) {
+  return Node.create({
+    name: "imageGroup",
+    group: "block",
+    atom: true,
+    addAttributes: () => ({ images: { default: [] } }),
+    parseHTML: () => [],
+    renderHTML: () => ["div", { "data-image-group": "" }],
     addNodeView() {
       return ({ node, editor, getPos }) => {
         const dom = document.createElement("div");

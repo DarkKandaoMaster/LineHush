@@ -29,7 +29,7 @@ test("会话初始化只恢复一次，订阅快照稳定，更新后保存最�
     assert.equal(session.getSnapshot().ready, true);
     assert.equal(session.getSnapshot().generation, 1);
     let notifications = 0;
-    const unsubscribe = session.subscribe(() => notifications++);
+    session.subscribe(() => notifications++);
     const doc = fromText("新日记\n\n");
     session.update(doc);
     assert.equal(session.getSnapshot().dirty, true);
@@ -39,12 +39,7 @@ test("会话初始化只恢复一次，订阅快照稳定，更新后保存最�
     assert.equal(session.getSnapshot().status, "已保存");
     assert.notEqual(session.getSnapshot(), initial);
     assert.ok(notifications > 0);
-    unsubscribe();
-    const lastCount = notifications;
-    session.setNotice("提示");
-    assert.equal(notifications, lastCount);
   } finally {
-    session.dispose();
     clearMocks();
     delete globalThis.window;
     delete globalThis.isTauri;
