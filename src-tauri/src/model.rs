@@ -1,4 +1,4 @@
-//! The `.linehush` document model (format version 1) and its validation rules.
+//! The `.linehush` document model (format version 1).
 use serde::{Deserialize, Serialize};
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -35,45 +35,10 @@ impl Diary {
             }],
         }
     }
-    pub fn validate(&self) -> Result<()> {
-        if self.version != 1 || self.blocks.is_empty() {
-            return Err("文件格式无效或版本不受支持".into());
-        }
-        for block in &self.blocks {
-            match block {
-                Block::Line { text } => {
-                    if text.contains(['\r', '\n']) {
-                        return Err("文本行中存在非法换行".into());
-                    }
-                }
-                Block::Images { images } => {
-                    for pic in images {
-                        validate_picture_path(&pic.path)?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
     pub fn pictures(&self) -> impl Iterator<Item = &Picture> {
         self.blocks.iter().flat_map(|block| match block {
             Block::Images { images } => images.as_slice(),
             Block::Line { .. } => [].as_slice(),
         })
     }
-}
-/// The document-relative path of an attachment: `附件/<file_name>`.
-pub fn picture_path(file_name: &str) -> String {
-    format!("{ATTACHMENTS}/{file_name}")
-}
-// A picture path is `附件/` plus one plain file name; names come from unique_id().
-pub fn validate_picture_path(path: &str) -> Result<()> {
-    let name = path
-        .strip_prefix(ATTACHMENTS)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .ok_or("图片必须位于附件目录")?;
-    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
-        return Err("图片路径无效".into());
-    }
-    Ok(())
 }

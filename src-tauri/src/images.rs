@@ -1,7 +1,7 @@
 //! Image import and thumbnails. Originals are kept byte-for-byte; thumbnails are
 //! PNGs in a rebuildable cache folder next to `附件/`.
 use crate::fsx::{atomic_write, read_file, unique_id};
-use crate::model::{picture_path, Picture, Result, ATTACHMENTS};
+use crate::model::{Picture, Result, ATTACHMENTS};
 use crate::store::Store;
 use image::{ImageFormat, ImageReader};
 use std::{
@@ -21,19 +21,11 @@ fn cache_dir(store: &Store) -> PathBuf {
 fn cache_name(attachment: &str) -> String {
     format!("{attachment}.png")
 }
+// Only the five formats enabled in Cargo.toml can decode; anything else fails here.
+const UNREADABLE: &str =
+    "无法读取此图片：仅支持 JPG/PNG/GIF/WebP/BMP，且文件需完好、不超过 16000 像素 / 256 MB 解码内存";
 fn decode(bytes: &[u8]) -> Result<(image::DynamicImage, ImageFormat)> {
-    let format = image::guess_format(bytes)
-        .map_err(|_| "不支持此图片，请使用 JPG、PNG、GIF、WebP 或 BMP")?;
-    if !matches!(
-        format,
-        ImageFormat::Jpeg
-            | ImageFormat::Png
-            | ImageFormat::Gif
-            | ImageFormat::WebP
-            | ImageFormat::Bmp
-    ) {
-        return Err("不支持此图片格式".into());
-    }
+    let format = image::guess_format(bytes).map_err(|_| UNREADABLE)?;
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     // Keeps one decode from exhausting memory; nothing else limits image size.
     let mut limits = image::Limits::default();
@@ -41,9 +33,7 @@ fn decode(bytes: &[u8]) -> Result<(image::DynamicImage, ImageFormat)> {
     limits.max_image_height = Some(16000);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
-    let img = reader
-        .decode()
-        .map_err(|_| "图片损坏或尺寸过大（上限 16000 像素 / 256 MB 解码内存）")?;
+    let img = reader.decode().map_err(|_| UNREADABLE)?;
     Ok((img, format))
 }
 fn thumbnail(img: &image::DynamicImage) -> Result<Vec<u8>> {
@@ -70,19 +60,21 @@ pub fn import(store: &Store, bytes: &[u8]) -> Result<Picture> {
     write_in(&store.base_dir.join(ATTACHMENTS), &name, bytes)?;
     write_in(&cache_dir(store), &cache_name(&name), &thumbnail(&img)?)?;
     Ok(Picture {
-        path: picture_path(&name),
-        // Fallback only; the frontend replaces it with the original file name.
-        name: format!("图片.{ext}"),
+        path: format!("{ATTACHMENTS}/{name}"),
+        name: String::new(),
         width: img.width(),
         height: img.height(),
     })
 }
 pub fn read(store: &Store, relative: &str, original: bool) -> Result<Vec<u8>> {
-    let path = store.attachment(relative)?;
+    let path = store.base_dir.join(relative);
+    if !path.is_file() {
+        return Err("图片附件缺失，请检查附件文件夹".into());
+    }
     if original {
         return read_file(&path);
     }
-    let cache_name = cache_name(&path.file_name().ok_or("图片文件名无效")?.to_string_lossy());
+    let cache_name = cache_name(&path.file_name().unwrap_or_default().to_string_lossy());
     let cache_dir = cache_dir(store);
     let cache = cache_dir.join(&cache_name);
     if cache.exists() {

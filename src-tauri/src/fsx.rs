@@ -39,10 +39,9 @@ pub fn read_file(path: &Path) -> Result<Vec<u8>> {
     fs::read(path).map_err(|e| format!("无法读取 {}：{e}", path.display()))
 }
 pub fn read_diary(path: &Path) -> Result<Diary> {
-    let doc: Diary = serde_json::from_slice(&read_file(path)?)
-        .map_err(|_| "无法解析日记；文件可能损坏，可尝试打开同名 .bak 备份")?;
-    doc.validate()?;
-    Ok(doc)
+    // Only the serde structure is enforced; files are written by this app's own editor.
+    serde_json::from_slice(&read_file(path)?)
+        .map_err(|_| "无法解析日记；文件可能损坏，可尝试打开同名 .bak 备份".into())
 }
 pub fn write_diary(path: &Path, doc: &Diary) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(doc).map_err(|e| e.to_string())?;

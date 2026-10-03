@@ -4,7 +4,7 @@ use crate::fsx::{
     atomic_write, backup, ensure_extension, read_diary, read_file, sidecar, write_diary,
     BACKUP_EXTENSION,
 };
-use crate::model::{validate_picture_path, Diary, Result, ATTACHMENTS};
+use crate::model::{Diary, Result, ATTACHMENTS};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -71,8 +71,7 @@ impl Store {
         if let Some(path) = r.path {
             return self.open(&path);
         }
-        let document = r.document.unwrap_or_else(Diary::empty);
-        document.validate()?;
+        let document = r.document.ok_or("恢复草稿缺少正文")?;
         self.path = None;
         self.base_dir = r.directory;
         Ok(self.opened(document, true))
@@ -108,14 +107,12 @@ impl Store {
         Ok(self.opened(document, false))
     }
     pub fn save(&mut self, doc: &Diary) -> Result<()> {
-        doc.validate()?;
         match &self.path {
             None => self.checkpoint(doc),
             Some(path) => write_diary(path, doc),
         }
     }
     pub fn save_as(&mut self, path: &Path, doc: &Diary) -> Result<Opened> {
-        doc.validate()?;
         let path = ensure_extension(path, "linehush");
         let directory =
             fs::canonicalize(path.parent().ok_or("保存路径无效")?).map_err(|e| e.to_string())?;
@@ -132,28 +129,16 @@ impl Store {
         self.checkpoint(doc)?;
         Ok(self.opened(doc.clone(), false))
     }
-    /// Resolves a picture path to its original file, which must exist.
-    pub fn attachment(&self, relative: &str) -> Result<PathBuf> {
-        validate_picture_path(relative)?;
-        let path = self.base_dir.join(relative);
-        if !path.is_file() {
-            return Err("图片附件缺失，请检查附件文件夹".into());
-        }
-        Ok(path)
-    }
     // Copies the originals the document references; missing or already present files are skipped.
     fn copy_referenced(&self, doc: &Diary, destination: &Path) -> Result<()> {
         if fs::canonicalize(&self.base_dir).ok().as_deref() == Some(destination) {
             return Ok(());
         }
-        let target = destination.join(ATTACHMENTS);
-        fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+        fs::create_dir_all(destination.join(ATTACHMENTS)).map_err(|e| e.to_string())?;
         for pic in doc.pictures() {
-            let Ok(source) = self.attachment(&pic.path) else {
-                continue;
-            };
-            let out = target.join(source.file_name().ok_or("图片文件名无效")?);
-            if !out.exists() {
+            let source = self.base_dir.join(&pic.path);
+            let out = destination.join(&pic.path);
+            if source.is_file() && !out.exists() {
                 fs::copy(&source, &out).map_err(|e| format!("无法复制图片：{e}"))?;
             }
         }

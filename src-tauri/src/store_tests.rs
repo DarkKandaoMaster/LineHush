@@ -1,5 +1,5 @@
 use crate::fsx::{read_diary, sidecar, unique_id};
-use crate::model::{validate_picture_path, Block, Diary, Picture};
+use crate::model::{Block, Diary, Picture, ATTACHMENTS};
 use crate::store::Store;
 use std::{fs, path::PathBuf};
 
@@ -22,7 +22,7 @@ fn with_picture(name: &str) -> Diary {
         version: 1,
         blocks: vec![Block::Images {
             images: vec![Picture {
-                path: format!("附件/{name}"),
+                path: format!("{ATTACHMENTS}/{name}"),
                 name: name.into(),
                 width: 1,
                 height: 1,
@@ -66,20 +66,42 @@ fn restore_reopens_saved_file_and_keeps_unsaved_draft() {
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
-fn rejects_unknown_nodes_versions_and_nested_paths() {
-    for path in ["../secret", "附件/../secret.png", "附件/a/b.png", "附件/"] {
-        assert!(validate_picture_path(path).is_err());
-    }
-    assert!(validate_picture_path("附件/中文 名.png").is_ok());
-    assert!(serde_json::from_str::<Diary>(
-        r#"{"version":1,"blocks":[{"type":"heading","text":"x"}]}"#
-    )
-    .is_err());
-    assert!(diary("ok").validate().is_ok());
-    assert!(diary("a\rb").validate().is_err());
-    let mut doc = diary("ok");
-    doc.version = 2;
-    assert!(doc.validate().is_err());
+fn read_enforces_only_serde_structure() {
+    let root = temp();
+    let file = root.join("x.linehush");
+    let read = |json: &str| {
+        fs::write(&file, json).unwrap();
+        read_diary(&file)
+    };
+    let line = |text: &str| Block::Line { text: text.into() };
+    // Unknown node types and unknown fields are rejected by serde.
+    assert!(read(r#"{"version":1,"blocks":[{"type":"heading","text":"x"}]}"#).is_err());
+    assert!(read(r#"{"version":1,"blocks":[{"type":"line","text":"x","bold":true}]}"#).is_err());
+    assert!(read(r#"{"version":1,"blocks":[],"title":"x"}"#).is_err());
+    // Version, emptiness and line breaks inside a line are no longer checked.
+    let read_ok = |json: &str| read(json).unwrap();
+    assert_eq!(
+        read_ok(r#"{"version":1,"blocks":[{"type":"line","text":"a\rb"}]}"#),
+        Diary {
+            version: 1,
+            blocks: vec![line("a\rb")]
+        }
+    );
+    assert_eq!(
+        read_ok(r#"{"version":2,"blocks":[{"type":"line","text":"ok"}]}"#),
+        Diary {
+            version: 2,
+            blocks: vec![line("ok")]
+        }
+    );
+    assert_eq!(
+        read_ok(r#"{"version":1,"blocks":[]}"#),
+        Diary {
+            version: 1,
+            blocks: vec![]
+        }
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn failed_open_leaves_current_session_usable() {
@@ -96,7 +118,7 @@ fn failed_open_leaves_current_session_usable() {
 fn save_as_adds_extension_and_copies_referenced_images() {
     let root = temp();
     let mut store = Store::new(root.join("app")).unwrap();
-    let folder = store.base_dir.join("附件");
+    let folder = store.base_dir.join(ATTACHMENTS);
     fs::create_dir_all(&folder).unwrap();
     fs::write(folder.join("a.png"), b"a").unwrap();
     fs::write(folder.join("unused.png"), b"unused").unwrap();
@@ -106,15 +128,15 @@ fn save_as_adds_extension_and_copies_referenced_images() {
         .save_as(&out.join("日记"), &with_picture("a.png"))
         .unwrap();
     assert_eq!(opened.path.unwrap().file_name().unwrap(), "日记.linehush");
-    assert!(out.join("附件/a.png").exists());
-    assert!(!out.join("附件/unused.png").exists());
+    assert!(out.join(ATTACHMENTS).join("a.png").exists());
+    assert!(!out.join(ATTACHMENTS).join("unused.png").exists());
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn html_export_copies_only_referenced_images() {
     let root = temp();
     let store = Store::new(root.join("app")).unwrap();
-    let folder = store.base_dir.join("附件");
+    let folder = store.base_dir.join(ATTACHMENTS);
     fs::create_dir_all(&folder).unwrap();
     fs::write(folder.join("a.png"), b"a").unwrap();
     fs::write(folder.join("private.png"), b"private").unwrap();
@@ -128,7 +150,7 @@ fn html_export_copies_only_referenced_images() {
             &with_picture("a.png"),
         )
         .unwrap();
-    assert!(out.join("附件/a.png").exists());
-    assert!(!out.join("附件/private.png").exists());
+    assert!(out.join(ATTACHMENTS).join("a.png").exists());
+    assert!(!out.join(ATTACHMENTS).join("private.png").exists());
     fs::remove_dir_all(root).unwrap();
 }
