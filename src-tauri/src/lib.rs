@@ -104,9 +104,10 @@ async fn with_store<T: Send + 'static>(
 ) -> Result<T> {
     blocking(move || action(&mut *lock_store(&app)?)).await
 }
-/// Resumes the last session. A file passed on the command line replaces it, unless
-/// there are unsaved changes: those are restored first and the file is left in
-/// `OpenRequest`, so the frontend asks about them before opening it.
+/// Starts a new document, or restores the unsaved changes a crash left behind.
+/// A file passed on the command line replaces the new document; unsaved changes
+/// are restored first and the file is left in `OpenRequest`, so the frontend asks
+/// about them before opening it.
 #[tauri::command]
 async fn restore(app: AppHandle) -> Result<Opened> {
     let launch = app.state::<OpenRequest>().take();

@@ -23,7 +23,8 @@ const WORKING_FILE: &str = "working.hush";
 /// Folder, next to an exported HTML file, that receives the originals.
 const EXPORT_ATTACHMENTS: &str = "附件";
 
-// Stored as recovery.json: which document the next launch reopens.
+// Stored as recovery.json: which document the stash in the working copy belongs
+// to, so a launch after a crash recovers it into the right file.
 #[derive(Serialize, Deserialize)]
 struct Recovery {
     /// `None` means the draft.
@@ -80,7 +81,8 @@ impl Store {
             notice: None,
         }
     }
-    /// Records which document is open so the next launch can resume it.
+    /// Records which document is open so a launch after a crash can pair the
+    /// working copy's stash with it.
     fn checkpoint(&self) -> Result<()> {
         let bytes = serde_json::to_vec(&Recovery {
             path: self.file.as_ref().map(|(path, _)| path.clone()),
@@ -128,40 +130,40 @@ impl Store {
         self.reset_work()?;
         self.checkpoint()
     }
+    /// Starts a new unnamed document, like Notepad. Only a stash left in the
+    /// working copy (a crash, or a close that could not discard it) is restored,
+    /// into the file recovery.json names.
     pub fn restore(&mut self) -> Result<Opened> {
+        self.file = None;
+        let Some(stash) = self.resume_work()? else {
+            self.start_draft()?;
+            return Ok(self.opened(Diary::empty(), false));
+        };
         // An unreadable recovery.json counts as missing.
         let recovery = fs::read(self.root.join(RECOVERY_FILE))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Recovery>(&bytes).ok());
-        if let Some(path) = recovery.and_then(|r| r.path) {
-            let (db, saved) = match Db::open(&path) {
-                Ok(opened) => opened,
-                Err(e) => {
-                    // Unsaved changes outlive their file: keep them as the draft.
-                    self.file = None;
-                    if let Some(stash) = self.resume_work()? {
-                        self.checkpoint()?;
-                        return Ok(Opened {
-                            notice: Some(format!(
-                                "原文件无法打开，未保存的修改已作为未命名文档恢复。{e}"
-                            )),
-                            ..self.opened(stash, true)
-                        });
-                    }
-                    self.start_draft()?;
-                    return Err(e);
-                }
-            };
-            let stash = self.resume_work()?;
-            self.file = Some((path, db));
-            let recovered = stash.is_some();
-            return Ok(self.opened(stash.unwrap_or(saved), recovered));
+        let Some(path) = recovery.and_then(|r| r.path) else {
+            // An untouched draft is not "recovered".
+            let recovered = stash != Diary::empty();
+            return Ok(self.opened(stash, recovered));
+        };
+        match Db::open(&path) {
+            Ok((db, _)) => {
+                self.file = Some((path, db));
+                Ok(self.opened(stash, true))
+            }
+            Err(e) => {
+                // Unsaved changes outlive their file: keep them as the draft.
+                self.checkpoint()?;
+                Ok(Opened {
+                    notice: Some(format!(
+                        "原文件无法打开，未保存的修改已作为未命名文档恢复。{e}"
+                    )),
+                    ..self.opened(stash, true)
+                })
+            }
         }
-        self.file = None;
-        let document = self.resume_work()?.unwrap_or_else(Diary::empty);
-        // An untouched draft is not "recovered".
-        let recovered = document != Diary::empty();
-        Ok(self.opened(document, recovered))
     }
     pub fn new_document(&mut self) -> Result<Opened> {
         let notice = self.leave();
@@ -216,8 +218,8 @@ impl Store {
         }
         let (db, _) = Db::open(&path)?;
         self.file = Some((path, db));
-        // Checkpoint first: a crash before the reset then reopens the new file
-        // (which already holds everything) rather than an emptied draft.
+        // Checkpoint first: a crash before the reset then recovers the stash into
+        // the new file (which already holds everything) rather than a draft.
         self.checkpoint()?;
         self.reset_work()?;
         Ok(self.opened(doc.clone(), false))
@@ -228,7 +230,8 @@ impl Store {
     /// says what failed. A working copy that could not be discarded comes back
     /// as recovered changes on the next launch.
     pub fn close(&mut self) -> Option<String> {
-        // The file stays open: recovery.json keeps pointing at it for the next launch.
+        // recovery.json keeps pointing at the file, so a working copy that cannot
+        // be discarded is recovered into it on the next launch.
         let garbage = match &self.file {
             Some((_, db)) => db.collect_garbage().err(),
             None => None,

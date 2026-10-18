@@ -531,9 +531,23 @@ try {
   expect(query(file, "PRAGMA freelist_count")[0].freelist_count).toBe(0);
   passed("文件结构");
 
-  // --- Reopen: not reported as recovered; 保存 in the close prompt writes ---
+  // --- Restart after a normal close: a new unnamed document, not the last file ---
+  const recovery = async () =>
+    JSON.parse(await readFile(path.join(appData, "recovery.json"), "utf8"));
   page = await start();
   editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect.poll(() => windowTitle(page)).toBe("未命名 — LineHush");
+  await expect(status("准备就绪")).toBeVisible();
+  await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
+  await expect(editor).toHaveText("");
+  await expect(editor.locator(".image-tile")).toHaveCount(0);
+  expect(await recovery()).toEqual({ path: null });
+  expect(stash()).toBeNull();
+  passed("正常关闭后新建");
+
+  // --- Reopen via double-click: not recovered; 保存 in the close prompt writes ---
+  expect(await launchSecond([file])).toBe(0);
+  await expect.poll(() => windowTitle(page)).toBe("测试.hush — LineHush");
   await expect(status("已保存")).toBeVisible();
   await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
   await expect(editor.locator(".image-tile img")).toHaveCount(2);
@@ -559,11 +573,17 @@ try {
   passed("关闭时保存");
 
   // --- Crash with unsaved text and a new image: the file keeps its saved state ---
-  page = await start();
+  page = await start([file]);
   editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect.poll(() => windowTitle(page)).toBe("测试.hush — LineHush");
   await expect(status("已保存")).toBeVisible();
+  await expect(editor.locator(".image-tile img")).toHaveCount(2);
+  await thumbnailsLoaded();
   const crashed = source["崩溃前.png"];
   await editor.click();
+  // ProseMirror syncs the clicked caret back to the DOM shortly after mouseup;
+  // an earlier Control+End would be undone and the text land mid-document.
+  await sleep(200);
   await page.keyboard.press("Control+End");
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
@@ -578,6 +598,10 @@ try {
       doc.blocks.some((b) => b.text === "崩溃前输入"),
   );
   const crashStash = stash();
+  // Typed at the end, after the line saved by the close prompt.
+  expect(lines(crashStash).indexOf("崩溃前输入")).toBeGreaterThan(
+    lines(crashStash).indexOf("保存后关闭"),
+  );
   const beforeCrash = await fingerprint(file);
   await kill();
   expect(await fingerprint(file)).toEqual(beforeCrash);
@@ -602,10 +626,16 @@ try {
   expect(stored(file, crashed.id).equals(crashed.bytes)).toBe(true);
   expect(stash()).toBeNull();
   await stop(page);
+  // Once saved, the restart starts unnamed again; the file opens from a double-click.
   page = await start();
   editor = page.getByRole("textbox", { name: "日记正文" });
-  await expect(status("已保存")).toBeVisible();
+  await expect.poll(() => windowTitle(page)).toBe("未命名 — LineHush");
   await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
+  await expect(editor.locator(".image-tile")).toHaveCount(0);
+  expect(await recovery()).toEqual({ path: null });
+  expect(await launchSecond([file])).toBe(0);
+  await expect.poll(() => windowTitle(page)).toBe("测试.hush — LineHush");
+  await expect(status("已保存")).toBeVisible();
   await expect(editor.locator(".image-tile img")).toHaveCount(3);
   await thumbnailsLoaded();
   expect(body(file)).toEqual(crashStash);
@@ -637,9 +667,7 @@ try {
   // The images were saved into the moved file only, so they show a placeholder.
   await expect(editor.getByText("无法显示此图片")).toHaveCount(3);
   expect(stash()).toEqual(movedStash);
-  expect(
-    JSON.parse(await readFile(path.join(appData, "recovery.json"), "utf8")),
-  ).toEqual({ path: null });
+  expect(await recovery()).toEqual({ path: null });
   expect(await fingerprint(moved)).toEqual(movedFile);
   passed("原文件丢失恢复");
 
@@ -677,25 +705,24 @@ try {
   passed("第二实例转发");
   await kill();
 
-  // --- First launch with a file: it wins over recovery.json when nothing is unsaved ---
-  // The kill left unsaved text for 搬走.hush; save it via a fresh start, then quit.
+  // --- First launch with a file: opened at once when nothing is unsaved ---
+  // The kill left unsaved text for 搬走.hush: a plain start recovers it into that file.
   page = await start();
   editor = page.getByRole("textbox", { name: "日记正文" });
   await expect(page.getByText("已恢复未保存的修改。")).toBeVisible();
+  await expect.poll(() => windowTitle(page)).toBe("● 搬走.hush — LineHush");
   await editor.click();
   await page.keyboard.press("Control+s");
   await expect(status("已保存")).toBeVisible();
   await stop(page);
+  expect((await recovery()).path).toMatch(/搬走\.hush$/);
   const copy = path.join(root, "副本.hush");
   await copyFile(moved, copy);
   page = await start(["副本.hush"], root);
   editor = page.getByRole("textbox", { name: "日记正文" });
   await expect.poll(() => windowTitle(page)).toBe("副本.hush — LineHush");
   await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
-  expect(
-    JSON.parse(await readFile(path.join(appData, "recovery.json"), "utf8"))
-      .path,
-  ).toMatch(/副本\.hush$/);
+  expect((await recovery()).path).toMatch(/副本\.hush$/);
   // With unsaved changes left by a crash, those come back first and are asked about.
   await editor.click();
   await page.keyboard.press("Control+End");

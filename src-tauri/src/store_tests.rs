@@ -229,9 +229,7 @@ fn file_changes_only_when_saved() {
     assert_eq!(store.image(&pic.id).unwrap(), bytes);
     assert_eq!(rows(&file, "images"), 1);
     drop(store);
-    let opened = Store::new(root.join("app")).unwrap().restore().unwrap();
-    assert!(!opened.recovered);
-    assert_eq!(opened.document, diary("删掉了"));
+    assert_eq!(reopen(&file), diary("删掉了"));
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
@@ -241,10 +239,8 @@ fn unsaved_changes_survive_a_crash() {
     let mut store = session(&root);
     store.save_as(&file, &diary("已保存")).unwrap();
     drop(store);
-    // Nothing stashed: the file is reopened as saved.
-    let mut store = Store::new(root.join("app")).unwrap();
-    let opened = store.restore().unwrap();
-    assert!(opened.path.unwrap().ends_with("崩溃.hush") && !opened.recovered);
+    let mut store = session(&root);
+    let opened = store.open(&file).unwrap();
     assert_eq!(opened.document, diary("已保存"));
     let bytes = photo(3, 64);
     let pic = import(&mut store, &bytes);
@@ -301,9 +297,10 @@ fn close_discards_unsaved_changes_and_drops_unreferenced_images() {
     assert!(store.image(&extra_pic.id).is_err());
     assert_eq!(store.image(&kept_pic.id).unwrap(), kept);
     drop(store);
+    // A closed session leaves nothing to recover: the next launch starts a new draft.
     let opened = Store::new(root.join("app")).unwrap().restore().unwrap();
-    assert!(!opened.recovered);
-    assert_eq!(opened.document, saved);
+    assert!(opened.path.is_none() && !opened.recovered);
+    assert_eq!(opened.document, Diary::empty());
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
@@ -332,8 +329,6 @@ fn switching_documents_discards_unsaved_changes_and_cleans_the_file() {
     assert_eq!(opened.document, diary("a"));
     assert_eq!(reopen(&b), diary("b"));
     drop(store);
-    let opened = Store::new(root.join("app")).unwrap().restore().unwrap();
-    assert!(opened.path.unwrap().ends_with("a.hush") && !opened.recovered);
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
@@ -371,12 +366,10 @@ fn draft_is_restored_then_moved_into_save_as_target() {
     drop(other);
     store.save(&diary("另存后继续写")).unwrap();
     drop(store);
-    let mut store = Store::new(root.join("app")).unwrap();
-    let opened = store.restore().unwrap();
-    assert!(opened.path.is_some() && !opened.recovered);
-    assert_eq!(opened.document, diary("另存后继续写"));
-    assert_eq!(store.image(&pic.id).unwrap(), bytes);
-    drop(store);
+    let mut other = Store::new(root.join("other")).unwrap();
+    assert_eq!(other.open(&file).unwrap().document, diary("另存后继续写"));
+    assert_eq!(other.image(&pic.id).unwrap(), bytes);
+    drop(other);
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
@@ -407,8 +400,6 @@ fn save_as_from_a_file_carries_saved_and_unsaved_images() {
     assert_eq!(rows(&working(&root), "doc"), 0);
     assert_eq!(rows(&working(&root), "images"), 0);
     drop(store);
-    let opened = Store::new(root.join("app")).unwrap().restore().unwrap();
-    assert!(opened.path.unwrap().ends_with("b.hush") && !opened.recovered);
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
@@ -482,24 +473,45 @@ fn failed_open_leaves_current_session_usable() {
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
-fn missing_recovered_file_falls_back_to_a_draft() {
+fn launch_without_unsaved_changes_starts_a_new_draft() {
     let root = temp();
-    let file = root.join("gone.hush");
+    let file = root.join("上次.hush");
+    let recovery = root.join("app").join("recovery.json");
     let mut store = session(&root);
-    store.save_as(&file, &diary("x")).unwrap();
+    store.save_as(&file, &diary("已保存")).unwrap();
+    // Images imported but never stashed are not unsaved changes either.
+    import(&mut store, &photo(7, 64));
+    drop(store);
+    assert!(fs::read_to_string(&recovery).unwrap().contains("上次.hush"));
+    // The last file is not reopened, even though recovery.json names it.
+    let mut store = Store::new(root.join("app")).unwrap();
+    let opened = store.restore().unwrap();
+    assert!(opened.path.is_none() && !opened.recovered && opened.notice.is_none());
+    assert_eq!(opened.document, Diary::empty());
+    assert_eq!(fs::read_to_string(&recovery).unwrap(), r#"{"path":null}"#);
+    assert_eq!(rows(&working(&root), "images"), 0);
+    assert_eq!(reopen(&file), diary("已保存"));
+    // A missing last file is no error either.
+    store.open(&file).unwrap();
     drop(store);
     fs::remove_file(&file).unwrap();
-    let mut store = Store::new(root.join("app")).unwrap();
-    assert!(store.restore().is_err());
-    store.stash(&diary("继续写")).unwrap();
     let opened = Store::new(root.join("app")).unwrap().restore().unwrap();
-    assert!(opened.path.is_none() && opened.recovered);
-    assert_eq!(opened.document, diary("继续写"));
+    assert!(opened.path.is_none() && !opened.recovered && opened.notice.is_none());
+    assert_eq!(fs::read_to_string(&recovery).unwrap(), r#"{"path":null}"#);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn broken_recovery_record_restores_the_stash_as_a_draft() {
+    let root = temp();
+    let mut store = session(&root);
+    store.save_as(&root.join("a.hush"), &diary("a")).unwrap();
+    store.stash(&diary("继续写")).unwrap();
+    drop(store);
     // A broken recovery.json counts as missing.
     fs::write(root.join("app").join("recovery.json"), "{").unwrap();
     let opened = Store::new(root.join("app")).unwrap().restore().unwrap();
+    assert!(opened.path.is_none() && opened.recovered);
     assert_eq!(opened.document, diary("继续写"));
-    drop(store);
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
@@ -679,8 +691,6 @@ fn switching_away_from_a_damaged_file_succeeds_with_a_notice() {
     assert_eq!(opened.document, diary("b"));
     assert!(opened.path.unwrap().ends_with("b.hush"));
     drop(store);
-    let opened = Store::new(root.join("app")).unwrap().restore().unwrap();
-    assert!(opened.path.unwrap().ends_with("b.hush") && !opened.recovered);
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
@@ -727,8 +737,8 @@ fn errors_name_the_cause_in_chinese() {
     let mut permissions = fs::metadata(&file).unwrap().permissions();
     permissions.set_readonly(true);
     fs::set_permissions(&file, permissions.clone()).unwrap();
-    let mut store = Store::new(root.join("app")).unwrap();
-    store.restore().unwrap();
+    let mut store = session(&root);
+    store.open(&file).unwrap();
     let error = store.save(&diary("改")).unwrap_err();
     assert!(error.starts_with("没有写入权限或文件无法访问（"), "{error}");
     drop(store);
