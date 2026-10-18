@@ -3,9 +3,10 @@
 //!
 //! The working copy in the app data folder uses the same schema. Its `doc` row
 //! exists only while it holds a stashed (unsaved) body.
-use crate::fsx::sidecar;
+use crate::errors::describe;
+use crate::fsx::{shown, sidecar};
 use crate::model::{Diary, Result};
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension};
 use std::{collections::HashSet, fs, path::Path};
 
 /// "HUSH" in the SQLite header, so the file can be identified without opening it.
@@ -14,18 +15,27 @@ const FORMAT_VERSION: u32 = 1;
 /// Writes the body, inserting the row when the working copy has none yet.
 const WRITE_BODY: &str = "INSERT OR REPLACE INTO main.doc (id, body) VALUES (1, ?1)";
 
+/// Shown when a file opens but holds no readable LineHush body.
+const NOT_HUSH: &str = "不是有效的 .hush 文件或文件已损坏";
+
 fn sql(e: rusqlite::Error) -> String {
-    e.to_string()
+    describe(e)
 }
 fn body_json(doc: &Diary) -> Result<String> {
     serde_json::to_string(doc).map_err(|e| e.to_string())
 }
+fn cannot_open(path: &Path, reason: impl std::fmt::Display) -> String {
+    format!("无法打开 {}：{reason}", shown(path))
+}
 fn connect(path: &Path) -> Result<Connection> {
+    // SQLite reports a missing file as "unable to open", which reads like a
+    // permissions problem; ask the file system first.
+    fs::metadata(path).map_err(|e| cannot_open(path, describe(e)))?;
     Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .map_err(|e| format!("无法打开 {}：{e}", path.display()))
+    .map_err(|e| cannot_open(path, describe(e)))
 }
 fn read_body(conn: &Connection) -> rusqlite::Result<Option<String>> {
     conn.query_row("SELECT body FROM doc WHERE id = 1", [], |row| row.get(0))
@@ -39,7 +49,7 @@ impl Db {
     /// Creates an empty container (no body row) at `path`, which must not exist yet.
     /// Used for the working copy; a user file always gets its body from `copy_to`.
     pub fn create(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).map_err(sql)?;
+        let conn = Connection::open(path).map_err(|e| cannot_open(path, describe(e)))?;
         // auto_vacuum only takes effect before the first page is written.
         conn.execute_batch(&format!(
             "PRAGMA auto_vacuum = INCREMENTAL;
@@ -55,23 +65,29 @@ impl Db {
     }
     /// Opens an existing document. Only the serde structure of the body is checked.
     pub fn open(path: &Path) -> Result<(Self, Diary)> {
-        let unreadable = format!(
-            "无法打开 {}：不是 LineHush 日记或文件已损坏",
-            path.display()
-        );
         let conn = connect(path)?;
-        let body = read_body(&conn)
-            .ok()
-            .flatten()
-            .ok_or_else(|| unreadable.clone())?;
-        let doc = serde_json::from_str(&body).map_err(|_| unreadable)?;
+        let body = match read_body(&conn) {
+            Ok(Some(body)) => body,
+            Ok(None) => return Err(cannot_open(path, NOT_HUSH)),
+            // A plain SQL error ("no such table") means some other SQLite file.
+            Err(e)
+                if e.sqlite_error_code()
+                    .is_none_or(|code| code == ErrorCode::Unknown) =>
+            {
+                return Err(cannot_open(path, NOT_HUSH))
+            }
+            Err(e) => return Err(cannot_open(path, describe(e))),
+        };
+        let doc = serde_json::from_str(&body).map_err(|_| cannot_open(path, NOT_HUSH))?;
         Ok((Self { conn }, doc))
     }
     /// Opens the working copy and its stashed body, if any.
     pub fn open_stash(path: &Path) -> Result<(Self, Option<Diary>)> {
         let conn = connect(path)?;
         let stash = match read_body(&conn).map_err(sql)? {
-            Some(body) => Some(serde_json::from_str(&body).map_err(|e| e.to_string())?),
+            Some(body) => Some(
+                serde_json::from_str(&body).map_err(|e| format!("暂存的修改无法读取（{e}）"))?,
+            ),
             None => None,
         };
         Ok((Self { conn }, stash))
@@ -80,7 +96,7 @@ impl Db {
         let body = read_body(&self.conn)
             .map_err(sql)?
             .ok_or("日记中缺少正文")?;
-        serde_json::from_str(&body).map_err(|e| e.to_string())
+        serde_json::from_str(&body).map_err(|e| format!("{NOT_HUSH}（{e}）"))
     }
     /// Rewrites only the body; image rows are left untouched.
     pub fn save(&self, doc: &Diary) -> Result<()> {
@@ -150,7 +166,13 @@ impl Db {
                 None => copy.save(doc)?,
             }
             drop(copy);
-            fs::rename(&tmp, target).map_err(|e| format!("保存失败，原文件保留：{e}"))
+            fs::rename(&tmp, target).map_err(|e| {
+                format!(
+                    "无法写入 {}，原有文件保持不变：{}",
+                    shown(target),
+                    describe(e)
+                )
+            })
         })();
         if result.is_err() {
             let _ = fs::remove_file(&tmp);

@@ -85,7 +85,9 @@ test.beforeEach(async ({ page }) => {
         // Any bytes will do: a tile that cannot decode them still opens the preview.
         if (cmd === "read_image") return new Uint8Array([1, 2, 3]).buffer;
         if (cmd === "plugin:event|listen") {
-          state.closeHandler = args.handler;
+          // The open-requested listener registers too; only the close guard is driven here.
+          if (args.event === "tauri://close-requested")
+            state.closeHandler = args.handler;
           return args.handler;
         }
         if (cmd === "plugin:window|destroy") state.destroyed = true;
@@ -111,7 +113,8 @@ test("恢复和只读切换不触发暂存或保存，StrictMode 不重复初始
   await page.waitForTimeout(800);
   const cmds = await commands(page);
   expect(cmds.filter((c) => c === "restore")).toHaveLength(1);
-  expect(cmds.filter((c) => c === "plugin:event|listen")).toHaveLength(1);
+  // The close guard and the open-requested listener, once each.
+  expect(cmds.filter((c) => c === "plugin:event|listen")).toHaveLength(2);
   expect(cmds.filter((c) => c === "stash_document")).toHaveLength(0);
   expect(cmds.filter((c) => c === "save_document")).toHaveLength(0);
   await expect(page.getByText("已保存", { exact: true })).toBeVisible();
@@ -320,7 +323,9 @@ test("保存失败时关闭保留窗口，重试保存后无需询问即可关�
   await unsavedPrompt(page)
     .getByRole("button", { name: "保存", exact: true })
     .click();
-  await expect(page.getByRole("alert")).toContainText("未关闭窗口");
+  await expect(page.getByRole("alert")).toContainText(
+    "保存失败：Error: 测试写入失败，窗口未关闭。",
+  );
   expect(await page.evaluate(() => (window as any).testNative.destroyed)).toBe(
     false,
   );

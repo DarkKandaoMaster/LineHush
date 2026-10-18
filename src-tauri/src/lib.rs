@@ -1,4 +1,5 @@
 mod db;
+mod errors;
 mod fsx;
 mod images;
 mod model;
@@ -168,6 +169,7 @@ async fn import_image(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resul
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("图片数据无效".into());
     };
+    images::check_file_size(bytes.len())?;
     let bytes = bytes.clone();
     blocking(move || {
         // Decoding happens outside the lock so stashing is never held up by it.
@@ -192,9 +194,10 @@ async fn read_image(app: AppHandle, id: String, original: bool) -> Result<Respon
 async fn export_image(id: String, path: PathBuf, app: AppHandle) -> Result<()> {
     with_store(app, move |store| store.export_image(&id, &path)).await
 }
+/// Never fails because of cleanup; the text says what could not be cleaned.
 #[tauri::command]
-async fn close_document(app: AppHandle) -> Result<()> {
-    with_store(app, |store| store.close()).await
+async fn close_document(app: AppHandle) -> Result<Option<String>> {
+    with_store(app, |store| Ok(store.close())).await
 }
 
 pub fn run() {

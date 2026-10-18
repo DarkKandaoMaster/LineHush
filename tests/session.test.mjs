@@ -22,12 +22,16 @@ function setup({
     savePath: null,
     openPath: null,
     failSave: false,
+    failClose: false,
+    /** Rust's warning after a switch, e.g. the previous file could not be cleaned. */
+    switchNotice: null,
   };
   mockIPC(async (cmd, args) => {
     fake.calls.push(cmd);
     if (cmd === "restore")
       return { document: fromText("旧日记\n\n"), path, recovered, notice };
     if (cmd === "save_document" && fake.failSave) throw Error("测试写入失败");
+    if (cmd === "close_document" && fake.failClose) throw "测试清理失败";
     if (cmd === "plugin:dialog|save") return fake.savePath;
     if (cmd === "plugin:dialog|open") return fake.openPath;
     if (cmd === "take_open_request") {
@@ -42,6 +46,7 @@ function setup({
         document: fromText(cmd === "new_document" ? "" : "打开的内容"),
         path: cmd === "new_document" ? null : args.path,
         recovered: false,
+        notice: fake.switchNotice,
       };
   });
   mockWindows("main");
@@ -153,7 +158,7 @@ test("保存写入当前文件并清除未保存标记，失败时保留标记",
     await session.saveDocument();
     assert.equal(state().dirty, true);
     assert.equal(state().status, "保存失败");
-    assert.match(state().error, /测试写入失败/);
+    assert.match(state().error, /^保存失败：.*测试写入失败/);
     fake.failSave = false;
     await session.saveDocument();
     assert.equal(state().dirty, false);
@@ -245,7 +250,7 @@ test("恢复的未命名草稿经另存为保存后清除恢复提示", async ()
 
 test("原文件无法打开时恢复为未命名文档：显示 Rust 的提示，保存后清除", async () => {
   const notice =
-    "原文件无法打开，未保存的修改已作为未命名文档恢复。无法打开 D:/搬走.hush：unable to open database file";
+    "原文件无法打开，未保存的修改已作为未命名文档恢复。无法打开 D:/搬走.hush：文件不存在（系统找不到指定的文件。 (os error 2)）";
   const { session, fake, state } = setup({ path: null, recovered: true, notice });
   try {
     await session.initialize();
@@ -418,7 +423,7 @@ test("关闭前询问：取消保留窗口，保存失败保留窗口，不保�
 
     fake.failSave = true;
     await session.close();
-    assert.match(state().error, /^未关闭窗口：.*测试写入失败/);
+    assert.match(state().error, /^保存失败：.*测试写入失败，窗口未关闭。$/);
     assert.equal(state().status, "保存失败");
     assert.ok(!fake.calls.includes("close_document"));
 
@@ -429,6 +434,54 @@ test("关闭前询问：取消保留窗口，保存失败保留窗口，不保�
       "plugin:window|destroy",
     ]);
     assert.equal(fake.calls.filter((cmd) => cmd === "save_document").length, 1);
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("关闭时清理失败也照常关闭窗口，不显示错误", async () => {
+  const { session, fake, state } = setup({ answers: ["discard"] });
+  try {
+    await session.initialize();
+    session.update(fromText("不要了"));
+    fake.failClose = true;
+    await session.close();
+    assert.deepEqual(fake.calls.slice(-2), [
+      "close_document",
+      "plugin:window|destroy",
+    ]);
+    assert.equal(state().error, "");
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("切换文档时显示上一个文件未能清理的提示，保存后仍保留，下次切换清除", async () => {
+  const warning = "上一个文件的未引用图片未能清理：读写失败（disk I/O error）";
+  const { session, fake, state } = setup();
+  try {
+    await session.initialize();
+    fake.switchNotice = warning;
+    await session.newDocument();
+    assert.equal(state().path, null);
+    assert.equal(state().error, "");
+    assert.equal(state().notice, warning);
+    assert.equal(state().dirty, false);
+    assert.equal(state().status, "准备就绪");
+    session.update(fromText("新内容"));
+    fake.savePath = "D:/新.hush";
+    await session.saveDocument();
+    assert.equal(state().notice, warning);
+    fake.switchNotice = null;
+    fake.openPath = "D:/甲.hush";
+    await session.openDocument();
+    assert.equal(state().path, "D:/甲.hush");
+    assert.equal(state().notice, "");
+    fake.switchNotice = warning;
+    fake.request = "D:/乙.hush";
+    await session.openRequested();
+    assert.equal(state().path, "D:/乙.hush");
+    assert.equal(state().notice, warning);
   } finally {
     await teardown(session);
   }

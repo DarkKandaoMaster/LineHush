@@ -8,7 +8,11 @@ export interface Opened {
   document: Diary;
   path: string | null;
   recovered: boolean;
-  /** Replaces the plain "recovered" notice, e.g. when the recorded file could not be reopened. */
+  /**
+   * With `recovered`: replaces the plain "recovered" notice, e.g. when the recorded
+   * file could not be reopened. Otherwise a warning, e.g. that the previous file's
+   * unreferenced images could not be cleaned up.
+   */
   notice: string | null;
 }
 
@@ -41,8 +45,11 @@ export const importImage = (bytes: ArrayBuffer) =>
 /** Writes the original bytes of an image unchanged to `path`. */
 export const exportImage = (id: string, path: string) =>
   invoke<void>("export_image", { id, path });
-/** Discards unsaved changes and drops unreferenced images; called right before the window closes. */
-export const closeDocument = () => invoke<void>("close_document");
+/**
+ * Discards unsaved changes and drops unreferenced images; called right before the
+ * window closes. Best effort: cleanup failures come back as text, not as an error.
+ */
+export const closeDocument = () => invoke<string | null>("close_document");
 
 /** Reads a thumbnail (or the original) into a Blob URL the caller must revoke. */
 export async function imageUrl(

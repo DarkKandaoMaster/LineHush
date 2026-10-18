@@ -6,7 +6,8 @@
 //! while there are unsaved changes) and the images imported since the last
 //! save. For an unnamed document the working copy is the whole draft.
 use crate::db::Db;
-use crate::fsx::ensure_extension;
+use crate::errors::describe;
+use crate::fsx::{ensure_extension, shown};
 use crate::model::{Diary, ExportImage, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -34,7 +35,8 @@ pub struct Opened {
     pub path: Option<PathBuf>,
     /// The document has unsaved changes recovered from the working copy.
     pub recovered: bool,
-    /// Shown to the user instead of the plain "recovered" notice.
+    /// Shown to the user: instead of the plain "recovered" notice, or after a
+    /// switch whose best-effort cleanup of the previous file failed.
     pub notice: Option<String>,
 }
 pub struct Store {
@@ -51,7 +53,8 @@ pub struct Store {
 type Thumbnail = Arc<OnceLock<Result<Vec<u8>>>>;
 impl Store {
     pub fn new(root: PathBuf) -> Result<Self> {
-        fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&root)
+            .map_err(|e| format!("无法创建数据文件夹 {}：{}", shown(&root), describe(e)))?;
         Ok(Self {
             root,
             file: None,
@@ -83,7 +86,8 @@ impl Store {
             path: self.file.as_ref().map(|(path, _)| path.clone()),
         })
         .map_err(|e| e.to_string())?;
-        fs::write(self.root.join(RECOVERY_FILE), bytes).map_err(|e| e.to_string())
+        fs::write(self.root.join(RECOVERY_FILE), bytes)
+            .map_err(|e| format!("无法记录当前打开的文件：{}", describe(e)))
     }
     /// Discards the working copy: no stashed body, no pending images.
     fn reset_work(&mut self) -> Result<()> {
@@ -108,13 +112,16 @@ impl Store {
     }
     /// Leaves the current file, dropping the images its saved body no longer
     /// references. The working copy is reset by whatever comes next.
-    fn leave(&mut self) -> Result<()> {
-        if let Some((_, db)) = &self.file {
-            db.collect_garbage()?;
-        }
+    /// The cleanup is best effort: a file that is gone or damaged is still left,
+    /// and the returned text says why its images stay.
+    fn leave(&mut self) -> Option<String> {
+        let warning = match &self.file {
+            Some((_, db)) => db.collect_garbage().err(),
+            None => None,
+        };
         self.file = None;
         self.thumbnails.clear();
-        Ok(())
+        warning.map(|e| format!("上一个文件的未引用图片未能清理：{e}"))
     }
     fn start_draft(&mut self) -> Result<()> {
         self.file = None;
@@ -157,22 +164,28 @@ impl Store {
         Ok(self.opened(document, recovered))
     }
     pub fn new_document(&mut self) -> Result<Opened> {
-        self.leave()?;
+        let notice = self.leave();
         self.start_draft()?;
-        Ok(self.opened(Diary::empty(), false))
+        Ok(Opened {
+            notice,
+            ..self.opened(Diary::empty(), false)
+        })
     }
     pub fn open(&mut self, path: &Path) -> Result<Opened> {
-        let path =
-            fs::canonicalize(path).map_err(|e| format!("无法打开 {}：{e}", path.display()))?;
+        let path = fs::canonicalize(path)
+            .map_err(|e| format!("无法打开 {}：{}", shown(path), describe(e)))?;
         // Read the new file first so a failed open leaves the current one in use.
         let (db, document) = Db::open(&path)?;
-        self.leave()?;
+        let notice = self.leave();
         // Reset before the checkpoint, so a crash in between never pairs the old
         // document's unsaved changes with the new file.
         self.reset_work()?;
         self.file = Some((path, db));
         self.checkpoint()?;
-        Ok(self.opened(document, false))
+        Ok(Opened {
+            notice,
+            ..self.opened(document, false)
+        })
     }
     /// Keeps the body in the working copy only; the user's file is not touched.
     pub fn stash(&self, doc: &Diary) -> Result<()> {
@@ -187,8 +200,9 @@ impl Store {
     }
     pub fn save_as(&mut self, path: &Path, doc: &Diary) -> Result<Opened> {
         let path = ensure_extension(path, EXTENSION);
-        let directory =
-            fs::canonicalize(path.parent().ok_or("保存路径无效")?).map_err(|e| e.to_string())?;
+        let parent = path.parent().ok_or("保存路径无效")?;
+        let directory = fs::canonicalize(parent)
+            .map_err(|e| format!("无法访问 {}：{}", shown(parent), describe(e)))?;
         let path = directory.join(path.file_name().ok_or("文件名无效")?);
         let path = fs::canonicalize(&path).unwrap_or(path);
         if self.file.as_ref().is_some_and(|(open, _)| *open == path) {
@@ -210,11 +224,25 @@ impl Store {
     }
     /// Called when the window closes, after the user saved or chose to discard:
     /// drops the unsaved changes and the images the saved body no longer uses.
-    pub fn close(&mut self) -> Result<()> {
-        if let Some((_, db)) = &self.file {
-            db.collect_garbage()?;
-        }
-        self.reset_work()
+    /// Both are best effort and never keep the window open; the returned text
+    /// says what failed. A working copy that could not be discarded comes back
+    /// as recovered changes on the next launch.
+    pub fn close(&mut self) -> Option<String> {
+        // The file stays open: recovery.json keeps pointing at it for the next launch.
+        let garbage = match &self.file {
+            Some((_, db)) => db.collect_garbage().err(),
+            None => None,
+        };
+        let warnings: Vec<String> = [
+            garbage.map(|e| format!("未引用图片未能清理：{e}")),
+            self.reset_work()
+                .err()
+                .map(|e| format!("未保存的修改未能丢弃：{e}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!warnings.is_empty()).then(|| warnings.join("；"))
     }
     /// Stores an original in the working copy (once per distinct content) and
     /// caches its thumbnail.
@@ -259,7 +287,8 @@ impl Store {
     }
     /// Writes an original byte-for-byte.
     pub fn export_image(&self, id: &str, path: &Path) -> Result<()> {
-        fs::write(path, self.image(id)?).map_err(|e| format!("无法保存图片：{e}"))
+        fs::write(path, self.image(id)?)
+            .map_err(|e| format!("无法写入 {}：{}", shown(path), describe(e)))
     }
     /// Writes `content` to `path` and each listed original to `附件/<file>` beside it,
     /// skipping files that already exist.
@@ -269,7 +298,8 @@ impl Store {
                 .parent()
                 .ok_or("导出路径无效")?
                 .join(EXPORT_ATTACHMENTS);
-            fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+            fs::create_dir_all(&folder)
+                .map_err(|e| format!("无法创建 {}：{}", shown(&folder), describe(e)))?;
             for image in images {
                 let out = folder.join(&image.file);
                 if !out.exists() {
@@ -277,12 +307,14 @@ impl Store {
                 }
             }
         }
-        fs::write(path, content).map_err(|e| format!("无法导出：{e}"))
+        fs::write(path, content).map_err(|e| format!("无法写入 {}：{}", shown(path), describe(e)))
     }
 }
 fn remove_if_exists(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("无法清空 {}：{}", shown(path), describe(e)))
+        }
         _ => Ok(()),
     }
 }

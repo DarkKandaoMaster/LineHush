@@ -34,7 +34,7 @@ export function useImagePreview(session: Session) {
       } catch (e) {
         if (version !== current.version) return;
         close();
-        session.setError(String(e));
+        session.setError(`无法读取原图：${e}`);
       }
     },
     [close, session],
@@ -51,7 +51,7 @@ export function useImagePreview(session: Session) {
       await exportImage(picture.id, target);
       session.setNotice("已保存原图。");
     } catch (e) {
-      session.setError(String(e));
+      session.setError(`保存原图失败：${e}`);
     }
   }, [picture, session]);
   return {

@@ -135,7 +135,8 @@ export function createSession(
         : result.path
           ? "已保存"
           : "准备就绪",
-      notice: recoveryNotice,
+      // Otherwise Rust's notice is a warning, e.g. the previous file could not be cleaned.
+      notice: result.recovered ? recoveryNotice : (result.notice ?? ""),
     });
   }
   function initialize() {
@@ -151,14 +152,17 @@ export function createSession(
       set({ ready: true });
     }
   }
-  /** File operations are desktop-only and never overlap. */
-  async function guarded(action: () => Promise<void>, failure = "") {
+  /** File operations are desktop-only and never overlap. `failure` words the error banner. */
+  async function guarded(
+    action: () => Promise<void>,
+    failure: (e: unknown) => string = String,
+  ) {
     if (state.busy || !desktop) return;
     set({ busy: true });
     try {
       await action();
     } catch (e) {
-      set({ error: `${failure}${e}` });
+      set({ error: failure(e) });
     } finally {
       set({ busy: false });
       void openPending();
@@ -185,7 +189,7 @@ export function createSession(
       else await native.saveDocument(saved);
     } catch (e) {
       set({ status: "保存失败" });
-      throw e;
+      throw `保存失败：${e}`;
     }
     queue = makeQueue();
     stashFailed = false;
@@ -245,15 +249,22 @@ export function createSession(
           : native.exportDocument(target, toText(doc), []));
         set({ notice: "已导出。" });
       }
-    });
+    }, (e) => `导出失败：${e}`);
   }
-  /** Asks about unsaved changes, lets Rust drop the working copy and unreferenced images, then closes; a failure keeps the window. */
+  /**
+   * Asks about unsaved changes, lets Rust drop the working copy and unreferenced
+   * images, then closes. That cleanup is best effort and never keeps the window;
+   * only a failed save (or a failed close) does.
+   */
   function close() {
-    return guarded(async () => {
-      if (!(await resolveUnsaved())) return;
-      await native.closeDocument();
-      await getCurrentWindow().destroy();
-    }, "未关闭窗口：");
+    return guarded(
+      async () => {
+        if (!(await resolveUnsaved())) return;
+        await native.closeDocument().catch(() => {});
+        await getCurrentWindow().destroy();
+      },
+      (e) => `${e}，窗口未关闭。`,
+    );
   }
   /**
    * Takes the file Rust holds for us (passed at launch, or double-clicked while

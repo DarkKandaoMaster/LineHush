@@ -21,8 +21,10 @@ export function useImageImport(
       if (!insertion) return;
       session.setImporting(true);
       const images: Picture[] = [];
+      let current = "";
       try {
         for (const file of files) {
+          current = file.name;
           session.setNotice(
             `正在处理图片 ${images.length + 1} / ${files.length}…`,
           );
@@ -30,7 +32,10 @@ export function useImageImport(
           images.push({ ...pic, name: file.name });
         }
       } catch (e) {
-        session.setError(String(e));
+        // Rust says why (format, damage, size); the name says which file.
+        session.setError(
+          current ? `无法插入图片“${current}”：${e}` : `无法插入图片：${e}`,
+        );
       } finally {
         // Unlock first so a throwing insertion cannot leave the lock held.
         session.setImporting(false);

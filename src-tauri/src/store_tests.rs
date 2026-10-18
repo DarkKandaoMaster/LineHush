@@ -281,7 +281,7 @@ fn close_discards_unsaved_changes_and_drops_unreferenced_images() {
     store
         .save(&with_pictures("", &[&big_pic, &kept_pic]))
         .unwrap();
-    store.close().unwrap();
+    assert_eq!(store.close(), None);
     let full = fs::metadata(&file).unwrap().len();
     assert!(full > big.len() as u64);
     let saved = with_pictures("", &[&kept_pic]);
@@ -292,7 +292,7 @@ fn close_discards_unsaved_changes_and_drops_unreferenced_images() {
     store
         .stash(&with_pictures("没保存", &[&kept_pic, &extra_pic]))
         .unwrap();
-    store.close().unwrap();
+    assert_eq!(store.close(), None);
     assert_eq!(reopen(&file), saved);
     let small = fs::metadata(&file).unwrap().len();
     assert!(small + big.len() as u64 / 2 < full, "{small} vs {full}");
@@ -579,5 +579,161 @@ fn export_writes_content_and_listed_originals() {
     assert_eq!(fs::read_to_string(root.join("diary.txt")).unwrap(), "文本");
     assert!(!root.join("附件").exists());
     drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+/// Damages the saved body behind the back of an open session.
+fn damage_body(file: &Path) {
+    Connection::open(file)
+        .unwrap()
+        .execute("UPDATE doc SET body = 'x'", [])
+        .unwrap();
+}
+#[test]
+fn close_succeeds_when_the_file_cannot_be_cleaned() {
+    let root = temp();
+    let file = root.join("损坏.hush");
+    let mut store = session(&root);
+    store.save_as(&file, &diary("")).unwrap();
+    let pic = import(&mut store, &photo(13, 64));
+    store.save(&with_pictures("", &[&pic])).unwrap();
+    store.stash(&diary("不保存")).unwrap();
+    damage_body(&file);
+    let warning = store.close().unwrap();
+    assert!(warning.starts_with("未引用图片未能清理："), "{warning}");
+    // The unsaved changes are still discarded.
+    assert_eq!(rows(&working(&root), "doc"), 0);
+    assert_eq!(rows(&file, "images"), 1);
+
+    // The whole file replaced by garbage, as a failing drive might leave it.
+    drop(store);
+    fs::remove_dir_all(&root).unwrap();
+    let root = temp();
+    let other = root.join("乱码.hush");
+    let mut store = session(&root);
+    store.save_as(&other, &diary("")).unwrap();
+    store.stash(&diary("不保存")).unwrap();
+    fs::write(&other, vec![0x5a; 8192]).unwrap();
+    let warning = store.close().unwrap();
+    assert!(
+        warning.contains("不是有效的 .hush 文件或文件已损坏"),
+        "{warning}"
+    );
+    assert_eq!(rows(&working(&root), "doc"), 0);
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+#[cfg(windows)]
+#[test]
+fn close_succeeds_when_the_working_copy_cannot_be_discarded() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = temp();
+    let mut store = session(&root);
+    store.save_as(&root.join("a.hush"), &diary("")).unwrap();
+    store.stash(&diary("不保存")).unwrap();
+    // Another program holding working.hush without delete sharing blocks its removal.
+    const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+    let holder = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ_WRITE)
+        .open(working(&root))
+        .unwrap();
+    let warning = store.close().unwrap();
+    assert!(warning.starts_with("未保存的修改未能丢弃："), "{warning}");
+    drop(holder);
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn switching_away_from_a_damaged_file_succeeds_with_a_notice() {
+    let root = temp();
+    let a = root.join("a.hush");
+    let b = root.join("b.hush");
+    let mut store = session(&root);
+    store.save_as(&b, &diary("b")).unwrap();
+    // A clean switch has nothing to report.
+    store.save_as(&a, &diary("a")).unwrap();
+    assert_eq!(store.open(&b).unwrap().notice, None);
+    assert_eq!(store.new_document().unwrap().notice, None);
+
+    store.open(&a).unwrap();
+    store.stash(&diary("不保存")).unwrap();
+    damage_body(&a);
+    let opened = store.new_document().unwrap();
+    let notice = opened.notice.unwrap();
+    assert!(
+        notice.starts_with("上一个文件的未引用图片未能清理："),
+        "{notice}"
+    );
+    assert!(opened.path.is_none() && !opened.recovered);
+    assert_eq!(rows(&working(&root), "doc"), 0);
+
+    // Opening another file works the same way.
+    let c = root.join("c.hush");
+    store.save_as(&c, &diary("c")).unwrap();
+    damage_body(&c);
+    let opened = store.open(&b).unwrap();
+    assert!(opened
+        .notice
+        .unwrap()
+        .starts_with("上一个文件的未引用图片未能清理："));
+    assert_eq!(opened.document, diary("b"));
+    assert!(opened.path.unwrap().ends_with("b.hush"));
+    drop(store);
+    let opened = Store::new(root.join("app")).unwrap().restore().unwrap();
+    assert!(opened.path.unwrap().ends_with("b.hush") && !opened.recovered);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn errors_name_the_cause_in_chinese() {
+    let root = temp();
+    let mut store = session(&root);
+    let missing = store.open(&root.join("缺失.hush")).err().unwrap();
+    assert!(
+        missing.starts_with("无法打开 ") && missing.contains("：文件不存在（"),
+        "{missing}"
+    );
+    let text = root.join("文本.hush");
+    fs::write(
+        &text,
+        "这不是 SQLite 文件，长度也足够填满文件头需要的一百个字节以上。这不是 SQLite 文件。",
+    )
+    .unwrap();
+    let error = store.open(&text).err().unwrap();
+    assert!(
+        error.contains("：不是有效的 .hush 文件或文件已损坏"),
+        "{error}"
+    );
+    // The canonical path is shown without its `\\?\` prefix.
+    assert!(
+        error.starts_with("无法打开 ") && !error.contains(r"\?\"),
+        "{error}"
+    );
+    // A SQLite file of some other program.
+    let foreign = root.join("别的.hush");
+    Connection::open(&foreign)
+        .unwrap()
+        .execute_batch("CREATE TABLE notes (x)")
+        .unwrap();
+    let error = store.open(&foreign).err().unwrap();
+    assert!(
+        error.ends_with("：不是有效的 .hush 文件或文件已损坏"),
+        "{error}"
+    );
+
+    // Saving to a file that became read-only.
+    let file = root.join("只读.hush");
+    store.save_as(&file, &diary("")).unwrap();
+    drop(store);
+    let mut permissions = fs::metadata(&file).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&file, permissions.clone()).unwrap();
+    let mut store = Store::new(root.join("app")).unwrap();
+    store.restore().unwrap();
+    let error = store.save(&diary("改")).unwrap_err();
+    assert!(error.starts_with("没有写入权限或文件无法访问（"), "{error}");
+    drop(store);
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    fs::set_permissions(&file, permissions).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
