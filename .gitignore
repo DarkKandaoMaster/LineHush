@@ -23,9 +23,11 @@ dist-ssr
 *.sln
 *.sw?
 
+.claude
+docs
 笔记.txt
-test-results/
-playwright-report/
+test-results
+playwright-report
 AGENTS.md
-_待删除/
+_待删除
 *.tsbuildinfo
