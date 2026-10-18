@@ -1,4 +1,4 @@
-import type { MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { Session } from "../core/session";
 
 interface Props {
@@ -18,6 +18,31 @@ const keepFocus = (event: MouseEvent) => event.preventDefault();
 
 export default function Toolbar(props: Props) {
   const { session, fileDisabled, busy } = props;
+  const exportMenu = useRef<HTMLDetailsElement>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  // An open export menu closes on a press outside it or on Esc.
+  useEffect(() => {
+    if (!exportOpen) return;
+    const close = () => {
+      if (exportMenu.current) exportMenu.current.open = false;
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!exportMenu.current?.contains(event.target as Node)) close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [exportOpen]);
+  const exportAs = (format: "txt" | "html") => {
+    if (exportMenu.current) exportMenu.current.open = false;
+    void session.exportDocument(format);
+  };
   return (
     <header className="toolbar" aria-label="文件和编辑操作">
       <button
@@ -56,18 +81,22 @@ export default function Toolbar(props: Props) {
       >
         插入图片
       </button>
-      <details className="export-menu">
+      <details
+        className="export-menu"
+        ref={exportMenu}
+        onToggle={(event) => setExportOpen(event.currentTarget.open)}
+      >
         <summary>导出</summary>
         <div className="menu-items">
           <button
             disabled={fileDisabled}
-            onClick={() => void session.exportDocument("txt")}
+            onClick={() => exportAs("txt")}
           >
             纯文本 (.txt)
           </button>
           <button
             disabled={fileDisabled}
-            onClick={() => void session.exportDocument("html")}
+            onClick={() => exportAs("html")}
           >
             图文网页 (.html)
           </button>
