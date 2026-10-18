@@ -3,6 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
+  copyFile,
   mkdir,
   readFile,
   readdir,
@@ -17,14 +18,20 @@ const appData = path.join(root, "app");
 const working = path.join(appData, "working.hush");
 await mkdir(root, { recursive: true });
 const profile = process.argv.includes("--release") ? "release" : "debug";
-const exe = path.resolve(`src-tauri/target/${profile}/linehush.exe`);
+const exe = path.resolve(`src-tauri/target/${profile}/LineHush.exe`);
 const errors = [];
 const checks = [];
 const passed = (name) => checks.push(name);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let processHandle, browser;
 const cdp = "http://127.0.0.1:9223";
-async function start() {
+const appEnv = {
+  ...process.env,
+  LINEHUSH_TEST_DATA_DIR: appData,
+  WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--remote-debugging-port=9223",
+};
+/** Launches the app (with `args`, run from `cwd`) and waits for its editor. */
+async function start(args = [], cwd = undefined) {
   // A killed instance may still be releasing the debugging port.
   for (let i = 0; i < 40; i++) {
     try {
@@ -34,14 +41,7 @@ async function start() {
       break;
     }
   }
-  processHandle = spawn(exe, [], {
-    windowsHide: true,
-    env: {
-      ...process.env,
-      LINEHUSH_TEST_DATA_DIR: appData,
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--remote-debugging-port=9223",
-    },
-  });
+  processHandle = spawn(exe, args, { windowsHide: true, cwd, env: appEnv });
   for (let i = 0; i < 60; i++) {
     try {
       browser = await chromium.connectOverCDP(cdp);
@@ -67,6 +67,25 @@ async function exited() {
   await browser?.close().catch(() => {});
   browser = undefined;
 }
+/**
+ * Launches a second instance, the way a double-click does, and resolves with its
+ * exit code: it should hand `args` to the running instance and quit at once.
+ */
+const launchSecond = (args, cwd) =>
+  new Promise((resolve, reject) => {
+    const second = spawn(exe, args, { windowsHide: true, cwd, env: appEnv });
+    const timer = setTimeout(() => {
+      second.kill();
+      reject(Error("第二个进程没有退出"));
+    }, 15000);
+    second.once("error", reject);
+    second.once("exit", (code) => {
+      clearTimeout(timer);
+      resolve(code);
+    });
+  });
+const windowTitle = (page) =>
+  call(page, "plugin:window|title", { label: "main" });
 /** Closes a window without unsaved changes; no question is asked. */
 async function stop(page) {
   await requestClose(page);
@@ -459,6 +478,9 @@ try {
   await page.keyboard.press("Control+s");
   await page.keyboard.press("Escape");
   await expect(prompt()).toBeHidden();
+  // The dialog's close event, which ends the first close attempt, fires a task
+  // after it is hidden; closing again before that only shows "操作仍在进行".
+  await sleep(300);
   await requestClose(page);
   await expect(prompt()).toBeVisible();
   await prompt().getByRole("button", { name: "取消", exact: true }).click();
@@ -620,6 +642,78 @@ try {
   ).toEqual({ path: null });
   expect(await fingerprint(moved)).toEqual(movedFile);
   passed("原文件丢失恢复");
+
+  // --- Second launch with a file (double-click): the running window opens it ---
+  // The running document has unsaved changes, so it asks first; 不保存 opens the file.
+  expect(processHandle.exitCode).toBeNull();
+  const firstPid = processHandle.pid;
+  expect(await launchSecond([moved])).toBe(0);
+  const draftPrompt = page.getByRole("dialog", {
+    name: "是否保存对“未命名”的更改？",
+  });
+  await expect(draftPrompt).toBeVisible();
+  await draftPrompt.getByRole("button", { name: "不保存", exact: true }).click();
+  await expect.poll(() => windowTitle(page)).toBe("搬走.hush — LineHush");
+  await expect(status("已保存")).toBeVisible();
+  await expect(editor.getByText("搬走前输入")).toHaveCount(0);
+  expect(processHandle.pid).toBe(firstPid);
+  expect(processHandle.exitCode).toBeNull();
+  // The same file again, relative and from another folder: nothing reopens.
+  await editor.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.insertText("再次双击前输入");
+  await expect(status("尚未保存")).toBeVisible();
+  expect(await launchSecond(["搬走.hush"], root)).toBe(0);
+  await sleep(1000);
+  await expect(draftPrompt).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(editor.getByText("再次双击前输入")).toBeVisible();
+  expect(await windowTitle(page)).toBe("● 搬走.hush — LineHush");
+  // No argument: the window only comes to the front.
+  expect(await launchSecond([])).toBe(0);
+  await sleep(500);
+  await expect(editor.getByText("再次双击前输入")).toBeVisible();
+  expect(processHandle.exitCode).toBeNull();
+  passed("第二实例转发");
+  await kill();
+
+  // --- First launch with a file: it wins over recovery.json when nothing is unsaved ---
+  // The kill left unsaved text for 搬走.hush; save it via a fresh start, then quit.
+  page = await start();
+  editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect(page.getByText("已恢复未保存的修改。")).toBeVisible();
+  await editor.click();
+  await page.keyboard.press("Control+s");
+  await expect(status("已保存")).toBeVisible();
+  await stop(page);
+  const copy = path.join(root, "副本.hush");
+  await copyFile(moved, copy);
+  page = await start(["副本.hush"], root);
+  editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect.poll(() => windowTitle(page)).toBe("副本.hush — LineHush");
+  await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
+  expect(
+    JSON.parse(await readFile(path.join(appData, "recovery.json"), "utf8"))
+      .path,
+  ).toMatch(/副本\.hush$/);
+  // With unsaved changes left by a crash, those come back first and are asked about.
+  await editor.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("副本未保存");
+  await stashed((doc) => doc.blocks.some((b) => b.text === "副本未保存"));
+  await kill();
+  page = await start([moved]);
+  editor = page.getByRole("textbox", { name: "日记正文" });
+  const copyPrompt = page.getByRole("dialog", {
+    name: "是否保存对“副本.hush”的更改？",
+  });
+  await expect(copyPrompt).toBeVisible();
+  await expect(page.getByText("已恢复未保存的修改。")).toBeVisible();
+  await copyPrompt.getByRole("button", { name: "不保存", exact: true }).click();
+  await expect.poll(() => windowTitle(page)).toBe("搬走.hush — LineHush");
+  expect(stash()).toBeNull();
+  passed("启动参数打开文件");
   await kill();
   expect(errors).toEqual([]);
   console.log(

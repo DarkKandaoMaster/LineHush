@@ -1,9 +1,12 @@
 import { useEffect, type RefObject } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { OPEN_REQUESTED } from "../core/native";
 import type { Session } from "../core/session";
 
 /**
- * Starts the session, then registers Ctrl+N/O/S(+Shift) and the close guard.
+ * Starts the session, then registers Ctrl+N/O/S(+Shift), the close guard and
+ * the "open this file" requests from Rust (double-click, second launch).
  * Registration waits for initialize(); `active` makes the StrictMode
  * mount → unmount → mount cycle register each listener exactly once.
  */
@@ -15,6 +18,7 @@ export function useWindowGuards(
   useEffect(() => {
     let active = true;
     let removeClose: (() => void) | undefined;
+    let removeOpen: (() => void) | undefined;
     function keydown(event: KeyboardEvent) {
       if (
         event.isComposing ||
@@ -54,11 +58,24 @@ export function useWindowGuards(
       } catch (e) {
         if (active) session.setError(`无法启用关闭保护：${e}`);
       }
+      // Files double-clicked while running; then the one LineHush was launched
+      // with, if restore left it for after the unsaved-changes question.
+      try {
+        const unlisten = await listen(OPEN_REQUESTED, () => {
+          void session.openRequested();
+        });
+        if (active) removeOpen = unlisten;
+        else unlisten();
+      } catch (e) {
+        if (active) session.setError(`无法接收要打开的文件：${e}`);
+      }
+      if (active) void session.openRequested();
     });
     return () => {
       active = false;
       window.removeEventListener("keydown", keydown);
       removeClose?.();
+      removeOpen?.();
     };
   }, [desktop, session, preview]);
 }

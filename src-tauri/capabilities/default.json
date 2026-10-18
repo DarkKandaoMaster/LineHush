@@ -8,6 +8,7 @@
     "core:window:allow-set-title",
     "core:window:allow-destroy",
     "core:window:allow-close",
-    "dialog:default"
+    "dialog:default",
+    "window-state:default"
   ]
 }

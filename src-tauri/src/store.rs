@@ -59,6 +59,10 @@ impl Store {
             thumbnails: HashMap::new(),
         })
     }
+    /// The open `.hush` file (canonical); `None` for the draft.
+    pub fn path(&self) -> Option<&Path> {
+        self.file.as_ref().map(|(path, _)| path.as_path())
+    }
     fn work(&self) -> Result<&Db> {
         self.work.as_ref().ok_or_else(|| "没有打开的日记".into())
     }

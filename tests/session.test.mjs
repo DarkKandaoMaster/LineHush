@@ -30,6 +30,11 @@ function setup({
     if (cmd === "save_document" && fake.failSave) throw Error("测试写入失败");
     if (cmd === "plugin:dialog|save") return fake.savePath;
     if (cmd === "plugin:dialog|open") return fake.openPath;
+    if (cmd === "take_open_request") {
+      const request = fake.request ?? null;
+      fake.request = null;
+      return request;
+    }
     if (cmd === "save_as")
       return { document: args.document, path: args.path, recovered: false };
     if (cmd === "new_document" || cmd === "open_document")
@@ -80,6 +85,62 @@ test("会话初始化只恢复一次，订阅快照稳定，暂存不清除未�
     assert.ok(notifications > 0);
   } finally {
     await teardown(session);
+  }
+});
+
+test("改回已保存的内容时清除未保存标记，暂存照常进行", async () => {
+  const { session, fake, state } = setup();
+  try {
+    await session.initialize();
+    session.update(fromText("改过"));
+    assert.equal(state().dirty, true);
+    assert.equal(state().status, "尚未保存");
+    session.update(fromText("旧日记\n\n"));
+    assert.equal(state().dirty, false);
+    assert.equal(state().status, "已保存");
+    await session.flush();
+    assert.deepEqual(fileCommands(fake), ["restore", "stash_document"]);
+
+    session.update(fromText("保存的内容"));
+    await session.saveDocument();
+    assert.equal(state().dirty, false);
+    session.update(fromText("另一内容"));
+    assert.equal(state().dirty, true);
+    session.update(fromText("保存的内容"));
+    assert.equal(state().dirty, false);
+    assert.equal(state().status, "已保存");
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("未命名新文档改回空文档时显示准备就绪，恢复的修改改回也仍为未保存", async () => {
+  {
+    const { session, state } = setup({ path: null });
+    try {
+      await session.initialize();
+      await session.newDocument();
+      session.update(fromText("草稿"));
+      assert.equal(state().dirty, true);
+      session.update(fromText(""));
+      assert.equal(state().dirty, false);
+      assert.equal(state().status, "准备就绪");
+    } finally {
+      await teardown(session);
+    }
+  }
+  {
+    // The saved content behind recovered changes is unknown.
+    const { session, state } = setup({ recovered: true });
+    try {
+      await session.initialize();
+      session.update(fromText("改过"));
+      session.update(fromText("旧日记\n\n"));
+      assert.equal(state().dirty, true);
+      assert.equal(state().status, "尚未保存");
+    } finally {
+      await teardown(session);
+    }
   }
 });
 
@@ -308,6 +369,38 @@ test("打开前询问：不保存后选文件打开，保存则先写当前文�
       "plugin:dialog|open",
       "open_document",
     ]);
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("外部请求打开文件：先询问未保存修改，忙碌时等操作结束再打开，取消则不打开", async () => {
+  const { session, fake, state } = setup({ answers: ["cancel", "discard"] });
+  try {
+    await session.initialize();
+    // Nothing waiting: no file dialog, no open.
+    await session.openRequested();
+    assert.ok(!fake.calls.includes("open_document"));
+
+    session.update(fromText("改过"));
+    fake.request = "D:/甲.hush";
+    await session.openRequested();
+    assert.deepEqual(fake.asked, ["测试.hush"]);
+    assert.equal(state().path, "D:/测试.hush");
+    assert.ok(!fake.calls.includes("open_document"));
+
+    // A request during an import waits for it; 不保存 then opens without a file dialog.
+    session.setImporting(true);
+    fake.request = "D:/乙.hush";
+    await session.openRequested();
+    assert.equal(fake.asked.length, 1);
+    session.setImporting(false);
+    for (let i = 0; i < 50 && state().path !== "D:/乙.hush"; i++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(fake.asked.length, 2);
+    assert.equal(state().path, "D:/乙.hush");
+    assert.equal(state().dirty, false);
+    assert.ok(!fake.calls.includes("plugin:dialog|open"));
   } finally {
     await teardown(session);
   }

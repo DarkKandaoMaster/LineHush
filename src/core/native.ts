@@ -12,7 +12,12 @@ export interface Opened {
   notice: string | null;
 }
 
+/** Resumes the last session, or opens the `.hush` file LineHush was launched with. */
 export const restore = () => invoke<Opened>("restore");
+/** Rust emits this when a file is waiting in `takeOpenRequest` (e.g. double-clicked while running). */
+export const OPEN_REQUESTED = "open-requested";
+/** The `.hush` file the user asked to open from outside the window, handed out once. */
+export const takeOpenRequest = () => invoke<string | null>("take_open_request");
 export const newDocument = () => invoke<Opened>("new_document");
 export const openDocument = (path: string) =>
   invoke<Opened>("open_document", { path });

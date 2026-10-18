@@ -65,6 +65,15 @@ export function createSession(
   let stashFailed = false;
   /** The notice about recovered changes, cleared once they are saved. */
   let recoveryNotice = "";
+  /** A file asked for from outside the window, waiting for the running operation to end. */
+  let requested: string | null = null;
+  /**
+   * JSON of the content in the user's file (or of a fresh untitled document), so
+   * undoing back to it clears `dirty`. Null when unknown: recovered changes.
+   */
+  let savedSnapshot: string | null = JSON.stringify(state.document);
+  /** Status of a document with nothing to save. */
+  const cleanStatus = () => (state.path ? "已保存" : "准备就绪");
   /** Edits go to the crash-recovery working copy; the user's file is left alone. */
   function makeQueue() {
     return new SaveQueue<Diary>(async (snapshot) => {
@@ -81,7 +90,7 @@ export function createSession(
       await queue.flush();
       if (stashFailed) {
         stashFailed = false;
-        set({ error: "", ...(state.dirty ? { status: "尚未保存" } : {}) });
+        set({ error: "", status: state.dirty ? "尚未保存" : cleanStatus() });
       }
     } catch (e) {
       stashFailed = true;
@@ -98,7 +107,12 @@ export function createSession(
   }
   function update(doc: Diary) {
     queue.update(doc);
-    set({ document: doc, dirty: true, status: "尚未保存" });
+    const clean = savedSnapshot !== null && JSON.stringify(doc) === savedSnapshot;
+    set({
+      document: doc,
+      dirty: !clean,
+      status: clean ? cleanStatus() : "尚未保存",
+    });
     clearTimeout(timer);
     timer = setTimeout(() => void flush().catch(() => {}), 650);
   }
@@ -109,6 +123,7 @@ export function createSession(
     recoveryNotice = result.recovered
       ? (result.notice ?? recoveredNotice)
       : "";
+    savedSnapshot = result.recovered ? null : JSON.stringify(result.document);
     set({
       document: result.document,
       path: result.path,
@@ -146,6 +161,7 @@ export function createSession(
       set({ error: `${failure}${e}` });
     } finally {
       set({ busy: false });
+      void openPending();
     }
   }
   /** Writes the user's file; an untitled document (or `dialog`) asks for a target. False if that is cancelled. */
@@ -162,16 +178,18 @@ export function createSession(
       if (!path) return false;
     }
     await settleStash();
+    const saved = state.document;
     try {
       // Save As stays available after a failed write to the current file.
-      if (pick) path = (await native.saveAs(path!, state.document)).path;
-      else await native.saveDocument(state.document);
+      if (pick) path = (await native.saveAs(path!, saved)).path;
+      else await native.saveDocument(saved);
     } catch (e) {
       set({ status: "保存失败" });
       throw e;
     }
     queue = makeQueue();
     stashFailed = false;
+    savedSnapshot = JSON.stringify(saved);
     set({
       path,
       dirty: false,
@@ -237,6 +255,28 @@ export function createSession(
       await getCurrentWindow().destroy();
     }, "未关闭窗口：");
   }
+  /**
+   * Takes the file Rust holds for us (passed at launch, or double-clicked while
+   * running) and opens it like 打开, asking about unsaved changes first.
+   */
+  async function openRequested() {
+    if (!desktop) return;
+    try {
+      requested = (await native.takeOpenRequest()) ?? requested;
+    } catch (e) {
+      set({ error: String(e) });
+    }
+    await openPending();
+  }
+  /** Opens the requested file once no file operation or import is running. */
+  async function openPending() {
+    const path = requested;
+    if (path === null || state.busy || state.importing) return;
+    requested = null;
+    await guarded(async () => {
+      if (await resolveUnsaved()) adopt(await native.openDocument(path));
+    });
+  }
   return {
     getSnapshot: () => state,
     subscribe: (listener: () => void) => {
@@ -247,7 +287,10 @@ export function createSession(
     },
     setError: (error: string) => set({ error }),
     setNotice: (notice: string) => set({ notice }),
-    setImporting: (importing: boolean) => set({ importing }),
+    setImporting: (importing: boolean) => {
+      set({ importing });
+      if (!importing) void openPending();
+    },
     desktop,
     update,
     /** Stashes pending edits to the working copy now instead of after the debounce. */
@@ -255,6 +298,7 @@ export function createSession(
     initialize,
     newDocument,
     openDocument,
+    openRequested,
     /** Saves to the current file, or asks for one if the document is untitled. */
     saveDocument: () => persist(false),
     /** Always asks for a target. */
