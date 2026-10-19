@@ -91,11 +91,24 @@ input:focus-visible {
 .tiptap {
   outline: none;
   min-height: calc(100vh - 72px);
-  padding: 20px 24px 40vh;
-  font:
-    16px/1.6 Consolas,
+  /*
+   * Win11 Notepad (measured 2026-10-19): text starts 16px from the left of the
+   * text area and its first line box 16px below the menu bar. Our 1.6 line
+   * height adds about 2px of half-leading above the glyphs, so the top is 14px
+   * to put the first line's glyphs where Notepad's are. The bottom space lets
+   * the last line scroll up.
+   */
+  padding: 14px 16px 40vh;
+  /* Set from the settings on <html> (src/core/settings.ts); the fallbacks are the defaults. */
+  font-family: var(
+    --editor-font-family,
     "Microsoft YaHei",
-    monospace;
+    "Microsoft YaHei UI",
+    "Segoe UI",
+    sans-serif
+  );
+  font-size: var(--editor-font-size, 14px);
+  line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   tab-size: 4;
@@ -328,9 +341,6 @@ input:focus-visible {
     gap: 12px;
     padding: 4px 8px;
   }
-  .tiptap {
-    padding: 16px 16px 40vh;
-  }
 }
 .unsaved-dialog {
   border: 1px solid #ccc;
@@ -368,4 +378,62 @@ input:focus-visible {
 }
 .dialog-actions button.primary:hover {
   background: #1975c5;
+}
+.settings-dialog {
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 16px 20px;
+  width: min(440px, 94vw);
+  background: #f9f9f9;
+  color: inherit;
+  box-shadow: 0 8px 24px #0002;
+}
+.settings-dialog::backdrop {
+  background: #0003;
+}
+.settings-dialog h2 {
+  margin: 0 0 14px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px 12px;
+  margin-bottom: 18px;
+}
+.settings-dialog input {
+  min-width: 0;
+  height: 28px;
+  padding: 2px 8px;
+  border: 1px solid #d1d1d1;
+  border-bottom-color: #8a8a8a;
+  border-radius: 4px;
+  background: #fff;
+  color: inherit;
+}
+.settings-dialog input:focus-visible {
+  outline: none;
+  border-bottom: 2px solid #0067c0;
+}
+.settings-size {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.settings-size input {
+  width: 64px;
+  margin-right: 4px;
+}
+.settings-size button {
+  min-width: 32px;
+  padding: 3px 6px;
+  border-color: #e0e0e0;
+}
+.settings-size button.selected {
+  border-color: #0067c0;
+  background: #e5f0fa;
+  color: #0059a8;
 }

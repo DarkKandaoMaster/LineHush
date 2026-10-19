@@ -2,6 +2,8 @@
 // the IPC contract with src-tauri and with the test doubles; do not rename them.
 import { invoke } from "@tauri-apps/api/core";
 import type { Diary, Picture } from "./document.ts";
+import type { Settings } from "./settings.ts";
+export type { Settings } from "./settings.ts";
 
 /** Serialized `store::Opened`. */
 export interface Opened {
@@ -67,6 +69,10 @@ export const pasteImages = (ids: string[]) =>
  * window closes. Best effort: cleanup failures come back as text, not as an error.
  */
 export const closeDocument = () => invoke<string | null>("close_document");
+/** The stored settings, or the defaults when the file is missing or damaged; normalize before use. */
+export const readSettings = () => invoke<Settings>("read_settings");
+export const writeSettings = (settings: Settings) =>
+  invoke<void>("write_settings", { settings });
 
 /** Reads a thumbnail (or the original) into a Blob URL the caller must revoke. */
 export async function imageUrl(

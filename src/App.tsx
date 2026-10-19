@@ -11,10 +11,12 @@ import { createSession, type Session } from "./core/session";
 import DiaryEditor, { type DiaryEditorHandle } from "./editor/DiaryEditor";
 import { useImageImport } from "./hooks/useImageImport";
 import { useImagePreview } from "./hooks/useImagePreview";
+import { useSettings } from "./hooks/useSettings";
 import { useUnsavedPrompt } from "./hooks/useUnsavedPrompt";
 import { useWindowGuards } from "./hooks/useWindowGuards";
 import Banners from "./components/Banners";
 import ImagePreviewDialog from "./components/ImagePreviewDialog";
+import SettingsDialog from "./components/SettingsDialog";
 import StatusBar from "./components/StatusBar";
 import Toolbar from "./components/Toolbar";
 import UnsavedDialog from "./components/UnsavedDialog";
@@ -42,8 +44,10 @@ export default function App() {
   const counts = useMemo(() => stats(document), [document]);
   const preview = useImagePreview(session);
   const images = useImageImport(session, editor);
+  const settings = useSettings(session);
+  const settingsDialog = useRef<HTMLDialogElement>(null);
 
-  useWindowGuards(session, preview.dialog);
+  useWindowGuards(session, preview.dialog, settingsDialog);
   useWindowTitle(session, title, dirty);
   // Focus waits for `ready` through the dependency list, not through hook order.
   useEffect(() => {
@@ -57,7 +61,11 @@ export default function App() {
   const fileDisabled = !desktop || busy || importing;
   return (
     <main className="app">
-      <Toolbar session={session} fileDisabled={fileDisabled} />
+      <Toolbar
+        session={session}
+        fileDisabled={fileDisabled}
+        onSettings={() => settingsDialog.current?.showModal()}
+      />
       <Banners
         session={session}
         error={error}
@@ -113,6 +121,16 @@ export default function App() {
         dialogRef={unsaved.dialog}
         name={unsaved.name}
         onClose={unsaved.closed}
+      />
+      <SettingsDialog
+        dialogRef={settingsDialog}
+        settings={settings.settings}
+        onChange={settings.update}
+        onReset={settings.reset}
+        onClose={() => {
+          settings.flush();
+          editor.current?.focus();
+        }}
       />
     </main>
   );

@@ -5,6 +5,7 @@ interface Props {
   session: Session;
   /** File commands need the desktop backend and no running operation or import. */
   fileDisabled: boolean;
+  onSettings: () => void;
 }
 
 /** 线条风格齿轮（8 个齿、中间圆孔），参照 Win11 记事本右上角的设置图标。 */
@@ -27,7 +28,7 @@ function GearIcon() {
 }
 
 export default function Toolbar(props: Props) {
-  const { session, fileDisabled } = props;
+  const { session, fileDisabled, onSettings } = props;
   const exportMenu = useRef<HTMLDetailsElement>(null);
   const [exportOpen, setExportOpen] = useState(false);
   // An open export menu closes on a press outside it or on Esc.
@@ -105,8 +106,12 @@ export default function Toolbar(props: Props) {
         </div>
       </details>
       <span className="spacer" />
-      {/* 设置按钮暂为占位，点击不做任何事。 */}
-      <button className="settings-button" title="设置" aria-label="设置">
+      <button
+        className="settings-button"
+        title="设置"
+        aria-label="设置"
+        onClick={onSettings}
+      >
         <GearIcon />
       </button>
     </header>

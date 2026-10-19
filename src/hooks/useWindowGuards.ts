@@ -13,6 +13,8 @@ import type { Session } from "../core/session";
 export function useWindowGuards(
   session: Session,
   preview: RefObject<HTMLDialogElement | null>,
+  /** File shortcuts are ignored while the settings dialog is open, as during a preview. */
+  settings: RefObject<HTMLDialogElement | null>,
 ) {
   const { desktop } = session;
   useEffect(() => {
@@ -24,7 +26,8 @@ export function useWindowGuards(
         event.isComposing ||
         !(event.ctrlKey || event.metaKey) ||
         session.getSnapshot().importing ||
-        preview.current?.open
+        preview.current?.open ||
+        settings.current?.open
       )
         return;
       const key = event.key.toLowerCase();
@@ -77,5 +80,5 @@ export function useWindowGuards(
       removeClose?.();
       removeOpen?.();
     };
-  }, [desktop, session, preview]);
+  }, [desktop, session, preview, settings]);
 }

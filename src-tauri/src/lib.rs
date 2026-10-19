@@ -4,6 +4,7 @@ mod errors;
 mod fsx;
 mod images;
 mod model;
+mod settings;
 mod store;
 #[cfg(test)]
 mod store_tests;
@@ -21,10 +22,15 @@ use std::{
 use store::{Opened, Store};
 use tauri::{ipc::Response, AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use tauri_plugin_window_state::StateFlags;
+use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 /// Tells the frontend that `OpenRequest` holds a file to open.
 const OPEN_REQUESTED: &str = "open-requested";
+/// What the window-state plugin remembers. Not VISIBLE: `setup` shows the window
+/// itself once the rest is restored.
+const WINDOW_STATE: StateFlags = StateFlags::SIZE
+    .union(StateFlags::POSITION)
+    .union(StateFlags::MAXIMIZED);
 
 struct AppState {
     store: Mutex<Store>,
@@ -323,10 +329,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init());
     // Remembers size, position and maximized state across launches. Tests skip it so
     // they always start at the configured size and never touch the user's saved state.
-    if test_data_dir.is_none() {
+    // The window starts hidden (tauri.conf.json) and `setup` restores it before
+    // showing it, so it never appears at the default place first. The plugin's own
+    // restore on window creation is skipped: restoring twice would un-maximize a
+    // maximized window (which shows it) and maximize it again.
+    let remember_window = test_data_dir.is_none();
+    if remember_window {
         builder = builder.plugin(
             tauri_plugin_window_state::Builder::new()
-                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+                .with_state_flags(WINDOW_STATE)
+                .skip_initial_state("main")
                 .build(),
         );
     }
@@ -365,11 +377,23 @@ pub fn run() {
                 latest: AtomicU64::new(0),
                 last: Mutex::new(None),
             });
+            app.manage(settings::SettingsFile(root.join(settings::SETTINGS_FILE)));
             let store = Store::new(root).map_err(std::io::Error::other)?;
             app.manage(AppState {
                 store: Mutex::new(store),
                 _lock: lock,
             });
+            if let Some(window) = app.get_webview_window("main") {
+                if remember_window {
+                    if let Err(e) = window.restore_state(WINDOW_STATE) {
+                        eprintln!("无法恢复窗口位置和大小：{e}");
+                    }
+                }
+                // Shown even if restoring failed.
+                if let Err(e) = window.show() {
+                    eprintln!("无法显示窗口：{e}");
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -387,7 +411,9 @@ pub fn run() {
             copy_images,
             copied_images,
             paste_images,
-            close_document
+            close_document,
+            settings::read_settings,
+            settings::write_settings
         ])
         .run(context)
         .expect("无法启动 LineHush");
