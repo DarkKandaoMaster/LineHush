@@ -49,7 +49,6 @@ export function useImageImport(
       } finally {
         // Unlock first so a throwing insertion cannot leave the lock held.
         session.setImporting(false);
-        session.setNotice("");
         // Keep successfully imported images visible if a later file fails.
         try {
           if (images.length) insertion.insert(images);
@@ -76,9 +75,6 @@ export function useImageImport(
           }
           for (const file of files) {
             current = file.name;
-            session.setNotice(
-              `正在处理图片 ${images.length + 1} / ${files.length}…`,
-            );
             const pic = await importImage(await file.arrayBuffer());
             // A file a LineHush copy left (e.g. from an earlier session) keeps
             // its original name.
@@ -93,7 +89,7 @@ export function useImageImport(
           current ? `无法插入图片“${current}”：${e}` : `无法插入图片：${e}`,
       );
     },
-    [insertAfter, session],
+    [insertAfter],
   );
   const pasteCopied = useCallback(
     (pictures: Picture[]) =>

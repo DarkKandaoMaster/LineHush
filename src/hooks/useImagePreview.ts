@@ -49,7 +49,6 @@ export function useImagePreview(session: Session) {
       });
       if (!target) return;
       await exportImage(picture.id, target);
-      session.setNotice("已保存原图。");
     } catch (e) {
       session.setError(`保存原图失败：${e}`);
     }

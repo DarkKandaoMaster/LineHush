@@ -225,10 +225,10 @@ test("恢复提示在保存成功后清除，保存失败时保留，其他提�
     assert.equal(state().dirty, false);
     assert.equal(state().notice, "");
     // Any other notice survives a later save.
-    session.setNotice("已导出。");
+    session.setNotice("其他提示");
     session.update(fromText("再改"));
     await session.saveDocument();
-    assert.equal(state().notice, "已导出。");
+    assert.equal(state().notice, "其他提示");
   } finally {
     await teardown(session);
   }

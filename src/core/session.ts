@@ -247,7 +247,6 @@ export function createSession(
         await (format === "html"
           ? native.exportDocument(target, toHtml(doc), exportImages(doc))
           : native.exportDocument(target, toText(doc), []));
-        set({ notice: "已导出。" });
       }
     }, (e) => `导出失败：${e}`);
   }
