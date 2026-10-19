@@ -45,6 +45,43 @@ test("图片组前后的空行往返完整", () => {
   assert.deepEqual(fromEditor(toEditor(doc)), doc);
   assert.equal(toText(doc), "\n[图片：图.png]\n\n");
 });
+test("图片组在编辑器中展开为单张图片节点，相邻图片合并回一个图片组", () => {
+  const a = { id: idA, name: "甲.png", width: 20, height: 10 };
+  const b = { id: idB, name: "乙.jpg", width: 300, height: 400 };
+  const doc = {
+    blocks: [
+      { type: "line", text: "前" },
+      { type: "images", images: [a, b, a] },
+      { type: "line", text: "" },
+      { type: "images", images: [b] },
+    ],
+  };
+  const editor = toEditor(doc);
+  assert.deepEqual(
+    editor.content.map((node) => node.type),
+    ["paragraph", "image", "image", "image", "paragraph", "image"],
+  );
+  assert.deepEqual(editor.content[2], { type: "image", attrs: b });
+  assert.deepEqual(fromEditor(editor), doc);
+  // Images that become neighbours (the line between them deleted) form one group;
+  // extra node attributes never reach the file.
+  const merged = fromEditor({
+    type: "doc",
+    content: [
+      { type: "image", attrs: { ...a, extra: 1 } },
+      { type: "image", attrs: b },
+      { type: "paragraph" },
+      { type: "image", attrs: a },
+    ],
+  });
+  assert.deepEqual(merged, {
+    blocks: [
+      { type: "images", images: [a, b] },
+      { type: "line", text: "" },
+      { type: "images", images: [a] },
+    ],
+  });
+});
 test("HTML 导出转义正文，保留换行", () => {
   const html = toHtml(fromText('<script>\n\n & "\n'));
   assert.ok(html.includes("&lt;script&gt;"));

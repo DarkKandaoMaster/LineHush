@@ -3,42 +3,10 @@ import Document from "@tiptap/extension-document";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
 import { UndoRedo, Gapcursor } from "@tiptap/extensions";
-import { Plugin, TextSelection } from "@tiptap/pm/state";
+import { NodeSelection, TextSelection, type Selection } from "@tiptap/pm/state";
 import type { Picture } from "../core/document";
-import { imageGroup } from "./image-view";
+import { BlockRange, image, removeRange } from "./image-view";
 
-// An empty paragraph is a real line and must stop image merging.
-const MergeImages = Extension.create({
-  name: "mergeImages",
-  addProseMirrorPlugins() {
-    return [
-      new Plugin({
-        appendTransaction(transactions, _old, state) {
-          if (!transactions.some((tr) => tr.docChanged)) return null;
-          const tr = state.tr;
-          let previous: { pos: number; images: Picture[] } | undefined;
-          state.doc.forEach((node, pos) => {
-            if (node.type.name !== "imageGroup") {
-              previous = undefined;
-              return;
-            }
-            if (previous) {
-              previous.images = [...previous.images, ...node.attrs.images];
-              tr.setNodeMarkup(tr.mapping.map(previous.pos), undefined, {
-                images: previous.images,
-              });
-              tr.delete(
-                tr.mapping.map(pos),
-                tr.mapping.map(pos + node.nodeSize),
-              );
-            } else previous = { pos, images: node.attrs.images };
-          });
-          return tr.docChanged ? tr : null;
-        },
-      }),
-    ];
-  },
-});
 const PlainKeys = Extension.create({
   name: "plainKeys",
   addKeyboardShortcuts() {
@@ -48,15 +16,25 @@ const PlainKeys = Extension.create({
       Enter: () => {
         if (this.editor.view.composing) return false;
         const { state, view } = this.editor;
-        if (state.selection.$from.parent.type.name === "paragraph")
-          return false;
-        const pos = state.selection.to;
-        const tr = state.tr.insert(pos, state.schema.nodes.paragraph.create());
-        view.dispatch(
-          tr
-            .setSelection(TextSelection.create(tr.doc, pos + 1))
-            .scrollIntoView(),
-        );
+        const tr = state.tr;
+        let sel = tr.selection;
+        const inLine = (s: Selection) =>
+          s.$from.parent.type.name === "paragraph";
+        if (
+          sel instanceof BlockRange ||
+          (!sel.empty && !(sel instanceof NodeSelection) && !inLine(sel))
+        ) {
+          // A range that starts or ends between blocks (images, or everything) is replaced by the new line.
+          sel = removeRange(tr, sel.from, sel.to, -1).selection;
+        } else if (inLine(sel)) return false;
+        if (inLine(sel)) tr.split(sel.from);
+        else {
+          // A selected image or a gap cursor: a new empty line after it, which splits a row of images.
+          const pos = sel.to;
+          tr.insert(pos, state.schema.nodes.paragraph.create());
+          tr.setSelection(TextSelection.create(tr.doc, pos + 1));
+        }
+        view.dispatch(tr.scrollIntoView());
         return true;
       },
     };
@@ -67,10 +45,12 @@ export function extensions(preview: (pic: Picture) => void) {
     Document,
     Paragraph.extend({ content: "text*", marks: "", whitespace: "pre" }),
     Text,
-    imageGroup(preview),
     UndoRedo.configure({ depth: 300 }),
     Gapcursor,
+    // Paragraph must stay the first block type (the default for new lines and the
+    // gap cursor). Later extensions get keys first, so the image keys (Up / Down)
+    // run before the gap cursor's.
+    image(preview),
     PlainKeys,
-    MergeImages,
   ];
 }

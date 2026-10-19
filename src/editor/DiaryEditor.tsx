@@ -8,14 +8,11 @@ import {
   type Ref,
 } from "react";
 import { EditorContent, useEditor, type UseEditorOptions } from "@tiptap/react";
-import { Fragment, Slice } from "@tiptap/pm/model";
-import {
-  NodeSelection,
-  TextSelection,
-  type Transaction,
-} from "@tiptap/pm/state";
+import { Fragment, Slice, type Node as PmNode } from "@tiptap/pm/model";
+import { NodeSelection, type Transaction } from "@tiptap/pm/state";
 import { closeHistory } from "@tiptap/pm/history";
 import { extensions } from "./schema";
+import { caretAt } from "./image-view";
 import {
   fromEditor,
   fromText,
@@ -40,6 +37,17 @@ interface Props {
   onFiles: (files: File[]) => void;
   onPreview: (pic: Picture) => void;
 }
+/** Status bar line of top-level node `index`: a run of images is one line, as in the file. */
+function lineOf(doc: PmNode, index: number) {
+  let line = 0;
+  for (let i = 0; i <= index && i < doc.childCount; i++)
+    if (
+      doc.child(i).type.name !== "image" ||
+      doc.maybeChild(i - 1)?.type.name !== "image"
+    )
+      line++;
+  return Math.max(line, 1);
+}
 // Files without a MIME type still go to Rust, which rejects anything that is not an image.
 const imageFiles = (files: FileList | undefined) =>
   Array.from(files ?? []).filter(
@@ -63,8 +71,18 @@ function DiaryEditor(props: Props) {
         "aria-multiline": "true",
         spellcheck: "false",
       },
-      clipboardTextSerializer: (slice) =>
-        slice.content.textBetween(0, slice.content.size, "\n", "[图片]"),
+      // One line per text line or run of images, like the TXT export.
+      clipboardTextSerializer: (slice) => {
+        const lines: string[] = [];
+        let images = false;
+        slice.content.forEach((node) => {
+          const image = node.type.name === "image";
+          if (image && images) lines[lines.length - 1] += " [图片]";
+          else lines.push(image ? "[图片]" : node.textContent);
+          images = image;
+        });
+        return lines.join("\n");
+      },
       handlePaste(view, event) {
         const data = event.clipboardData;
         if (!data) return true;
@@ -106,8 +124,9 @@ function DiaryEditor(props: Props) {
     onSelectionUpdate: ({ editor }) => {
       const pos = editor.state.selection.$from;
       latest.current.onSelection({
-        line: pos.index(0) + 1,
-        column: pos.parentOffset + 1,
+        line: lineOf(editor.state.doc, pos.index(0)),
+        // Between or on images there is no column.
+        column: pos.parent.inlineContent ? pos.parentOffset + 1 : 1,
       });
     },
   });
@@ -130,14 +149,16 @@ function DiaryEditor(props: Props) {
         );
         const { state, view } = editor;
         const tr = closeHistory(state.tr);
-        const group = state.schema.nodes.imageGroup;
+        const image = state.schema.nodes.image;
+        // Each picture is its own node; neighbouring images make up one group.
+        const nodes = pictures.map((pic) => image.create(pic));
+        let at = state.selection.to;
         if (
           state.selection instanceof NodeSelection &&
-          state.selection.node.type === group
+          state.selection.node.type === image
         ) {
-          tr.setNodeMarkup(state.selection.from, undefined, {
-            images: [...state.selection.node.attrs.images, ...pictures],
-          });
+          // After the selected image, inside its group.
+          tr.insert(at, nodes);
         } else if (
           state.selection.empty &&
           state.selection.$from.parent.type.name === "paragraph" &&
@@ -145,14 +166,22 @@ function DiaryEditor(props: Props) {
           state.doc.childCount > 1
         ) {
           // Existing blank lines are content. Insert after one instead of consuming it.
-          tr.insert(
-            state.selection.$from.after(),
-            group.create({ images: pictures }),
-          );
-        } else tr.replaceSelectionWith(group.create({ images: pictures }));
-        if (tr.doc.lastChild?.type === group)
+          at = state.selection.$from.after();
+          tr.insert(at, nodes);
+        } else {
+          // replaceSelectionWith places a block next to a line instead of splitting it
+          // at either end; the other pictures follow the first one.
+          tr.replaceSelectionWith(nodes[0]);
+          tr.doc.forEach((node, offset) => {
+            if (node === nodes[0]) at = offset;
+          });
+          tr.insert(at + nodes[0].nodeSize, nodes.slice(1));
+        }
+        const end = at + nodes.reduce((size, node) => size + node.nodeSize, 0);
+        if (tr.doc.lastChild?.type === image)
           tr.insert(tr.doc.content.size, state.schema.nodes.paragraph.create());
-        tr.setSelection(TextSelection.near(tr.doc.resolve(tr.selection.to), 1));
+        // The caret goes right after the new images (a gap cursor if more images follow).
+        tr.setSelection(caretAt(tr.doc, end, 1));
         view.dispatch(tr.scrollIntoView());
         view.focus();
       },

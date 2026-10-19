@@ -261,6 +261,26 @@ const stashed = (predicate) =>
       return doc !== null && predicate(doc);
     })
     .toBe(true);
+/**
+ * Image groups on screen. Each image is its own node, so a group is a run of
+ * neighbouring `.image-item` children; hidden cursor widgets do not count.
+ */
+const imageGroups = (editor) =>
+  editor.evaluate((el) => {
+    let groups = 0;
+    let previous = false;
+    for (const child of el.children) {
+      if (child.matches(".ProseMirror-gapcursor, .drop-line")) continue;
+      const image = child.classList.contains("image-item");
+      if (image && !previous) groups++;
+      previous = image;
+    }
+    return groups;
+  });
+const expectGroups = (editor, count) =>
+  expect.poll(() => imageGroups(editor)).toBe(count);
+const imageNames = (editor) =>
+  editor.locator(".image-tile img").evaluateAll((images) => images.map((img) => img.alt));
 try {
   // --- Unnamed draft: stashed, recovered after a crash, saved via Save As ---
   let page = await start();
@@ -330,21 +350,32 @@ try {
     source["第一张.png"].file,
     source["第二张.png"].file,
   ]);
-  await expect(editor.locator(".image-group")).toHaveCount(1);
+  await expectGroups(editor, 1);
   await expect(editor.locator(".image-tile img")).toHaveCount(2);
+  // A click selects just that image; an import goes in right after it, inside the group.
   await editor.locator(".image-tile").first().click();
+  await expect(editor.locator(".ProseMirror-selectednode")).toHaveCount(1);
+  await expect(editor.locator(".image-item").first()).toHaveClass(
+    /ProseMirror-selectednode/,
+  );
   await input().setInputFiles(source["追加.jpg"].file);
   await expect(editor.locator(".image-tile img")).toHaveCount(3);
+  expect(await imageNames(editor)).toEqual([
+    "第一张.png",
+    "追加.jpg",
+    "第二张.png",
+  ]);
+  await expectGroups(editor, 1);
   await page.keyboard.press("Control+z");
   await expect(editor.locator(".image-tile img")).toHaveCount(2);
   await editor.click();
   await page.keyboard.press("Control+End");
   const blankLines = await editor.locator("p").count();
   await input().setInputFiles(source["空行之后.png"].file);
-  await expect(editor.locator(".image-group")).toHaveCount(2);
+  await expectGroups(editor, 2);
   expect(await editor.locator("p").count()).toBeGreaterThanOrEqual(blankLines);
   await page.keyboard.press("Control+z");
-  await expect(editor.locator(".image-group")).toHaveCount(1);
+  await expectGroups(editor, 1);
   const thumbnailsLoaded = () =>
     expect
       .poll(() =>
@@ -448,14 +479,16 @@ try {
   await editor.click();
   await page.keyboard.press("Control+End");
   await input().setInputFiles(doomed.file);
-  await expect(editor.locator(".image-group")).toHaveCount(2);
+  await expectGroups(editor, 2);
   await thumbnailsLoaded();
   await page.keyboard.press("Control+s");
   await expect(status("已保存")).toBeVisible();
   expect(pictures(body(file)).map((p) => p.id)).toContain(doomed.id);
-  await editor.locator(".image-group").last().locator(".image-tile").click();
+  // Delete removes only the selected image, the last one, which was a group on its own.
+  await editor.locator(".image-tile").last().click();
   await page.keyboard.press("Delete");
-  await expect(editor.locator(".image-group")).toHaveCount(1);
+  await expect(editor.locator(".image-tile")).toHaveCount(2);
+  await expectGroups(editor, 1);
   await page.keyboard.press("Control+s");
   await expect(status("已保存")).toBeVisible();
   const before = body(file);
@@ -590,7 +623,7 @@ try {
   await page.keyboard.insertText("崩溃前输入");
   await page.keyboard.press("Enter");
   await input().setInputFiles(crashed.file);
-  await expect(editor.locator(".image-group")).toHaveCount(2);
+  await expectGroups(editor, 2);
   await thumbnailsLoaded();
   await stashed(
     (doc) =>
@@ -613,7 +646,7 @@ try {
   await expect(status("尚未保存")).toBeVisible();
   await expect(page.getByText("● 测试.hush", { exact: true })).toBeVisible();
   await expect(editor.getByText("崩溃前输入")).toBeVisible();
-  await expect(editor.locator(".image-group")).toHaveCount(2);
+  await expectGroups(editor, 2);
   await expect(editor.locator(".image-tile img")).toHaveCount(3);
   await thumbnailsLoaded();
   expect(await fingerprint(file)).toEqual(beforeCrash);

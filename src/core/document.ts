@@ -30,34 +30,47 @@ export function toText(doc: Diary): string {
     )
     .join("\n");
 }
+/**
+ * The editor holds one `image` node per picture; an `images` block becomes a
+ * run of them, and `fromEditor` merges every run back into one block, so the
+ * file keeps one block per image group.
+ */
 export function toEditor(doc: Diary): JSONContent {
   return {
     type: "doc",
-    content: doc.blocks.map((block) =>
+    content: doc.blocks.flatMap((block): JSONContent[] =>
       block.type === "line"
-        ? {
-            type: "paragraph",
-            ...(block.text
-              ? { content: [{ type: "text", text: block.text }] }
-              : {}),
-          }
-        : { type: "imageGroup", attrs: { images: block.images } },
+        ? [
+            {
+              type: "paragraph",
+              ...(block.text
+                ? { content: [{ type: "text", text: block.text }] }
+                : {}),
+            },
+          ]
+        : block.images.map(({ id, name, width, height }) => ({
+            type: "image",
+            attrs: { id, name, width, height },
+          })),
     ),
   };
 }
 export function fromEditor(doc: JSONContent): Diary {
-  return {
-    blocks: (doc.content ?? []).map((node): Block =>
-      node.type === "imageGroup"
-        ? { type: "images", images: node.attrs?.images }
-        : {
-            type: "line",
-            text: (node.content ?? [])
-              .map((child) => child.text ?? "")
-              .join(""),
-          },
-    ),
-  };
+  const blocks: Block[] = [];
+  for (const node of doc.content ?? []) {
+    if (node.type === "image") {
+      const { id, name, width, height } = node.attrs ?? {};
+      const pic: Picture = { id, name, width, height };
+      const last = blocks[blocks.length - 1];
+      if (last?.type === "images") last.images.push(pic);
+      else blocks.push({ type: "images", images: [pic] });
+    } else
+      blocks.push({
+        type: "line",
+        text: (node.content ?? []).map((child) => child.text ?? "").join(""),
+      });
+  }
+  return { blocks };
 }
 /** Status bar counts: characters are Unicode code points in text lines. */
 export function stats(doc: Diary): { characters: number; images: number } {
