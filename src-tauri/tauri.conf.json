@@ -31,8 +31,8 @@
     "targets": ["nsis"],
     "publisher": "Kandao",
     "copyright": "Copyright © 2026 Kandao",
-    "shortDescription": "本地优先的图文日记编辑器",
-    "longDescription": "LineHush 是 Windows 专用的本地优先日记编辑器，正文只有纯文本和图片，每篇日记连同原图保存为一个 .hush 文件。",
+    "shortDescription": "本地优先的图文笔记编辑器",
+    "longDescription": "LineHush 是 Windows 专用的本地优先笔记编辑器，正文只有纯文本和图片，每篇笔记连同原图保存为一个 .hush 文件。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -43,7 +43,7 @@
       {
         "ext": ["hush"],
         "name": "LineHush.Diary",
-        "description": "LineHush 日记",
+        "description": "LineHush 笔记",
         "role": "Editor"
       }
     ],

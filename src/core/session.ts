@@ -13,7 +13,7 @@ import * as native from "./native.ts";
 import type { Opened } from "./native.ts";
 import { SaveQueue } from "./save-queue.ts";
 
-const filter = [{ name: "LineHush 日记", extensions: ["hush"] }];
+const filter = [{ name: "LineHush 笔记", extensions: ["hush"] }];
 const recoveredNotice = "已恢复未保存的修改。";
 type ExportFormat = "txt" | "html";
 /** The answer to "save changes to <name>?" before the document is replaced or closed. */
