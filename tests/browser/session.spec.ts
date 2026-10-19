@@ -15,6 +15,16 @@ const requestClose = (page: Page) =>
       payload: null,
     });
   });
+/** 最近一次设置的窗口标题（工具栏已不显示文档名，改为检查窗口标题）。 */
+const windowTitle = (page: Page): Promise<string | undefined> =>
+  page.evaluate(
+    () =>
+      (window as any).testNative.calls
+        .filter((c: any) => c.cmd === "plugin:window|set_title")
+        .at(-1)?.args.value,
+  );
+const expectTitle = (page: Page, name: string) =>
+  expect.poll(() => windowTitle(page)).toBe(`${name} — LineHush`);
 const unsavedPrompt = (page: Page) =>
   page.getByRole("dialog", { name: /^是否保存对“.+”的更改？$/ });
 test.beforeEach(async ({ page }) => {
@@ -126,14 +136,13 @@ test("输入只暂存不写文件，Ctrl+S 保存后清除未保存标记，光�
 }) => {
   await page.goto("/");
   const editor = page.getByRole("textbox", { name: "日记正文" });
-  const name = page.locator(".document-name");
-  await expect(name).toHaveText("已有.hush");
+  await expectTitle(page, "已有.hush");
   await editor.click();
   await page.keyboard.press("Control+Home");
   await page.keyboard.press("ArrowRight");
   const original = await editor.elementHandle();
   await page.keyboard.insertText("中");
-  await expect(name).toHaveText("● 已有.hush");
+  await expectTitle(page, "● 已有.hush");
   await expect.poll(() => count(page, "stash_document")).toBe(1);
   const stashed = await page.evaluate(
     () =>
@@ -144,11 +153,11 @@ test("输入只暂存不写文件，Ctrl+S 保存后清除未保存标记，光�
   expect(stashed.blocks.map((b: any) => b.text)).toEqual(["已中有日记", ""]);
   expect(await count(page, "save_document")).toBe(0);
   await expect(page.getByText("尚未保存", { exact: true })).toBeVisible();
-  await expect(name).toHaveText("● 已有.hush");
+  await expectTitle(page, "● 已有.hush");
 
   await page.keyboard.press("Control+s");
   await expect(page.getByText("已保存", { exact: true })).toBeVisible();
-  await expect(name).toHaveText("已有.hush");
+  await expectTitle(page, "已有.hush");
   expect(await count(page, "save_document")).toBe(1);
   const saved = await page.evaluate(() => (window as any).testNative.document);
   expect(saved.blocks.map((b: any) => b.text)).toEqual(["已中有日记", ""]);
@@ -161,15 +170,15 @@ test("输入只暂存不写文件，Ctrl+S 保存后清除未保存标记，光�
   await expect(
     page.getByText("第 1 行，第 3 列", { exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await page.keyboard.press("Control+z");
   await expect(editor.locator("p")).toHaveText(["已有日记", ""]);
-  await expect(name).toHaveText("● 已有.hush");
-  await page.getByRole("button", { name: "重做", exact: true }).click();
+  await expectTitle(page, "● 已有.hush");
+  await page.keyboard.press("Control+y");
   await expect(editor.locator("p")).toHaveText(["已中有日记", ""]);
   await expect(page.getByText("5 字符", { exact: true })).toBeVisible();
   // Saving from the toolbar does the same.
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(name).toHaveText("已有.hush");
+  await expectTitle(page, "已有.hush");
   expect(await count(page, "save_document")).toBe(2);
 });
 
@@ -211,7 +220,7 @@ test("快捷键切换文件重建编辑器并清空旧撤销，另存为保留�
     (window as any).testNative.savePath = "D:/另存.hush";
   });
   await page.keyboard.press("Control+Shift+s");
-  await expect(page.locator(".document-name")).toHaveText("另存.hush");
+  await expectTitle(page, "另存.hush");
   await page.getByText("导出", { exact: true }).click();
   await page
     .getByRole("button", { name: "纯文本 (.txt)", exact: true })
@@ -331,13 +340,13 @@ test("保存失败时关闭保留窗口，重试保存后无需询问即可关�
   );
   expect(await count(page, "close_document")).toBe(0);
   await expect(editor).toHaveAttribute("contenteditable", "true");
-  await expect(page.locator(".document-name")).toHaveText("● 已有.hush");
+  await expectTitle(page, "● 已有.hush");
   await page.evaluate(() => {
     (window as any).testNative.failSave = false;
   });
   await page.getByRole("button", { name: "重试保存" }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.locator(".document-name")).toHaveText("已有.hush");
+  await expectTitle(page, "已有.hush");
   const saved = await page.evaluate(() => (window as any).testNative.document);
   expect(saved.blocks.map((b: any) => b.text)).toEqual([
     "已有日记",
@@ -385,7 +394,7 @@ test("保存失败仍可另存为，取消切换保留内容，HTML 导出使用
   await page.keyboard.press("Control+s");
   await expect(page.getByRole("alert")).toContainText("测试写入失败");
   await page.keyboard.press("Control+Shift+s");
-  await expect(page.locator(".document-name")).toHaveText("救回.hush");
+  await expectTitle(page, "救回.hush");
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.getByText("导出", { exact: true }).click();
   await page

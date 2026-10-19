@@ -54,16 +54,20 @@ input:focus-visible {
   background: #f3f3f3;
   flex-wrap: wrap;
 }
-.document-name {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  max-width: 260px;
-  padding: 0 8px;
-  font-weight: 500;
-}
 .spacer {
   flex: 1;
+}
+/* 设置按钮：正方形、只有图标，其余沿用工具栏按钮样式。 */
+.toolbar .settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+.settings-button svg {
+  display: block;
 }
 .statusbar {
   display: flex;
@@ -145,11 +149,6 @@ input:focus-visible {
 .editor-host.disabled {
   pointer-events: none;
   opacity: 0.65;
-}
-.toolbar-divider {
-  height: 18px;
-  border-left: 1px solid #ddd;
-  margin: 0 4px;
 }
 .notice-banner {
   display: flex;
@@ -266,9 +265,6 @@ input:focus-visible {
   outline: 2px solid #0067c0;
 }
 @media (max-width: 760px) {
-  .document-name {
-    display: none;
-  }
   .toolbar {
     gap: 0;
     padding: 4px;

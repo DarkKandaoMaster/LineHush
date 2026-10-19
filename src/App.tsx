@@ -38,7 +38,6 @@ export default function App() {
   const { desktop } = session;
   const title = fileName(path);
   const editor = useRef<DiaryEditorHandle>(null);
-  const picker = useRef<HTMLInputElement>(null);
   const [position, setPosition] = useState({ line: 1, column: 1 });
   const counts = useMemo(() => stats(document), [document]);
   const preview = useImagePreview(session);
@@ -58,17 +57,7 @@ export default function App() {
   const fileDisabled = !desktop || busy || importing;
   return (
     <main className="app">
-      <Toolbar
-        session={session}
-        fileDisabled={fileDisabled}
-        busy={busy}
-        dirty={dirty}
-        title={title}
-        path={path}
-        onInsertImage={() => picker.current?.click()}
-        onUndo={() => editor.current?.undo()}
-        onRedo={() => editor.current?.redo()}
-      />
+      <Toolbar session={session} fileDisabled={fileDisabled} />
       <Banners
         session={session}
         error={error}
@@ -96,8 +85,8 @@ export default function App() {
         images={counts.images}
         status={status}
       />
+      {/* 工具栏已无“插入图片”按钮，界面上无法打开此选择框；保留它只因 tests/native.mjs 经它导入图片。 */}
       <input
-        ref={picker}
         className="visually-hidden"
         type="file"
         accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"

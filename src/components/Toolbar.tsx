@@ -1,23 +1,33 @@
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Session } from "../core/session";
 
 interface Props {
   session: Session;
   /** File commands need the desktop backend and no running operation or import. */
   fileDisabled: boolean;
-  busy: boolean;
-  dirty: boolean;
-  title: string;
-  path: string | null;
-  onInsertImage: () => void;
-  onUndo: () => void;
-  onRedo: () => void;
 }
-// Keeps focus in the editor so undo/redo and image insertion act on its selection.
-const keepFocus = (event: MouseEvent) => event.preventDefault();
+
+/** 线条风格齿轮（8 个齿、中间圆孔），参照 Win11 记事本右上角的设置图标。 */
+function GearIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6.79,2.74L6.97,1.08A7,7 0 0 1 9.03,1.08L9.21,2.74A5.4,5.4 0 0 1 10.86,3.42L12.16,2.37A7,7 0 0 1 13.63,3.84L12.58,5.14A5.4,5.4 0 0 1 13.26,6.79L14.92,6.97A7,7 0 0 1 14.92,9.03L13.26,9.21A5.4,5.4 0 0 1 12.58,10.86L13.63,12.16A7,7 0 0 1 12.16,13.63L10.86,12.58A5.4,5.4 0 0 1 9.21,13.26L9.03,14.92A7,7 0 0 1 6.97,14.92L6.79,13.26A5.4,5.4 0 0 1 5.14,12.58L3.84,13.63A7,7 0 0 1 2.37,12.16L3.42,10.86A5.4,5.4 0 0 1 2.74,9.21L1.08,9.03A7,7 0 0 1 1.08,6.97L2.74,6.79A5.4,5.4 0 0 1 3.42,5.14L2.37,3.84A7,7 0 0 1 3.84,2.37L5.14,3.42A5.4,5.4 0 0 1 6.79,2.74Z" />
+      <circle cx="8" cy="8" r="2.25" />
+    </svg>
+  );
+}
 
 export default function Toolbar(props: Props) {
-  const { session, fileDisabled, busy } = props;
+  const { session, fileDisabled } = props;
   const exportMenu = useRef<HTMLDetailsElement>(null);
   const [exportOpen, setExportOpen] = useState(false);
   // An open export menu closes on a press outside it or on Esc.
@@ -44,7 +54,7 @@ export default function Toolbar(props: Props) {
     void session.exportDocument(format);
   };
   return (
-    <header className="toolbar" aria-label="文件和编辑操作">
+    <header className="toolbar" aria-label="文件操作">
       <button
         disabled={fileDisabled}
         title="新建 (Ctrl+N)"
@@ -73,14 +83,6 @@ export default function Toolbar(props: Props) {
       >
         另存为
       </button>
-      <span className="toolbar-divider" />
-      <button
-        disabled={fileDisabled}
-        onMouseDown={keepFocus}
-        onClick={props.onInsertImage}
-      >
-        插入图片
-      </button>
       <details
         className="export-menu"
         ref={exportMenu}
@@ -103,25 +105,9 @@ export default function Toolbar(props: Props) {
         </div>
       </details>
       <span className="spacer" />
-      <span className="document-name" title={props.path ?? "未命名"}>
-        {props.dirty ? "● " : ""}
-        {props.title}
-      </span>
-      <button
-        disabled={busy}
-        title="撤销 (Ctrl+Z)"
-        onMouseDown={keepFocus}
-        onClick={props.onUndo}
-      >
-        撤销
-      </button>
-      <button
-        disabled={busy}
-        title="重做 (Ctrl+Y)"
-        onMouseDown={keepFocus}
-        onClick={props.onRedo}
-      >
-        重做
+      {/* 设置按钮暂为占位，点击不做任何事。 */}
+      <button className="settings-button" title="设置" aria-label="设置">
+        <GearIcon />
       </button>
     </header>
   );

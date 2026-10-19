@@ -29,8 +29,6 @@ export interface DiaryEditorHandle {
     insert: (pictures: Picture[]) => void;
   };
   focus: () => void;
-  undo: () => void;
-  redo: () => void;
 }
 interface Props {
   /** Read only on mount; the parent remounts the editor (via `key`) to load another document. */
@@ -166,12 +164,6 @@ function DiaryEditor(props: Props) {
       reserveInsertion,
       focus: () => {
         editor.commands.focus();
-      },
-      undo: () => {
-        editor.chain().focus().undo().run();
-      },
-      redo: () => {
-        editor.chain().focus().redo().run();
       },
     }),
     [editor],
