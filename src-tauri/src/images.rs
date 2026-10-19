@@ -2,9 +2,12 @@
 //! byte-for-byte by db.rs, thumbnails only live in memory (store.rs).
 use crate::model::{Picture, Result};
 use image::{
-    codecs::jpeg::JpegEncoder,
+    codecs::{
+        jpeg::JpegEncoder,
+        png::{CompressionType, FilterType, PngEncoder},
+    },
     error::{ImageError, LimitErrorKind},
-    DynamicImage, ImageFormat, ImageReader,
+    DynamicImage, ExtendedColorType, ImageEncoder, ImageFormat, ImageReader,
 };
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
@@ -94,6 +97,60 @@ pub fn prepare(bytes: &[u8]) -> Result<(Picture, Vec<u8>)> {
     };
     Ok((picture, encode_thumbnail(&img)?))
 }
+/// The pixels of an original for other programs (one copied image): a packed DIB
+/// (24-bit, bottom-up, transparency flattened onto white, since most programs
+/// ignore DIB alpha) and a PNG (the original itself when it is one, so it keeps
+/// its transparency). Slow for large photos: call without holding the store lock.
+pub fn clipboard_pixels(original: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    let img = decode(original)?;
+    let png = if image::guess_format(original).ok() == Some(ImageFormat::Png) {
+        original.to_vec()
+    } else {
+        let mut out = Vec::new();
+        let encoder =
+            PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive);
+        if img.color().has_alpha() {
+            let rgba = img.to_rgba8();
+            encoder.write_image(&rgba, rgba.width(), rgba.height(), ExtendedColorType::Rgba8)
+        } else {
+            let rgb = img.to_rgb8();
+            encoder.write_image(&rgb, rgb.width(), rgb.height(), ExtendedColorType::Rgb8)
+        }
+        .map_err(|e| e.to_string())?;
+        out
+    };
+    Ok((dib(&img), png))
+}
+/// BITMAPINFOHEADER, then 24-bit BGR rows, bottom row first, each padded to 4 bytes.
+fn dib(img: &DynamicImage) -> Vec<u8> {
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let stride = (width as usize * 3).div_ceil(4) * 4;
+    let mut out = Vec::with_capacity(40 + stride * height as usize);
+    out.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    out.extend_from_slice(&(width as i32).to_le_bytes());
+    out.extend_from_slice(&(height as i32).to_le_bytes()); // positive: bottom-up
+    out.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+    out.extend_from_slice(&24u16.to_le_bytes()); // biBitCount
+    out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    out.extend_from_slice(&((stride * height as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes()); // 72 dpi
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+    for y in (0..height).rev() {
+        let start = out.len();
+        for x in 0..width {
+            let [r, g, b, a] = rgba.get_pixel(x, y).0;
+            let a = a as u32;
+            // Over white: c·a + 255·(1 − a).
+            let over = |c: u8| ((c as u32 * a + 255 * (255 - a) + 127) / 255) as u8;
+            out.extend_from_slice(&[over(b), over(g), over(r)]);
+        }
+        out.resize(start + stride, 0);
+    }
+    out
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +213,27 @@ mod tests {
         assert_eq!(error(&bmp_claiming(1, 20000)), TOO_LARGE);
         // Within 16000 px, but 15000×15000×3 bytes exceed the decode budget.
         assert_eq!(error(&bmp_claiming(15000, 15000)), TOO_MUCH_MEMORY);
+    }
+    #[test]
+    fn clipboard_pixels_are_a_white_backed_dib_and_a_png() {
+        let mut img = image::RgbaImage::new(3, 2);
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255])); // top left: red
+        img.put_pixel(2, 1, image::Rgba([0, 0, 255, 0])); // bottom right: transparent
+        let png = encoded(DynamicImage::ImageRgba8(img), ImageFormat::Png);
+        let (dib, out) = clipboard_pixels(&png).unwrap();
+        // A PNG original is handed over unchanged.
+        assert_eq!(out, png);
+        assert_eq!(&dib[4..8], &3i32.to_le_bytes());
+        assert_eq!(&dib[8..12], &2i32.to_le_bytes());
+        assert_eq!(&dib[14..16], &24u16.to_le_bytes());
+        // Rows of 3 × 3 bytes padded to 12; the bottom row comes first.
+        assert_eq!(dib.len(), 40 + 12 * 2);
+        assert_eq!(&dib[40 + 6..40 + 9], &[255, 255, 255]); // transparent → white
+        assert_eq!(&dib[52..55], &[0, 0, 255]); // red as BGR
+        let jpeg = encoded(DynamicImage::new_rgb8(5, 4), ImageFormat::Jpeg);
+        let (_, out) = clipboard_pixels(&jpeg).unwrap();
+        assert_eq!(image::guess_format(&out).unwrap(), ImageFormat::Png);
+        assert_eq!(size(&out), (5, 4));
     }
     #[test]
     fn files_over_256_mb_are_rejected_before_decoding() {

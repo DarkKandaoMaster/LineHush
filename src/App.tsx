@@ -41,7 +41,7 @@ export default function App() {
   const [position, setPosition] = useState({ line: 1, column: 1 });
   const counts = useMemo(() => stats(document), [document]);
   const preview = useImagePreview(session);
-  const importFiles = useImageImport(session, editor);
+  const images = useImageImport(session, editor);
 
   useWindowGuards(session, preview.dialog);
   useWindowTitle(session, title, dirty);
@@ -71,7 +71,9 @@ export default function App() {
           initial={document}
           disabled={busy}
           onChange={session.update}
-          onFiles={importFiles}
+          onFiles={images.importFiles}
+          onImages={images.pasteCopied}
+          onCopy={images.copy}
           onPreview={preview.show}
           onSelection={setPosition}
         />
@@ -93,7 +95,9 @@ export default function App() {
         multiple
         tabIndex={-1}
         onChange={(event) => {
-          void importFiles(Array.from(event.currentTarget.files ?? []));
+          void images.importFiles(
+            Array.from(event.currentTarget.files ?? []),
+          );
           event.currentTarget.value = "";
         }}
       />

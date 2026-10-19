@@ -139,6 +139,13 @@ impl Db {
             .map(drop)
             .map_err(sql)
     }
+    pub fn has_image(&self, id: &str) -> Result<bool> {
+        self.conn
+            .query_row("SELECT 1 FROM images WHERE id = ?1", [id], |_| Ok(()))
+            .optional()
+            .map(|row| row.is_some())
+            .map_err(sql)
+    }
     pub fn image(&self, id: &str) -> Result<Option<Vec<u8>>> {
         self.conn
             .query_row("SELECT data FROM images WHERE id = ?1", [id], |row| {

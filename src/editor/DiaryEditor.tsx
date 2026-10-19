@@ -10,9 +10,9 @@ import {
 import { EditorContent, useEditor, type UseEditorOptions } from "@tiptap/react";
 import { Fragment, Slice, type Node as PmNode } from "@tiptap/pm/model";
 import { NodeSelection, type Transaction } from "@tiptap/pm/state";
-import { closeHistory } from "@tiptap/pm/history";
+import { closeHistory, redo, undo } from "@tiptap/pm/history";
 import { extensions } from "./schema";
-import { caretAt } from "./image-view";
+import { BlockRange, clipboardImages, selectedPictures } from "./image-view";
 import {
   fromEditor,
   fromText,
@@ -34,7 +34,12 @@ interface Props {
   ref: Ref<DiaryEditorHandle>;
   onChange: (doc: Diary) => void;
   onSelection: (position: { line: number; column: number }) => void;
-  onFiles: (files: File[]) => void;
+  /** `fromClipboard`: pasted, possibly the files of a LineHush copy. */
+  onFiles: (files: File[], fromClipboard?: boolean) => void;
+  /** Images copied in LineHush, pasted under the same ids. */
+  onImages: (pictures: Picture[]) => void;
+  /** See ImageOptions.copy. */
+  onCopy: (pictures: Picture[], afterBrowser: boolean) => boolean;
   onPreview: (pic: Picture) => void;
 }
 /** Status bar line of top-level node `index`: a run of images is one line, as in the file. */
@@ -62,7 +67,11 @@ function DiaryEditor(props: Props) {
     latest.current = props;
   });
   const [options] = useState((): UseEditorOptions => ({
-    extensions: extensions((pic) => latest.current.onPreview(pic)),
+    extensions: extensions({
+      preview: (pic) => latest.current.onPreview(pic),
+      copy: (pictures, afterBrowser) =>
+        latest.current.onCopy(pictures, afterBrowser),
+    }),
     content: toEditor(props.initial),
     editorProps: {
       attributes: {
@@ -83,12 +92,52 @@ function DiaryEditor(props: Props) {
         });
         return lines.join("\n");
       },
+      handleDOMEvents: {
+        // Undo / redo are bound here as well as in UndoRedo's keymap, by the
+        // letter or, when an input method reports the key as "Process", by its
+        // position. This handler runs before ProseMirror's composition check,
+        // which can hold back the keymap; Ctrl+Z still worked then (the browser's
+        // own undo reaches the history as a beforeinput event) but Ctrl+Y did
+        // not, as the browser never had anything to redo.
+        keydown(view, event) {
+          if (
+            !event.ctrlKey ||
+            event.altKey ||
+            event.metaKey ||
+            event.isComposing ||
+            !view.editable
+          )
+            return false;
+          const letter = /^[a-z]$/i.test(event.key)
+            ? event.key.toLowerCase()
+            : ({ KeyZ: "z", KeyY: "y" } as Record<string, string>)[event.code];
+          const command =
+            (letter === "y" && !event.shiftKey) ||
+            (letter === "z" && event.shiftKey)
+              ? redo
+              : letter === "z"
+                ? undo
+                : null;
+          if (!command) return false;
+          event.preventDefault();
+          command(view.state, view.dispatch);
+          return true;
+        },
+      },
       handlePaste(view, event) {
         const data = event.clipboardData;
         if (!data) return true;
+        // Copied in LineHush: the same images, not imported again. WebView2 hides
+        // the HTML when there are files too (a copy from Rust), so those are
+        // recognised in onFiles; this covers HTML without files.
+        const pictures = clipboardImages(data.getData("text/html"));
+        if (pictures) {
+          latest.current.onImages(pictures);
+          return true;
+        }
         const files = imageFiles(data.files);
         if (files.length) {
-          latest.current.onFiles(files);
+          latest.current.onFiles(files, true);
           return true;
         }
         const nodes = fromText(data.getData("text/plain")).blocks.map((block) =>
@@ -153,11 +202,8 @@ function DiaryEditor(props: Props) {
         // Each picture is its own node; neighbouring images make up one group.
         const nodes = pictures.map((pic) => image.create(pic));
         let at = state.selection.to;
-        if (
-          state.selection instanceof NodeSelection &&
-          state.selection.node.type === image
-        ) {
-          // After the selected image, inside its group.
+        if (selectedPictures(state)) {
+          // After the selected image(s), inside their group.
           tr.insert(at, nodes);
         } else if (
           state.selection.empty &&
@@ -180,8 +226,13 @@ function DiaryEditor(props: Props) {
         const end = at + nodes.reduce((size, node) => size + node.nodeSize, 0);
         if (tr.doc.lastChild?.type === image)
           tr.insert(tr.doc.content.size, state.schema.nodes.paragraph.create());
-        // The caret goes right after the new images (a gap cursor if more images follow).
-        tr.setSelection(caretAt(tr.doc, end, 1));
+        // The new images end up selected, so a second paste follows them and
+        // Ctrl+C / Delete act on them.
+        tr.setSelection(
+          nodes.length === 1
+            ? NodeSelection.create(tr.doc, at)
+            : new BlockRange(tr.doc.resolve(at), tr.doc.resolve(end)),
+        );
         view.dispatch(tr.scrollIntoView());
         view.focus();
       },
@@ -214,5 +265,7 @@ export default memo(
     prev.onChange === next.onChange &&
     prev.onSelection === next.onSelection &&
     prev.onFiles === next.onFiles &&
+    prev.onImages === next.onImages &&
+    prev.onCopy === next.onCopy &&
     prev.onPreview === next.onPreview,
 );

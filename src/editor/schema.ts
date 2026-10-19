@@ -4,8 +4,12 @@ import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
 import { UndoRedo, Gapcursor } from "@tiptap/extensions";
 import { NodeSelection, TextSelection, type Selection } from "@tiptap/pm/state";
-import type { Picture } from "../core/document";
-import { BlockRange, image, removeRange } from "./image-view";
+import {
+  BlockRange,
+  image,
+  removeRange,
+  type ImageOptions,
+} from "./image-view";
 
 const PlainKeys = Extension.create({
   name: "plainKeys",
@@ -40,7 +44,7 @@ const PlainKeys = Extension.create({
     };
   },
 });
-export function extensions(preview: (pic: Picture) => void) {
+export function extensions(images: ImageOptions) {
   return [
     Document,
     Paragraph.extend({ content: "text*", marks: "", whitespace: "pre" }),
@@ -50,7 +54,7 @@ export function extensions(preview: (pic: Picture) => void) {
     // Paragraph must stay the first block type (the default for new lines and the
     // gap cursor). Later extensions get keys first, so the image keys (Up / Down)
     // run before the gap cursor's.
-    image(preview),
+    image(images),
     PlainKeys,
   ];
 }

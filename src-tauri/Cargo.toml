@@ -41,3 +41,6 @@ strip = true
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5.4"

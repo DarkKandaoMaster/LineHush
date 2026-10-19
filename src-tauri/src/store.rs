@@ -255,6 +255,19 @@ impl Store {
             .insert(id.to_owned(), Arc::new(OnceLock::from(Ok(thumbnail))));
         Ok(())
     }
+    /// Whether this document can show `id`: the working copy or the open file holds it.
+    pub fn has_image(&self, id: &str) -> Result<bool> {
+        Ok(self.work()?.has_image(id)?
+            || match &self.file {
+                Some((_, db)) => db.has_image(id)?,
+                None => false,
+            })
+    }
+    /// Stores an original pasted from another document (its id already checked)
+    /// in the working copy, so it is saved with this document.
+    pub fn adopt_image(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        self.work()?.insert_image(id, bytes)
+    }
     /// An original, from the working copy or else from the open file.
     pub fn image(&self, id: &str) -> Result<Vec<u8>> {
         if let Some(bytes) = self.work()?.image(id)? {

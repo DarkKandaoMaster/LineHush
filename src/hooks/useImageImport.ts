@@ -1,18 +1,39 @@
-import { useCallback, type RefObject } from "react";
+import { useCallback, useMemo, type RefObject } from "react";
 import type { Picture } from "../core/document";
-import { importImage } from "../core/native";
+import {
+  copiedImages,
+  copyImages,
+  importImage,
+  pasteImages,
+} from "../core/native";
 import type { Session } from "../core/session";
 import type { DiaryEditorHandle } from "../editor/DiaryEditor";
 
-/** Imports files one by one through Rust, then inserts them where the selection was when the import started. */
+/** `<12 hex digits of the id>-<name>`: how a LineHush copy names its files. */
+const STAGED = /^([0-9a-f]{12})-(.+)$/;
+
+/**
+ * Image import, paste and copy:
+ * - `importFiles` imports files one by one through Rust; pasted files that are
+ *   still LineHush's last copy are not imported but used as they are;
+ * - `pasteCopied` pastes images copied in LineHush under the same ids, after
+ *   Rust has made sure this document holds their originals;
+ * - `copy` puts selected images on the system clipboard.
+ * Imported and pasted images go where the selection was when the work started.
+ */
 export function useImageImport(
   session: Session,
   editor: RefObject<DiaryEditorHandle | null>,
 ) {
-  return useCallback(
-    async (files: File[]) => {
+  /** Runs `load` under the import lock, then inserts what it produced. */
+  const insertAfter = useCallback(
+    async (
+      count: number,
+      load: (images: Picture[]) => Promise<void>,
+      failure: (e: unknown) => string,
+    ) => {
       // The session snapshot updates synchronously, so overlapping paste events see the lock.
-      if (session.getSnapshot().importing || !files.length) return;
+      if (session.getSnapshot().importing || !count) return;
       if (!session.desktop) {
         session.setError("请在桌面版导入图片。");
         return;
@@ -21,21 +42,10 @@ export function useImageImport(
       if (!insertion) return;
       session.setImporting(true);
       const images: Picture[] = [];
-      let current = "";
       try {
-        for (const file of files) {
-          current = file.name;
-          session.setNotice(
-            `正在处理图片 ${images.length + 1} / ${files.length}…`,
-          );
-          const pic = await importImage(await file.arrayBuffer());
-          images.push({ ...pic, name: file.name });
-        }
+        await load(images);
       } catch (e) {
-        // Rust says why (format, damage, size); the name says which file.
-        session.setError(
-          current ? `无法插入图片“${current}”：${e}` : `无法插入图片：${e}`,
-        );
+        session.setError(failure(e));
       } finally {
         // Unlock first so a throwing insertion cannot leave the lock held.
         session.setImporting(false);
@@ -50,5 +60,65 @@ export function useImageImport(
       }
     },
     [session, editor],
+  );
+  const importFiles = useCallback(
+    (files: File[], fromClipboard = false) => {
+      let current = "";
+      return insertAfter(
+        files.length,
+        async (images) => {
+          if (fromClipboard) {
+            const copied = await copiedImages();
+            if (copied) {
+              images.push(...copied);
+              return;
+            }
+          }
+          for (const file of files) {
+            current = file.name;
+            session.setNotice(
+              `正在处理图片 ${images.length + 1} / ${files.length}…`,
+            );
+            const pic = await importImage(await file.arrayBuffer());
+            // A file a LineHush copy left (e.g. from an earlier session) keeps
+            // its original name.
+            const staged = STAGED.exec(file.name);
+            const name =
+              staged && pic.id.startsWith(staged[1]) ? staged[2] : file.name;
+            images.push({ ...pic, name });
+          }
+        },
+        // Rust says why (format, damage, size); the name says which file.
+        (e) =>
+          current ? `无法插入图片“${current}”：${e}` : `无法插入图片：${e}`,
+      );
+    },
+    [insertAfter, session],
+  );
+  const pasteCopied = useCallback(
+    (pictures: Picture[]) =>
+      insertAfter(
+        pictures.length,
+        async (images) => {
+          await pasteImages(pictures.map((pic) => pic.id));
+          images.push(...pictures);
+        },
+        (e) => `无法粘贴图片：${e}`,
+      ),
+    [insertAfter],
+  );
+  const copy = useCallback(
+    (pictures: Picture[], afterBrowser: boolean) => {
+      if (!session.desktop) return false;
+      copyImages(pictures, afterBrowser).catch((e) =>
+        session.setError(`复制图片失败：${e}`),
+      );
+      return true;
+    },
+    [session],
+  );
+  return useMemo(
+    () => ({ importFiles, pasteCopied, copy }),
+    [importFiles, pasteCopied, copy],
   );
 }

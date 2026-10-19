@@ -38,6 +38,25 @@ export class BlockRange extends Selection {
   toJSON() {
     return { type: "blockRange", anchor: this.anchor, head: this.head };
   }
+  // The default bookmark would turn the range into a text selection when the
+  // history or an insertion restores it.
+  getBookmark() {
+    return new RangeBookmark(this.anchor, this.head);
+  }
+}
+class RangeBookmark {
+  anchor: number;
+  head: number;
+  constructor(anchor: number, head: number) {
+    this.anchor = anchor;
+    this.head = head;
+  }
+  map(mapping: Mappable) {
+    return new RangeBookmark(mapping.map(this.anchor), mapping.map(this.head));
+  }
+  resolve(doc: PmNode) {
+    return rangeSelection(doc, this.anchor, this.head);
+  }
 }
 
 const isImage = (node: PmNode | null | undefined) =>
@@ -213,6 +232,77 @@ function leaveImages(editor: Editor, dir: -1 | 1): boolean {
   return true;
 }
 
+/**
+ * Up / Down from a text line into the run of images right above / below it:
+ * from the line's first / last visual line, select the nearest image (the last
+ * of the run above, the first of the run below).
+ *
+ * ProseMirror's own check (`endOfTextblock`) measures the caret at the position
+ * after it, so at a soft wrap a caret drawn at the end of the upper visual line
+ * counts as on the lower one; the browser's native move then skips the
+ * uneditable images. Caret rectangles do not help either: a collapsed range at a
+ * wrap reports both lines whichever one the caret is drawn on. Only the
+ * browser's own line move knows, so it is asked (`Selection.modify`): if it
+ * stays inside this line, that move is kept; if it leaves (or cannot move), the
+ * caret was on the edge line. A non-empty selection first collapses toward the
+ * key, as the browser does; Shift+Up / Down are not bound here.
+ */
+function enterImages(editor: Editor, dir: -1 | 1): boolean {
+  const { view } = editor;
+  const sel = view.state.selection;
+  if (view.composing || !(sel instanceof TextSelection)) return false;
+  const $pos = dir < 0 ? sel.$from : sel.$to;
+  if ($pos.depth !== 1 || !$pos.parent.isTextblock) return false;
+  const edge = dir < 0 ? $pos.before() : $pos.after();
+  const $edge = view.state.doc.resolve(edge);
+  const neighbour = dir < 0 ? $edge.nodeBefore : $edge.nodeAfter;
+  if (!neighbour || !isImage(neighbour)) return false;
+  if (!sel.empty)
+    view.dispatch(
+      view.state.tr.setSelection(
+        TextSelection.create(view.state.doc, $pos.pos),
+      ),
+    );
+  const line = view.nodeDOM($pos.before()) as HTMLElement | null;
+  const domSel = view.dom.ownerDocument.getSelection();
+  const measurable =
+    !!line &&
+    !!domSel?.rangeCount &&
+    domSel.isCollapsed &&
+    !!domSel.focusNode &&
+    line.contains(domSel.focusNode) &&
+    typeof domSel.modify === "function";
+  if (measurable) {
+    const { focusNode, focusOffset } = domSel!;
+    domSel!.modify("move", dir < 0 ? "backward" : "forward", "line");
+    const moved =
+      domSel!.focusNode !== focusNode || domSel!.focusOffset !== focusOffset;
+    if (moved && domSel!.focusNode && line!.contains(domSel!.focusNode)) {
+      // Another visual line of this text line. ProseMirror leaves an
+      // equivalent DOM selection alone, so the caret keeps the line it is drawn on.
+      const pos = view.posAtDOM(domSel!.focusNode, domSel!.focusOffset);
+      view.dispatch(
+        view.state.tr
+          .setSelection(TextSelection.create(view.state.doc, pos))
+          .scrollIntoView(),
+      );
+      return true;
+    }
+  } else if (!view.endOfTextblock(dir < 0 ? "up" : "down")) return false;
+  // An empty line has one visual line and lands here too.
+  view.dispatch(
+    view.state.tr
+      .setSelection(
+        NodeSelection.create(
+          view.state.doc,
+          dir < 0 ? edge - neighbour.nodeSize : edge,
+        ),
+      )
+      .scrollIntoView(),
+  );
+  return true;
+}
+
 const isImageSlice = (slice: Slice) =>
   !slice.openStart &&
   !slice.openEnd &&
@@ -220,6 +310,109 @@ const isImageSlice = (slice: Slice) =>
   Array.from({ length: slice.content.childCount }, (_, i) =>
     slice.content.child(i),
   ).every(isImage);
+
+const pictureOf = (node: PmNode): Picture => ({
+  id: node.attrs.id,
+  name: node.attrs.name,
+  width: node.attrs.width,
+  height: node.attrs.height,
+});
+
+/** The pictures of a selection made only of whole images (one, or a range of them); else null. */
+export function selectedPictures(state: EditorState): Picture[] | null {
+  const sel = state.selection;
+  if (!(sel instanceof NodeSelection || sel instanceof BlockRange) || sel.empty)
+    return null;
+  const slice = sel.content();
+  if (!isImageSlice(slice)) return null;
+  const pictures: Picture[] = [];
+  slice.content.forEach((node) => pictures.push(pictureOf(node)));
+  return pictures;
+}
+
+/**
+ * HTML for copied images, as Rust's clipboard.rs writes it (there also with a
+ * `file:` URL as `src`): what `clipboardImages` reads back.
+ */
+export function imagesHtml(pictures: Picture[]): string {
+  return pictures
+    .map((pic) => {
+      const img = document.createElement("img");
+      img.alt = pic.name;
+      img.dataset.linehushId = pic.id;
+      img.dataset.linehushName = pic.name;
+      img.dataset.linehushWidth = String(pic.width);
+      img.dataset.linehushHeight = String(pic.height);
+      return img.outerHTML;
+    })
+    .join("");
+}
+
+/**
+ * Images copied in LineHush, from the clipboard's HTML: pasted under the same
+ * ids instead of being imported again. Null unless the HTML holds only such images.
+ */
+export function clipboardImages(html: string): Picture[] | null {
+  if (!html.includes("data-linehush-id")) return null;
+  const body = new DOMParser().parseFromString(html, "text/html").body;
+  const images = Array.from(body.querySelectorAll("img"));
+  if (
+    !images.length ||
+    body.textContent?.trim() ||
+    images.some((img) => !/^[0-9a-f]{64}$/.test(img.dataset.linehushId ?? ""))
+  )
+    return null;
+  return images.map((img) => ({
+    id: img.dataset.linehushId!,
+    name: img.dataset.linehushName ?? "",
+    width: Number(img.dataset.linehushWidth) || 0,
+    height: Number(img.dataset.linehushHeight) || 0,
+  }));
+}
+
+/** Removes the selected images, as Ctrl+X does. */
+function removeSelected(view: EditorView) {
+  const { from, to } = view.state.selection;
+  view.dispatch(
+    removeRange(view.state.tr, from, to, -1)
+      .scrollIntoView()
+      .setMeta("uiEvent", "cut"),
+  );
+}
+
+/**
+ * Ctrl+C / Ctrl+X on images: they go to the system clipboard through Rust
+ * (see ImageOptions.copy) and the browser writes nothing. False when the
+ * selection is not just images or copying is unavailable (no desktop), so the
+ * browser's copy event follows.
+ */
+function copyKey(view: EditorView, copy: ImageOptions["copy"], cut: boolean) {
+  const pictures = selectedPictures(view.state);
+  if (!pictures || !copy(pictures, false)) return false;
+  if (cut && view.editable) removeSelected(view);
+  return true;
+}
+
+/**
+ * Copy / cut events (the context menu, or no desktop): the browser writes the
+ * clipboard after this event, so it gets the images' HTML, enough to paste them
+ * back in LineHush; Rust then replaces it with the full set of formats.
+ */
+function copyEvent(
+  view: EditorView,
+  event: ClipboardEvent,
+  copy: ImageOptions["copy"],
+  cut: boolean,
+) {
+  const pictures = selectedPictures(view.state);
+  if (!pictures || !event.clipboardData) return false;
+  event.preventDefault();
+  event.clipboardData.clearData();
+  event.clipboardData.setData("text/html", imagesHtml(pictures));
+  copy(pictures, true);
+  if (cut && view.editable) removeSelected(view);
+  return true;
+}
 
 /**
  * Drop position for dragged images. Images flow in rows, so over an image the
@@ -243,8 +436,11 @@ function dropAt(view: EditorView, event: DragEvent, slice: Slice) {
 
 const marks = new PluginKey<number | null>("imageMarks");
 
-/** Draws the gap cursor, the drop position and images inside a range selection; moves dragged images. */
-function imagePlugin() {
+/**
+ * Draws the gap cursor, the drop position and images inside a range selection;
+ * moves dragged images; copies selected images from copy / cut events.
+ */
+function imagePlugin(copy: ImageOptions["copy"]) {
   const setDrop = (view: EditorView, pos: number | null) => {
     if (marks.getState(view.state) !== pos)
       view.dispatch(view.state.tr.setMeta(marks, pos));
@@ -315,6 +511,8 @@ function imagePlugin() {
           : null;
       },
       handleDOMEvents: {
+        copy: (view, event) => copyEvent(view, event, copy, false),
+        cut: (view, event) => copyEvent(view, event, copy, true),
         dragover(view, event) {
           const slice = view.dragging?.slice;
           setDrop(
@@ -370,12 +568,22 @@ function imagePlugin() {
   });
 }
 
+export interface ImageOptions {
+  /** Opens the original (double click). */
+  preview: (pic: Picture) => void;
+  /**
+   * Puts the originals on the system clipboard; `afterBrowser` when the browser
+   * writes it too (copy events). Returns false when this is unavailable.
+   */
+  copy: (pictures: Picture[], afterBrowser: boolean) => boolean;
+}
+
 /**
  * One picture per node. Neighbouring image nodes form an image group: CSS lays
  * them out in wrapping rows, and the document model merges them into one
  * `images` block, so the file format does not change.
  */
-export function image(preview: (pic: Picture) => void) {
+export function image({ preview, copy }: ImageOptions) {
   return Node.create({
     name: "image",
     group: "block",
@@ -395,19 +603,18 @@ export function image(preview: (pic: Picture) => void) {
         Delete: () => removeImages(this.editor, 1),
         "Shift-ArrowLeft": () => extendByImage(this.editor, -1),
         "Shift-ArrowRight": () => extendByImage(this.editor, 1),
-        ArrowUp: () => leaveImages(this.editor, -1),
-        ArrowDown: () => leaveImages(this.editor, 1),
+        ArrowUp: () =>
+          leaveImages(this.editor, -1) || enterImages(this.editor, -1),
+        ArrowDown: () =>
+          leaveImages(this.editor, 1) || enterImages(this.editor, 1),
+        "Mod-c": () => copyKey(this.editor.view, copy, false),
+        "Mod-x": () => copyKey(this.editor.view, copy, true),
       };
     },
-    addProseMirrorPlugins: () => [imagePlugin()],
+    addProseMirrorPlugins: () => [imagePlugin(copy)],
     addNodeView() {
       return ({ node }) => {
-        const pic: Picture = {
-          id: node.attrs.id,
-          name: node.attrs.name,
-          width: node.attrs.width,
-          height: node.attrs.height,
-        };
+        const pic = pictureOf(node);
         const dom = document.createElement("div");
         dom.className = "image-item";
         dom.contentEditable = "false";

@@ -46,6 +46,23 @@ export const importImage = (bytes: ArrayBuffer) =>
 export const exportImage = (id: string, path: string) =>
   invoke<void>("export_image", { id, path });
 /**
+ * Puts the originals on the system clipboard: as files, as HTML that LineHush
+ * pastes back under the same ids and, for one image, as pixels. With
+ * `afterBrowser` (a copy event the browser also writes) Rust lets the browser's
+ * write land first and replaces it.
+ */
+export const copyImages = (pictures: Picture[], afterBrowser: boolean) =>
+  invoke<void>("copy_images", { pictures, afterBrowser });
+/**
+ * The images of LineHush's last copy, made available to this document, while
+ * the clipboard still holds exactly that copy; otherwise null. WebView2 shows
+ * such a paste only as files, so this is how it keeps the same images.
+ */
+export const copiedImages = () => invoke<Picture[] | null>("copied_images");
+/** Makes copied images (from any document) available to this one before they are pasted. */
+export const pasteImages = (ids: string[]) =>
+  invoke<void>("paste_images", { ids });
+/**
  * Discards unsaved changes and drops unreferenced images; called right before the
  * window closes. Best effort: cleanup failures come back as text, not as an error.
  */
