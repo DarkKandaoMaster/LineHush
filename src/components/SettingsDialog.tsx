@@ -30,7 +30,8 @@ const FONTS = [
   "LXGW WenKai",
   "Noto Sans CJK SC",
 ];
-const SIZES = [12, 14, 16, 18, 20, 24];
+/** In pt; 10 is the default (same as Notepad). */
+const SIZES = [9, 10, 10.5, 11, 12, 14];
 
 interface Props {
   dialogRef: Ref<HTMLDialogElement>;
@@ -43,13 +44,13 @@ interface Props {
 
 /**
  * Changes apply while typing; there is nothing to confirm. The inputs keep
- * what is being typed (e.g. "1" on the way to "18") and only valid values are
- * applied; leaving a field shows the value in use again.
+ * what is being typed (e.g. "1" on the way to "18") and only valid values
+ * (6–30 pt, at most one decimal, e.g. 10.5) are applied; leaving a field shows the value in use again.
  */
 export default function SettingsDialog(props: Props) {
   const { settings, onChange } = props;
   const [family, setFamily] = useState(settings.fontFamily);
-  const [size, setSize] = useState(String(settings.fontSize));
+  const [size, setSize] = useState(String(settings.fontSizePt));
   // Values changed elsewhere (loading, presets, 恢复默认) replace what is shown.
   useEffect(() => {
     setFamily((typed) =>
@@ -58,22 +59,24 @@ export default function SettingsDialog(props: Props) {
   }, [settings.fontFamily]);
   useEffect(() => {
     setSize((typed) =>
-      Number(typed) === settings.fontSize ? typed : String(settings.fontSize),
+      Number(typed) === settings.fontSizePt
+        ? typed
+        : String(settings.fontSizePt),
     );
-  }, [settings.fontSize]);
+  }, [settings.fontSizePt]);
   const typeSize = (value: string) => {
     setSize(value);
     const number = Number(value);
     if (
       value.trim() &&
-      Number.isInteger(number) &&
+      Math.round(number * 10) / 10 === number &&
       number >= MIN_FONT_SIZE &&
       number <= MAX_FONT_SIZE
     )
-      onChange({ fontSize: number });
+      onChange({ fontSizePt: number });
   };
   const showFamily = () => setFamily(settings.fontFamily);
-  const showSize = () => setSize(String(settings.fontSize));
+  const showSize = () => setSize(String(settings.fontSizePt));
   // Enter would submit the form and close the dialog.
   const enter = (show: () => void) => (event: KeyboardEvent) => {
     if (event.key !== "Enter") return;
@@ -110,14 +113,14 @@ export default function SettingsDialog(props: Props) {
               <option key={font} value={font} />
             ))}
           </datalist>
-          <label htmlFor="settings-size">字号</label>
+          <label htmlFor="settings-size">字号（pt）</label>
           <div className="settings-size">
             <input
               id="settings-size"
               type="number"
               min={MIN_FONT_SIZE}
               max={MAX_FONT_SIZE}
-              step={1}
+              step={0.1}
               value={size}
               onChange={(event) => typeSize(event.currentTarget.value)}
               onBlur={showSize}
@@ -127,9 +130,9 @@ export default function SettingsDialog(props: Props) {
               <button
                 key={preset}
                 type="button"
-                className={preset === settings.fontSize ? "selected" : ""}
-                aria-pressed={preset === settings.fontSize}
-                onClick={() => onChange({ fontSize: preset })}
+                className={preset === settings.fontSizePt ? "selected" : ""}
+                aria-pressed={preset === settings.fontSizePt}
+                onClick={() => onChange({ fontSizePt: preset })}
               >
                 {preset}
               </button>

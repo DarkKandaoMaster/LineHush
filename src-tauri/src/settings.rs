@@ -14,18 +14,43 @@ pub const SETTINGS_FILE: &str = "settings.json";
 
 /// Missing fields (an older file) take their defaults; keep these in step with
 /// `DEFAULT_SETTINGS` in src/core/settings.ts. "微软雅黑" is Microsoft YaHei
-/// (not the UI variant); WebView2 finds fonts by their Chinese names.
+/// (not the UI variant); WebView2 finds fonts by their Chinese names. The size
+/// is in pt (1 pt = 4/3 CSS px); 10 pt matches Notepad's 10 pt (13.33 px).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub font_family: String,
-    pub font_size: f64,
+    #[serde(rename = "fontSizePt")]
+    pub font_size_pt: f64,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
             font_family: "微软雅黑".into(),
-            font_size: 14.0,
+            font_size_pt: 10.0,
+        }
+    }
+}
+
+/// What a file may hold: older files stored `fontSize` in px instead of
+/// `fontSizePt`. Only read; writes use `Settings`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Stored {
+    font_family: Option<String>,
+    #[serde(rename = "fontSizePt")]
+    font_size_pt: Option<f64>,
+    font_size: Option<f64>,
+}
+impl From<Stored> for Settings {
+    fn from(stored: Stored) -> Self {
+        let default = Settings::default();
+        Self {
+            font_family: stored.font_family.unwrap_or(default.font_family),
+            font_size_pt: stored
+                .font_size_pt
+                .or(stored.font_size.map(|px| px * 0.75))
+                .unwrap_or(default.font_size_pt),
         }
     }
 }
@@ -37,7 +62,8 @@ pub struct SettingsFile(pub PathBuf);
 pub fn read(path: &Path) -> Settings {
     fs::read(path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<Stored>(&bytes).ok())
+        .map(Settings::from)
         .unwrap_or_default()
 }
 /// Writes a temporary file first, so a failed write never leaves a truncated one.
@@ -74,20 +100,33 @@ mod tests {
         assert_eq!(read(&path), Settings::default());
         fs::write(&path, "{ 不是 json").unwrap();
         assert_eq!(read(&path), Settings::default());
-        fs::write(&path, r#"{"fontSize": 20}"#).unwrap();
+        fs::write(&path, r#"{"fontSizePt": 12}"#).unwrap();
         assert_eq!(
             read(&path),
             Settings {
-                font_size: 20.0,
+                font_size_pt: 12.0,
                 ..Settings::default()
             }
         );
+        // Older files stored the size in px.
+        fs::write(&path, r#"{"fontFamily": "宋体", "fontSize": 20}"#).unwrap();
+        assert_eq!(
+            read(&path),
+            Settings {
+                font_family: "宋体".into(),
+                font_size_pt: 15.0,
+            }
+        );
+        fs::write(&path, r#"{"fontSizePt": 10, "fontSize": 14}"#).unwrap();
+        assert_eq!(read(&path).font_size_pt, 10.0);
 
         let custom = Settings {
             font_family: "Consolas".into(),
-            font_size: 18.0,
+            font_size_pt: 13.5,
         };
         write(&path, &custom).unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\"fontSizePt\": 13.5") && !written.contains("\"fontSize\""));
         assert_eq!(read(&path), custom);
         fs::remove_dir_all(root).unwrap();
     }

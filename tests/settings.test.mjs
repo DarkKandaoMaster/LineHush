@@ -7,16 +7,33 @@ import {
   normalizeSettings,
 } from "../src/core/settings.ts";
 
-test("设置规范化：字号取整并限制在 8–40，字体去空白、空则默认", () => {
+test("设置规范化：字号（pt）保留一位小数并限制在 6–30，字体去空白、空则默认", () => {
+  assert.deepEqual(DEFAULT_SETTINGS, { fontFamily: "微软雅黑", fontSizePt: 10 });
   assert.deepEqual(normalizeSettings(null), DEFAULT_SETTINGS);
-  assert.deepEqual(normalizeSettings({ fontSize: "abc", fontFamily: 3 }), DEFAULT_SETTINGS);
-  assert.deepEqual(normalizeSettings({ fontFamily: "  Consolas ", fontSize: 15.6 }), {
+  assert.deepEqual(normalizeSettings({ fontSizePt: "abc", fontFamily: 3 }), DEFAULT_SETTINGS);
+  assert.deepEqual(normalizeSettings({ fontFamily: "  Consolas ", fontSizePt: 11.6 }), {
     fontFamily: "Consolas",
-    fontSize: 16,
+    fontSizePt: 11.6,
   });
-  assert.equal(normalizeSettings({ fontSize: 2 }).fontSize, 8);
-  assert.equal(normalizeSettings({ fontSize: 99 }).fontSize, 40);
+  assert.equal(normalizeSettings({ fontSizePt: 10.5 }).fontSizePt, 10.5);
+  assert.equal(normalizeSettings({ fontSizePt: 12.55 }).fontSizePt, 12.6);
+  assert.equal(normalizeSettings({ fontSizePt: 13.33 }).fontSizePt, 13.3);
+  assert.equal(normalizeSettings({ fontSizePt: "10.5" }).fontSizePt, 10.5);
+  assert.equal(normalizeSettings({ fontSizePt: 5.96 }).fontSizePt, 6);
+  assert.equal(normalizeSettings({ fontSizePt: 2 }).fontSizePt, 6);
+  assert.equal(normalizeSettings({ fontSizePt: 99 }).fontSizePt, 30);
   assert.equal(normalizeSettings({ fontFamily: "   " }).fontFamily, "微软雅黑");
+});
+
+test("旧设置文件的 fontSize（px）按 0.75 换算成 pt，有 fontSizePt 时以它为准", () => {
+  assert.deepEqual(normalizeSettings({ fontFamily: "宋体", fontSize: 13 }), {
+    fontFamily: "宋体",
+    fontSizePt: 9.8,
+  });
+  assert.equal(normalizeSettings({ fontSize: 14 }).fontSizePt, 10.5);
+  assert.equal(normalizeSettings({ fontSizePt: 10, fontSize: 14 }).fontSizePt, 10);
+  assert.equal(normalizeSettings({ fontSize: 99 }).fontSizePt, 30);
+  assert.equal("fontSize" in normalizeSettings({ fontSize: 14 }), false);
 });
 
 test("设置写成 CSS 变量：单个字体名加引号与回退字体，字体列表原样使用", () => {
@@ -42,11 +59,18 @@ test("设置写成 CSS 变量：单个字体名加引号与回退字体，字体
   const style = {};
   applySettings({ setProperty: (name, value) => (style[name] = value) }, {
     fontFamily: "SimSun",
-    fontSize: 18,
+    fontSizePt: 18,
   });
   assert.deepEqual(style, {
     "--editor-font-family":
       '"SimSun", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif',
-    "--editor-font-size": "18px",
+    "--editor-font-size": "18pt",
   });
+  applySettings(
+    { setProperty: (name, value) => (style[name] = value) },
+    normalizeSettings({ fontFamily: "SimSun", fontSizePt: 12.5 }),
+  );
+  assert.equal(style["--editor-font-size"], "12.5pt");
+  applySettings({ setProperty: (name, value) => (style[name] = value) }, DEFAULT_SETTINGS);
+  assert.equal(style["--editor-font-size"], "10pt");
 });

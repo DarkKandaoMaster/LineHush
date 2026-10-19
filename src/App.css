@@ -107,7 +107,7 @@ input:focus-visible {
     "Segoe UI",
     sans-serif
   );
-  font-size: var(--editor-font-size, 14px);
+  font-size: var(--editor-font-size, 10pt);
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
