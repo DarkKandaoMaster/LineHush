@@ -93,7 +93,6 @@ export default function App() {
         column={position.column}
         characters={counts.characters}
         images={counts.images}
-        status={status}
       />
       {/* 工具栏已无“插入图片”按钮，界面上无法打开此选择框；保留它只因 tests/native.mjs 经它导入图片。 */}
       <input
@@ -141,7 +140,7 @@ function useWindowTitle(session: Session, title: string, dirty: boolean) {
   useEffect(() => {
     if (session.desktop)
       void getCurrentWindow()
-        .setTitle(`${dirty ? "● " : ""}${title} — LineHush`)
+        .setTitle(`${dirty ? "● " : ""}${title}`)
         .catch(console.error);
   }, [session, title, dirty]);
 }

@@ -285,7 +285,11 @@ try {
   // --- Unnamed draft: stashed, recovered after a crash, saved via Save As ---
   let page = await start();
   let editor = page.getByRole("textbox", { name: "日记正文" });
-  const status = (text) => page.getByText(text, { exact: true });
+  // Unsaved changes show only as "● " at the start of the window title.
+  const dirty = (value) =>
+    expect
+      .poll(async () => (await windowTitle(page)).startsWith("● "))
+      .toBe(value);
   await editor.click();
   await page.keyboard.insertText("桌面端中文日记");
   await page.keyboard.press("Enter");
@@ -294,7 +298,7 @@ try {
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
   const draftLines = ["桌面端中文日记", "", "第二行", "", ""];
-  await expect(status("尚未保存")).toBeVisible();
+  await dirty(true);
   // The unnamed draft lives only in the working copy, a .hush file in the data folder.
   await stashed((doc) => JSON.stringify(lines(doc)) === JSON.stringify(draftLines));
   expect(existsSync(path.join(appData, "draft.hush"))).toBe(false);
@@ -302,7 +306,7 @@ try {
   page = await start();
   editor = page.getByRole("textbox", { name: "日记正文" });
   await expect(page.getByText("已恢复未保存的修改。")).toBeVisible();
-  await expect(status("尚未保存")).toBeVisible();
+  await dirty(true);
   await expect(editor.locator("p")).toHaveText(draftLines);
   passed("草稿崩溃恢复");
   // Ctrl+S on an unnamed document goes through the Save As dialog.
@@ -310,8 +314,8 @@ try {
   await editor.click();
   await page.keyboard.press("Control+s");
   const suggestedForDraft = await answerSaveDialog(file);
-  await expect(status("已保存")).toBeVisible();
-  await expect(page.getByText("测试.hush", { exact: true })).toBeVisible();
+  await dirty(false);
+  await expect.poll(() => windowTitle(page)).toBe("测试.hush");
   expect(lines(body(file))).toEqual(draftLines);
   expect(existsSync(file + ".tmp")).toBe(false);
   expect(stash()).toBeNull();
@@ -368,14 +372,21 @@ try {
   await expectGroups(editor, 1);
   await page.keyboard.press("Control+z");
   await expect(editor.locator(".image-tile img")).toHaveCount(2);
-  await editor.click();
-  await page.keyboard.press("Control+End");
+  // The first import replaced the empty line it went to: the document ends with
+  // the group. Enter on its last image starts a line after it; an import on an
+  // empty line below a text line replaces that line and makes a second group.
+  expect(await editor.locator("p").count()).toBe(draftLines.length - 1);
+  await editor.locator(".image-tile").last().click();
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("组后文字");
+  await page.keyboard.press("Enter");
   const blankLines = await editor.locator("p").count();
   await input().setInputFiles(source["空行之后.png"].file);
   await expectGroups(editor, 2);
-  expect(await editor.locator("p").count()).toBeGreaterThanOrEqual(blankLines);
+  expect(await editor.locator("p").count()).toBe(blankLines - 1);
   await page.keyboard.press("Control+z");
   await expectGroups(editor, 1);
+  expect(await editor.locator("p").count()).toBe(blankLines);
   const thumbnailsLoaded = () =>
     expect
       .poll(() =>
@@ -398,7 +409,7 @@ try {
   await page.keyboard.press("Enter");
   await page.keyboard.press("Control+z");
   await page.keyboard.press("Control+y");
-  await expect(status("尚未保存")).toBeVisible();
+  await dirty(true);
   await stashed(
     (doc) =>
       pictures(doc).length === 2 &&
@@ -416,7 +427,7 @@ try {
   passed("只在保存时写文件");
   const edited = stash();
   await page.keyboard.press("Control+s");
-  await expect(status("已保存")).toBeVisible();
+  await dirty(false);
   const saved = body(file);
   expect(saved).toEqual(edited);
   expect(saved.blocks.at(-1)).toEqual({ type: "line", text: "" });
@@ -461,11 +472,11 @@ try {
   await page.keyboard.press("Control+End");
   await page.keyboard.insertText("另存为同一文件");
   await page.keyboard.press("Enter");
-  await expect(status("尚未保存")).toBeVisible();
+  await dirty(true);
   await page.keyboard.press("Control+Shift+S");
   const suggestedForFile = await answerSaveDialog(file, { replace: true });
-  await expect(status("已保存")).toBeVisible();
-  await expect(page.getByText("测试.hush", { exact: true })).toBeVisible();
+  await dirty(false);
+  await expect.poll(() => windowTitle(page)).toBe("测试.hush");
   expect(body(file).blocks.slice(-2)).toEqual([
     { type: "line", text: "另存为同一文件" },
     { type: "line", text: "" },
@@ -478,11 +489,13 @@ try {
   const doomed = source["将删除.png"];
   await editor.click();
   await page.keyboard.press("Control+End");
+  // The import replaces the empty line the caret is on; keep one above it.
+  await page.keyboard.press("Enter");
   await input().setInputFiles(doomed.file);
   await expectGroups(editor, 2);
   await thumbnailsLoaded();
   await page.keyboard.press("Control+s");
-  await expect(status("已保存")).toBeVisible();
+  await dirty(false);
   expect(pictures(body(file)).map((p) => p.id)).toContain(doomed.id);
   // Delete removes only the selected image, the last one, which was a group on its own.
   await editor.locator(".image-tile").last().click();
@@ -490,7 +503,7 @@ try {
   await expect(editor.locator(".image-tile")).toHaveCount(2);
   await expectGroups(editor, 1);
   await page.keyboard.press("Control+s");
-  await expect(status("已保存")).toBeVisible();
+  await dirty(false);
   const before = body(file);
   expect(pictures(before).map((p) => p.id)).not.toContain(doomed.id);
   expect(storedIds(file)).toContain(doomed.id);
@@ -501,8 +514,8 @@ try {
   await editor.click();
   await page.keyboard.press("Control+End");
   await page.keyboard.insertText("关闭前输入");
-  await expect(status("尚未保存")).toBeVisible();
-  await expect(page.getByText("● 测试.hush", { exact: true })).toBeVisible();
+  await dirty(true);
+  await expect.poll(() => windowTitle(page)).toBe("● 测试.hush");
   const prompt = () =>
     page.getByRole("dialog", { name: "是否保存对“测试.hush”的更改？" });
   await requestClose(page);
@@ -569,8 +582,8 @@ try {
     JSON.parse(await readFile(path.join(appData, "recovery.json"), "utf8"));
   page = await start();
   editor = page.getByRole("textbox", { name: "日记正文" });
-  await expect.poll(() => windowTitle(page)).toBe("未命名 — LineHush");
-  await expect(status("准备就绪")).toBeVisible();
+  await expect.poll(() => windowTitle(page)).toBe("未命名");
+  await dirty(false);
   await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
   await expect(editor).toHaveText("");
   await expect(editor.locator(".image-tile")).toHaveCount(0);
@@ -580,8 +593,8 @@ try {
 
   // --- Reopen via double-click: not recovered; 保存 in the close prompt writes ---
   expect(await launchSecond([file])).toBe(0);
-  await expect.poll(() => windowTitle(page)).toBe("测试.hush — LineHush");
-  await expect(status("已保存")).toBeVisible();
+  await expect.poll(() => windowTitle(page)).toBe("测试.hush");
+  await dirty(false);
   await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
   await expect(editor.locator(".image-tile img")).toHaveCount(2);
   await thumbnailsLoaded();
@@ -608,8 +621,8 @@ try {
   // --- Crash with unsaved text and a new image: the file keeps its saved state ---
   page = await start([file]);
   editor = page.getByRole("textbox", { name: "日记正文" });
-  await expect.poll(() => windowTitle(page)).toBe("测试.hush — LineHush");
-  await expect(status("已保存")).toBeVisible();
+  await expect.poll(() => windowTitle(page)).toBe("测试.hush");
+  await dirty(false);
   await expect(editor.locator(".image-tile img")).toHaveCount(2);
   await thumbnailsLoaded();
   const crashed = source["崩溃前.png"];
@@ -622,6 +635,9 @@ try {
   await page.keyboard.press("Enter");
   await page.keyboard.insertText("崩溃前输入");
   await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  // The import replaces the empty line the caret is on; the last line stays.
+  await page.keyboard.press("ArrowUp");
   await input().setInputFiles(crashed.file);
   await expectGroups(editor, 2);
   await thumbnailsLoaded();
@@ -643,8 +659,8 @@ try {
   page = await start();
   editor = page.getByRole("textbox", { name: "日记正文" });
   await expect(page.getByText("已恢复未保存的修改。")).toBeVisible();
-  await expect(status("尚未保存")).toBeVisible();
-  await expect(page.getByText("● 测试.hush", { exact: true })).toBeVisible();
+  await dirty(true);
+  await expect.poll(() => windowTitle(page)).toBe("● 测试.hush");
   await expect(editor.getByText("崩溃前输入")).toBeVisible();
   await expectGroups(editor, 2);
   await expect(editor.locator(".image-tile img")).toHaveCount(3);
@@ -653,7 +669,7 @@ try {
   passed("崩溃恢复");
   await editor.click();
   await page.keyboard.press("Control+s");
-  await expect(status("已保存")).toBeVisible();
+  await dirty(false);
   await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
   expect(body(file)).toEqual(crashStash);
   expect(stored(file, crashed.id).equals(crashed.bytes)).toBe(true);
@@ -662,13 +678,13 @@ try {
   // Once saved, the restart starts unnamed again; the file opens from a double-click.
   page = await start();
   editor = page.getByRole("textbox", { name: "日记正文" });
-  await expect.poll(() => windowTitle(page)).toBe("未命名 — LineHush");
+  await expect.poll(() => windowTitle(page)).toBe("未命名");
   await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
   await expect(editor.locator(".image-tile")).toHaveCount(0);
   expect(await recovery()).toEqual({ path: null });
   expect(await launchSecond([file])).toBe(0);
-  await expect.poll(() => windowTitle(page)).toBe("测试.hush — LineHush");
-  await expect(status("已保存")).toBeVisible();
+  await expect.poll(() => windowTitle(page)).toBe("测试.hush");
+  await dirty(false);
   await expect(editor.locator(".image-tile img")).toHaveCount(3);
   await thumbnailsLoaded();
   expect(body(file)).toEqual(crashStash);
@@ -691,11 +707,10 @@ try {
   });
   await expect(lost).toBeVisible();
   await expect(lost).toContainText("测试.hush");
-  await expect(status("尚未保存")).toBeVisible();
-  await expect(page.getByText("● 未命名", { exact: true })).toBeVisible();
+  await dirty(true);
   await expect
     .poll(() => call(page, "plugin:window|title", { label: "main" }))
-    .toBe("● 未命名 — LineHush");
+    .toBe("● 未命名");
   await expect(editor.getByText("搬走前输入")).toBeVisible();
   // The images were saved into the moved file only, so they show a placeholder.
   await expect(editor.getByText("无法显示此图片")).toHaveCount(3);
@@ -714,8 +729,8 @@ try {
   });
   await expect(draftPrompt).toBeVisible();
   await draftPrompt.getByRole("button", { name: "不保存", exact: true }).click();
-  await expect.poll(() => windowTitle(page)).toBe("搬走.hush — LineHush");
-  await expect(status("已保存")).toBeVisible();
+  await expect.poll(() => windowTitle(page)).toBe("搬走.hush");
+  await dirty(false);
   await expect(editor.getByText("搬走前输入")).toHaveCount(0);
   expect(processHandle.pid).toBe(firstPid);
   expect(processHandle.exitCode).toBeNull();
@@ -723,13 +738,13 @@ try {
   await editor.click();
   await page.keyboard.press("Control+End");
   await page.keyboard.insertText("再次双击前输入");
-  await expect(status("尚未保存")).toBeVisible();
+  await dirty(true);
   expect(await launchSecond(["搬走.hush"], root)).toBe(0);
   await sleep(1000);
   await expect(draftPrompt).toHaveCount(0);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(editor.getByText("再次双击前输入")).toBeVisible();
-  expect(await windowTitle(page)).toBe("● 搬走.hush — LineHush");
+  expect(await windowTitle(page)).toBe("● 搬走.hush");
   // No argument: the window only comes to the front.
   expect(await launchSecond([])).toBe(0);
   await sleep(500);
@@ -743,17 +758,17 @@ try {
   page = await start();
   editor = page.getByRole("textbox", { name: "日记正文" });
   await expect(page.getByText("已恢复未保存的修改。")).toBeVisible();
-  await expect.poll(() => windowTitle(page)).toBe("● 搬走.hush — LineHush");
+  await expect.poll(() => windowTitle(page)).toBe("● 搬走.hush");
   await editor.click();
   await page.keyboard.press("Control+s");
-  await expect(status("已保存")).toBeVisible();
+  await dirty(false);
   await stop(page);
   expect((await recovery()).path).toMatch(/搬走\.hush$/);
   const copy = path.join(root, "副本.hush");
   await copyFile(moved, copy);
   page = await start(["副本.hush"], root);
   editor = page.getByRole("textbox", { name: "日记正文" });
-  await expect.poll(() => windowTitle(page)).toBe("副本.hush — LineHush");
+  await expect.poll(() => windowTitle(page)).toBe("副本.hush");
   await expect(page.getByText("已恢复未保存的修改。")).toHaveCount(0);
   expect((await recovery()).path).toMatch(/副本\.hush$/);
   // With unsaved changes left by a crash, those come back first and are asked about.
@@ -771,7 +786,7 @@ try {
   await expect(copyPrompt).toBeVisible();
   await expect(page.getByText("已恢复未保存的修改。")).toBeVisible();
   await copyPrompt.getByRole("button", { name: "不保存", exact: true }).click();
-  await expect.poll(() => windowTitle(page)).toBe("搬走.hush — LineHush");
+  await expect.poll(() => windowTitle(page)).toBe("搬走.hush");
   expect(stash()).toBeNull();
   passed("启动参数打开文件");
   await kill();

@@ -24,7 +24,7 @@ const windowTitle = (page: Page): Promise<string | undefined> =>
         .at(-1)?.args.value,
   );
 const expectTitle = (page: Page, name: string) =>
-  expect.poll(() => windowTitle(page)).toBe(`${name} — LineHush`);
+  expect.poll(() => windowTitle(page)).toBe(name);
 const unsavedPrompt = (page: Page) =>
   page.getByRole("dialog", { name: /^是否保存对“.+”的更改？$/ });
 test.beforeEach(async ({ page }) => {
@@ -47,6 +47,7 @@ test.beforeEach(async ({ page }) => {
       callbacks: new Map(),
       closeHandler: 0,
       destroyed: false,
+      imported: 0,
     });
     w.isTauri = true;
     w.__TAURI_INTERNALS__ = {
@@ -92,6 +93,15 @@ test.beforeEach(async ({ page }) => {
             recovered: false,
           };
         }
+        if (cmd === "import_image") {
+          state.imported += 1;
+          return {
+            id: state.imported.toString(16).padStart(64, "0"),
+            name: "",
+            width: 40,
+            height: 30,
+          };
+        }
         // Any bytes will do: a tile that cannot decode them still opens the preview.
         if (cmd === "read_image") return new Uint8Array([1, 2, 3]).buffer;
         if (cmd === "plugin:event|listen") {
@@ -127,7 +137,7 @@ test("恢复和只读切换不触发暂存或保存，StrictMode 不重复初始
   expect(cmds.filter((c) => c === "plugin:event|listen")).toHaveLength(2);
   expect(cmds.filter((c) => c === "stash_document")).toHaveLength(0);
   expect(cmds.filter((c) => c === "save_document")).toHaveLength(0);
-  await expect(page.getByText("已保存", { exact: true })).toBeVisible();
+  await expectTitle(page, "已有.hush");
   expect(errors).toEqual([]);
 });
 
@@ -152,11 +162,9 @@ test("输入只暂存不写文件，Ctrl+S 保存后清除未保存标记，光�
   );
   expect(stashed.blocks.map((b: any) => b.text)).toEqual(["已中有日记", ""]);
   expect(await count(page, "save_document")).toBe(0);
-  await expect(page.getByText("尚未保存", { exact: true })).toBeVisible();
   await expectTitle(page, "● 已有.hush");
 
   await page.keyboard.press("Control+s");
-  await expect(page.getByText("已保存", { exact: true })).toBeVisible();
   await expectTitle(page, "已有.hush");
   expect(await count(page, "save_document")).toBe(1);
   const saved = await page.evaluate(() => (window as any).testNative.document);
@@ -195,14 +203,13 @@ test("暂存失败另行提示，不提供重试保存，下次暂存成功后�
   await page.keyboard.insertText("一");
   await expect(page.getByRole("alert")).toContainText("暂存失败");
   await expect(page.getByRole("alert")).toContainText("测试暂存失败");
-  await expect(page.getByText("暂存失败", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "重试保存" })).toHaveCount(0);
   await page.evaluate(() => {
     (window as any).testNative.failStash = false;
   });
   await page.keyboard.insertText("二");
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.getByText("尚未保存", { exact: true })).toBeVisible();
+  await expectTitle(page, "● 已有.hush");
   expect(await count(page, "save_document")).toBe(0);
 });
 
@@ -327,7 +334,7 @@ test("保存失败时关闭保留窗口，重试保存后无需询问即可关�
   await page.keyboard.insertText("尚未保存");
   await page.keyboard.press("Control+s");
   await expect(page.getByRole("alert")).toContainText("测试写入失败");
-  await expect(page.getByText("保存失败", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试保存" })).toBeVisible();
   await requestClose(page);
   await unsavedPrompt(page)
     .getByRole("button", { name: "保存", exact: true })
@@ -511,4 +518,104 @@ test("缩略图与原图按 id 读取，可保存原图，HTML 导出列出附�
   expect(exported.content).toContain(
     `src="附件/${encodeURIComponent(file)}"`,
   );
+});
+
+test("插入图片：光标在空行时替换该空行，不再补空行，文档可以以图片结尾", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto("/");
+  const editor = page.getByRole("textbox", { name: "日记正文" });
+  await expect(editor).toBeFocused();
+  const insert = (name: string) =>
+    page.locator("input[type=file]").setInputFiles({
+      name,
+      mimeType: "image/png",
+      buffer: Buffer.from([1, 2, 3]),
+    });
+  /** Top-level lines and images, images as [name]. */
+  const content = () =>
+    editor.evaluate((el) =>
+      Array.from(el.children)
+        .filter((child) => !child.matches(".ProseMirror-gapcursor, .drop-line"))
+        .map((child) =>
+          child.classList.contains("image-item")
+            ? `[${child.querySelector("img")?.alt}]`
+            : child.textContent,
+        ),
+    );
+  const saved = () =>
+    page.evaluate(() =>
+      (window as any).testNative.document.blocks.map((b: any) =>
+        b.type === "line" ? b.text : b.images.map((p: any) => `[${p.name}]`).join(""),
+      ),
+    );
+  // The caret on the last, empty line: the image takes its place; no line is added after it.
+  await page.keyboard.press("Control+End");
+  await insert("甲.png");
+  await expect.poll(content).toEqual(["已有日记", "[甲.png]"]);
+  await expect(editor.locator(".ProseMirror-selectednode")).toHaveCount(1);
+  await page.keyboard.press("Control+s");
+  await expectTitle(page, "已有.hush");
+  expect(await saved()).toEqual(["已有日记", "[甲.png]"]);
+  // Down on the last image only leaves it for the gap cursor after it; Enter there starts a line.
+  await page.keyboard.press("ArrowDown");
+  await expect.poll(content).toEqual(["已有日记", "[甲.png]"]);
+  await expect(editor.locator(".ProseMirror-selectednode")).toHaveCount(0);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("之后");
+  await expect.poll(content).toEqual(["已有日记", "[甲.png]", "之后"]);
+  // An empty line between text lines is replaced too; one undo brings it back.
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("末行");
+  await page.keyboard.press("ArrowUp");
+  await insert("乙.png");
+  await expect
+    .poll(content)
+    .toEqual(["已有日记", "[甲.png]", "之后", "[乙.png]", "末行"]);
+  await page.keyboard.press("Control+z");
+  await expect
+    .poll(content)
+    .toEqual(["已有日记", "[甲.png]", "之后", "", "末行"]);
+  await page.keyboard.press("Control+y");
+  await expect
+    .poll(content)
+    .toEqual(["已有日记", "[甲.png]", "之后", "[乙.png]", "末行"]);
+  // Several images on an empty line replace it as one group.
+  await editor.locator("p").first().click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page
+    .locator("input[type=file]")
+    .setInputFiles(
+      ["丙.png", "丁.png"].map((name) => ({
+        name,
+        mimeType: "image/png",
+        buffer: Buffer.from([1, 2, 3]),
+      })),
+    );
+  await expect
+    .poll(content)
+    .toEqual([
+      "已有日记",
+      "[丙.png]",
+      "[丁.png]",
+      "[甲.png]",
+      "之后",
+      "[乙.png]",
+      "末行",
+    ]);
+  await page.keyboard.press("Control+s");
+  await expectTitle(page, "已有.hush");
+  expect(await saved()).toEqual([
+    "已有日记",
+    "[丙.png][丁.png][甲.png]",
+    "之后",
+    "[乙.png]",
+    "末行",
+  ]);
+  expect(errors).toEqual([]);
 });

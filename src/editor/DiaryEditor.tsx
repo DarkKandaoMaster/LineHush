@@ -205,18 +205,11 @@ function DiaryEditor(props: Props) {
         if (selectedPictures(state)) {
           // After the selected image(s), inside their group.
           tr.insert(at, nodes);
-        } else if (
-          state.selection.empty &&
-          state.selection.$from.parent.type.name === "paragraph" &&
-          !state.selection.$from.parent.content.size &&
-          state.doc.childCount > 1
-        ) {
-          // Existing blank lines are content. Insert after one instead of consuming it.
-          at = state.selection.$from.after();
-          tr.insert(at, nodes);
         } else {
           // replaceSelectionWith places a block next to a line instead of splitting it
-          // at either end; the other pictures follow the first one.
+          // at either end, and replaces an empty line the caret is on (the images
+          // take its place); the other pictures follow the first one. The document
+          // may end with an image: Enter on it or the gap cursor after it starts a line.
           tr.replaceSelectionWith(nodes[0]);
           tr.doc.forEach((node, offset) => {
             if (node === nodes[0]) at = offset;
@@ -224,8 +217,6 @@ function DiaryEditor(props: Props) {
           tr.insert(at + nodes[0].nodeSize, nodes.slice(1));
         }
         const end = at + nodes.reduce((size, node) => size + node.nodeSize, 0);
-        if (tr.doc.lastChild?.type === image)
-          tr.insert(tr.doc.content.size, state.schema.nodes.paragraph.create());
         // The new images end up selected, so a second paste follows them and
         // Ctrl+C / Delete act on them.
         tr.setSelection(
