@@ -2,7 +2,9 @@ import { useEffect, useState, type KeyboardEvent, type Ref } from "react";
 import {
   MAX_FONT_SIZE,
   MIN_FONT_SIZE,
+  type OpenFile,
   type Settings,
+  type Startup,
 } from "../core/settings";
 
 /**
@@ -32,6 +34,15 @@ const FONTS = [
 ];
 /** In pt; 10 is the default (same as Notepad). */
 const SIZES = [9, 10, 10.5, 11, 12, 14];
+/** 文案照 Win11 记事本。 */
+const OPEN_FILE: { value: OpenFile; label: string }[] = [
+  { value: "tab", label: "在新标签页中打开" },
+  { value: "window", label: "在新窗口中打开" },
+];
+const STARTUP: { value: Startup; label: string }[] = [
+  { value: "lastSession", label: "打开上一会话中的内容" },
+  { value: "newWindow", label: "打开新窗口" },
+];
 
 interface Props {
   dialogRef: Ref<HTMLDialogElement>;
@@ -136,6 +147,44 @@ export default function SettingsDialog(props: Props) {
               >
                 {preset}
               </button>
+            ))}
+          </div>
+          <span id="settings-open-file">打开文件</span>
+          <div
+            className="settings-choices"
+            role="radiogroup"
+            aria-labelledby="settings-open-file"
+          >
+            {OPEN_FILE.map((choice) => (
+              <label key={choice.value}>
+                <input
+                  type="radio"
+                  name="settings-open-file"
+                  value={choice.value}
+                  checked={settings.openFile === choice.value}
+                  onChange={() => onChange({ openFile: choice.value })}
+                />
+                {choice.label}
+              </label>
+            ))}
+          </div>
+          <span id="settings-startup">启动时</span>
+          <div
+            className="settings-choices"
+            role="radiogroup"
+            aria-labelledby="settings-startup"
+          >
+            {STARTUP.map((choice) => (
+              <label key={choice.value}>
+                <input
+                  type="radio"
+                  name="settings-startup"
+                  value={choice.value}
+                  checked={settings.startup === choice.value}
+                  onChange={() => onChange({ startup: choice.value })}
+                />
+                {choice.label}
+              </label>
             ))}
           </div>
         </div>

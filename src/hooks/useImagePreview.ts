@@ -4,11 +4,18 @@ import type { Picture } from "../core/document";
 import { exportImage, imageUrl } from "../core/native";
 import type { Session } from "../core/session";
 
-/** Original-image preview in a modal <dialog>; stale reads are dropped and every Blob URL is revoked. */
-export function useImagePreview(session: Session) {
+/**
+ * Original-image preview in a modal <dialog>, one per window; `show` names the
+ * tab (session) the image belongs to. Stale reads are dropped and every Blob URL
+ * is revoked.
+ */
+export function useImagePreview() {
   const dialog = useRef<HTMLDialogElement>(null);
   const [source, setSource] = useState("");
-  const [picture, setPicture] = useState<Picture | null>(null);
+  const [shown, setShown] = useState<{
+    session: Session;
+    picture: Picture;
+  } | null>(null);
   const request = useRef({ version: 0, url: "" });
   const close = useCallback(() => {
     const current = request.current;
@@ -19,13 +26,13 @@ export function useImagePreview(session: Session) {
     dialog.current?.close();
   }, []);
   const show = useCallback(
-    async (pic: Picture) => {
+    async (session: Session, pic: Picture) => {
       const current = request.current;
       const version = ++current.version;
-      setPicture(pic);
+      setShown({ session, picture: pic });
       dialog.current?.showModal();
       try {
-        const url = await imageUrl(pic, true);
+        const url = await imageUrl(session.tab, pic, true);
         if (version !== current.version) URL.revokeObjectURL(url);
         else {
           current.url = url;
@@ -37,26 +44,27 @@ export function useImagePreview(session: Session) {
         session.setError(`无法读取原图：${e}`);
       }
     },
-    [close, session],
+    [close],
   );
   /** Writes the stored original bytes, unchanged, to a file the user picks. */
   const saveOriginal = useCallback(async () => {
-    if (!picture) return;
+    if (!shown) return;
+    const { session, picture } = shown;
     try {
       const target = await save({
         title: "保存原图",
         defaultPath: picture.name || picture.id.slice(0, 12),
       });
       if (!target) return;
-      await exportImage(picture.id, target);
+      await exportImage(session.tab, picture.id, target);
     } catch (e) {
       session.setError(`保存原图失败：${e}`);
     }
-  }, [picture, session]);
+  }, [shown]);
   return {
     dialog,
     source,
-    name: picture?.name ?? "",
+    name: shown?.picture.name ?? "",
     show,
     close,
     saveOriginal,

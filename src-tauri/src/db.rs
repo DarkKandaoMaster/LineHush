@@ -92,6 +92,15 @@ impl Db {
         };
         Ok((Self { conn }, stash))
     }
+    /// The stashed body of a working copy, if any.
+    pub fn stash(&self) -> Result<Option<Diary>> {
+        match read_body(&self.conn).map_err(sql)? {
+            Some(body) => serde_json::from_str(&body)
+                .map(Some)
+                .map_err(|e| format!("暂存的修改无法读取（{e}）")),
+            None => Ok(None),
+        }
+    }
     pub fn body(&self) -> Result<Diary> {
         let body = read_body(&self.conn)
             .map_err(sql)?
@@ -102,6 +111,13 @@ impl Db {
     pub fn save(&self, doc: &Diary) -> Result<()> {
         self.conn
             .execute(WRITE_BODY, [body_json(doc)?])
+            .map(drop)
+            .map_err(sql)
+    }
+    /// Removes the stashed body of a working copy; its images stay.
+    pub fn clear_stash(&self) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM doc WHERE id = 1", [])
             .map(drop)
             .map_err(sql)
     }

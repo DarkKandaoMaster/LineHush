@@ -82,9 +82,15 @@ export function stats(doc: Diary): { characters: number; images: number } {
   }
   return { characters, images };
 }
-/** Display name of a document path; drafts have no path. */
-export function fileName(path: string | null): string {
-  return path?.split(/[\\/]/).pop() ?? "未命名";
+/**
+ * Display name of a document path. Drafts have no path and are numbered per
+ * window like Notepad: "无标题", "无标题 2", …
+ */
+export function fileName(path: string | null, untitled = 1): string {
+  return (
+    path?.split(/[\\/]/).pop() ??
+    (untitled === 1 ? "无标题" : `无标题 ${untitled}`)
+  );
 }
 function escapeHtml(text: string): string {
   return text.replace(

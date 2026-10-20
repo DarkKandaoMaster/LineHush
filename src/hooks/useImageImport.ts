@@ -13,7 +13,7 @@ import type { DiaryEditorHandle } from "../editor/DiaryEditor";
 const STAGED = /^([0-9a-f]{12})-(.+)$/;
 
 /**
- * Image import, paste and copy:
+ * Image import, paste and copy for one tab:
  * - `importFiles` imports files one by one through Rust; pasted files that are
  *   still LineHush's last copy are not imported but used as they are;
  * - `pasteCopied` pastes images copied in LineHush under the same ids, after
@@ -67,7 +67,7 @@ export function useImageImport(
         files.length,
         async (images) => {
           if (fromClipboard) {
-            const copied = await copiedImages();
+            const copied = await copiedImages(session.tab);
             if (copied) {
               images.push(...copied);
               return;
@@ -75,7 +75,7 @@ export function useImageImport(
           }
           for (const file of files) {
             current = file.name;
-            const pic = await importImage(await file.arrayBuffer());
+            const pic = await importImage(session.tab, await file.arrayBuffer());
             // A file a LineHush copy left (e.g. from an earlier session) keeps
             // its original name.
             const staged = STAGED.exec(file.name);
@@ -89,24 +89,27 @@ export function useImageImport(
           current ? `无法插入图片“${current}”：${e}` : `无法插入图片：${e}`,
       );
     },
-    [insertAfter],
+    [insertAfter, session],
   );
   const pasteCopied = useCallback(
     (pictures: Picture[]) =>
       insertAfter(
         pictures.length,
         async (images) => {
-          await pasteImages(pictures.map((pic) => pic.id));
+          await pasteImages(
+            session.tab,
+            pictures.map((pic) => pic.id),
+          );
           images.push(...pictures);
         },
         (e) => `无法粘贴图片：${e}`,
       ),
-    [insertAfter],
+    [insertAfter, session],
   );
   const copy = useCallback(
     (pictures: Picture[], afterBrowser: boolean) => {
       if (!session.desktop) return false;
-      copyImages(pictures, afterBrowser).catch((e) =>
+      copyImages(session.tab, pictures, afterBrowser).catch((e) =>
         session.setError(`复制图片失败：${e}`),
       );
       return true;

@@ -5,59 +5,54 @@ import { createSession } from "../src/core/session.ts";
 import { fromText } from "../src/core/document.ts";
 
 /**
- * A session over a fake Rust boundary. `answers` are handed out in order to the
- * "save changes?" prompt; `savePath` / `openPath` answer the file dialogs.
+ * One tab's session over a fake Rust boundary, loaded with a document as
+ * `restore_window` / `open_file` would hand it out. `answers` are handed out in
+ * order to the "save changes?" prompt; `savePath` answers the save dialog.
  */
 function setup({
   path = "D:/测试.hush",
   recovered = false,
   notice = null,
   answers = [],
+  name = "测试.hush",
 } = {}) {
   globalThis.window = {};
   globalThis.isTauri = true;
   const fake = {
     calls: [],
+    /** Arguments of each Rust command, in order. */
+    args: [],
     asked: [],
     savePath: null,
-    openPath: null,
     failSave: false,
     failClose: false,
-    /** Rust's warning after a switch, e.g. the previous file could not be cleaned. */
-    switchNotice: null,
   };
   mockIPC(async (cmd, args) => {
     fake.calls.push(cmd);
-    if (cmd === "restore")
-      return { document: fromText("旧日记\n\n"), path, recovered, notice };
+    fake.args.push([cmd, args]);
     if (cmd === "save_document" && fake.failSave) throw Error("测试写入失败");
-    if (cmd === "close_document" && fake.failClose) throw "测试清理失败";
+    if (cmd === "close_tab" && fake.failClose) throw "测试清理失败";
     if (cmd === "export_pdf") {
       fake.pdf = args;
       if (fake.failPdf) throw "无法写入 PDF 文件";
     }
-    if (cmd === "plugin:dialog|save") return fake.savePath;
-    if (cmd === "plugin:dialog|open") return fake.openPath;
-    if (cmd === "take_open_request") {
-      const request = fake.request ?? null;
-      fake.request = null;
-      return request;
+    if (cmd === "plugin:dialog|save") {
+      fake.dialog = args.options;
+      return fake.savePath;
     }
     if (cmd === "save_as")
       return { document: args.document, path: args.path, recovered: false };
-    if (cmd === "new_document" || cmd === "open_document")
-      return {
-        document: fromText(cmd === "new_document" ? "" : "打开的内容"),
-        path: cmd === "new_document" ? null : args.path,
-        recovered: false,
-        notice: fake.switchNotice,
-      };
   });
-  mockWindows("main");
-  const session = createSession(async (name) => {
-    fake.asked.push(name);
-    return answers.shift();
-  });
+  mockWindows("win-1");
+  const session = createSession(
+    "t1",
+    async (name) => {
+      fake.asked.push(name);
+      return answers.shift();
+    },
+    () => name,
+  );
+  session.adopt({ document: fromText("旧日记\n\n"), path, recovered, notice });
   return { session, fake, state: () => session.getSnapshot() };
 }
 /** Lands any debounced stash first so its timer cannot fire into the next test's mocks. */
@@ -70,24 +65,22 @@ async function teardown(session) {
 const fileCommands = (fake) =>
   fake.calls.filter((cmd) => !cmd.startsWith("plugin:"));
 
-test("会话初始化只恢复一次，订阅快照稳定，暂存不清除未保存标记", async () => {
+test("载入文档后快照稳定，暂存不清除未保存标记", async () => {
   const { session, fake, state } = setup();
   try {
     const initial = state();
     assert.equal(state(), initial);
-    await Promise.all([session.initialize(), session.initialize()]);
-    assert.deepEqual(fake.calls, ["restore"]);
-    assert.equal(state().ready, true);
     assert.equal(state().generation, 1);
     assert.equal(state().dirty, false);
     assert.equal(state().status, "已保存");
     assert.equal(state().notice, "");
+    assert.equal(session.tab, "t1");
     let notifications = 0;
     session.subscribe(() => notifications++);
     session.update(fromText("新日记\n\n"));
     assert.equal(state().dirty, true);
     await session.flush();
-    assert.deepEqual(fileCommands(fake), ["restore", "stash_document"]);
+    assert.deepEqual(fileCommands(fake), ["stash_document"]);
     assert.equal(state().dirty, true);
     assert.equal(state().status, "尚未保存");
     assert.notEqual(state(), initial);
@@ -97,10 +90,38 @@ test("会话初始化只恢复一次，订阅快照稳定，暂存不清除未�
   }
 });
 
+test("每个命令都带上本标签页的 id", async () => {
+  const { session, fake } = setup({ answers: ["discard"] });
+  try {
+    session.update(fromText("改过"));
+    await session.saveDocument();
+    fake.savePath = "D:/另存.hush";
+    await session.saveDocumentAs();
+    fake.savePath = "D:/导出.txt";
+    await session.exportDocument("txt");
+    session.update(fromText("再改"));
+    await session.closeTab();
+    const rust = fake.args.filter(([cmd]) => !cmd.startsWith("plugin:"));
+    assert.deepEqual(
+      rust.map(([cmd]) => cmd),
+      [
+        "stash_document",
+        "save_document",
+        "save_as",
+        "export_document",
+        "stash_document",
+        "close_tab",
+      ],
+    );
+    for (const [cmd, args] of rust) assert.equal(args.tab, "t1", cmd);
+  } finally {
+    await teardown(session);
+  }
+});
+
 test("改回已保存的内容时清除未保存标记，暂存照常进行", async () => {
   const { session, fake, state } = setup();
   try {
-    await session.initialize();
     session.update(fromText("改过"));
     assert.equal(state().dirty, true);
     assert.equal(state().status, "尚未保存");
@@ -108,7 +129,7 @@ test("改回已保存的内容时清除未保存标记，暂存照常进行", as
     assert.equal(state().dirty, false);
     assert.equal(state().status, "已保存");
     await session.flush();
-    assert.deepEqual(fileCommands(fake), ["restore", "stash_document"]);
+    assert.deepEqual(fileCommands(fake), ["stash_document"]);
 
     session.update(fromText("保存的内容"));
     await session.saveDocument();
@@ -127,8 +148,13 @@ test("未命名新文档改回空文档时显示准备就绪，恢复的修改�
   {
     const { session, state } = setup({ path: null });
     try {
-      await session.initialize();
-      await session.newDocument();
+      session.adopt({
+        document: fromText(""),
+        path: null,
+        recovered: false,
+        notice: null,
+      });
+      assert.equal(state().generation, 2);
       session.update(fromText("草稿"));
       assert.equal(state().dirty, true);
       session.update(fromText(""));
@@ -142,7 +168,6 @@ test("未命名新文档改回空文档时显示准备就绪，恢复的修改�
     // The saved content behind recovered changes is unknown.
     const { session, state } = setup({ recovered: true });
     try {
-      await session.initialize();
       session.update(fromText("改过"));
       session.update(fromText("旧日记\n\n"));
       assert.equal(state().dirty, true);
@@ -156,7 +181,6 @@ test("未命名新文档改回空文档时显示准备就绪，恢复的修改�
 test("保存写入当前文件并清除未保存标记，失败时保留标记", async () => {
   const { session, fake, state } = setup();
   try {
-    await session.initialize();
     session.update(fromText("新日记"));
     fake.failSave = true;
     await session.saveDocument();
@@ -170,7 +194,6 @@ test("保存写入当前文件并清除未保存标记，失败时保留标记",
     assert.equal(state().error, "");
     // The pending stash lands before each save, never after it.
     assert.deepEqual(fileCommands(fake), [
-      "restore",
       "stash_document",
       "save_document",
       "save_document",
@@ -180,13 +203,13 @@ test("保存写入当前文件并清除未保存标记，失败时保留标记",
   }
 });
 
-test("未命名文档保存走另存为，取消对话框则保持未保存", async () => {
-  const { session, fake, state } = setup({ path: null });
+test("未命名文档保存走另存为（默认文件名为日期），取消对话框则保持未保存", async () => {
+  const { session, fake, state } = setup({ path: null, name: "无标题 2" });
   try {
-    await session.initialize();
     assert.equal(state().status, "准备就绪");
     session.update(fromText("草稿"));
     await session.saveDocument(); // dialog cancelled
+    assert.match(fake.dialog.defaultPath, /^\d{4}-\d{2}-\d{2}\.hush$/);
     assert.equal(state().dirty, true);
     assert.equal(state().path, null);
     fake.savePath = "D:/新文件.hush";
@@ -203,13 +226,12 @@ test("未命名文档保存走另存为，取消对话框则保持未保存", as
 test("恢复了未保存的修改时标记为未保存并提示", async () => {
   const { session, fake, state } = setup({ recovered: true, answers: ["cancel"] });
   try {
-    await session.initialize();
     assert.equal(state().dirty, true);
     assert.equal(state().status, "尚未保存");
     assert.equal(state().notice, "已恢复未保存的修改。");
-    await session.newDocument();
+    assert.equal(await session.closeTab(), false);
     assert.deepEqual(fake.asked, ["测试.hush"]);
-    assert.equal(state().generation, 1);
+    assert.ok(!fake.calls.includes("close_tab"));
   } finally {
     await teardown(session);
   }
@@ -218,7 +240,6 @@ test("恢复了未保存的修改时标记为未保存并提示", async () => {
 test("恢复提示在保存成功后清除，保存失败时保留，其他提示不受影响", async () => {
   const { session, fake, state } = setup({ recovered: true });
   try {
-    await session.initialize();
     assert.equal(state().notice, "已恢复未保存的修改。");
     fake.failSave = true;
     await session.saveDocument();
@@ -241,7 +262,6 @@ test("恢复提示在保存成功后清除，保存失败时保留，其他提�
 test("恢复的未命名草稿经另存为保存后清除恢复提示", async () => {
   const { session, fake, state } = setup({ path: null, recovered: true });
   try {
-    await session.initialize();
     assert.equal(state().notice, "已恢复未保存的修改。");
     fake.savePath = "D:/恢复.hush";
     await session.saveDocumentAs();
@@ -257,7 +277,6 @@ test("原文件无法打开时恢复为未命名文档：显示 Rust 的提示�
     "原文件无法打开，未保存的修改已作为未命名文档恢复。无法打开 D:/搬走.hush：文件不存在（系统找不到指定的文件。 (os error 2)）";
   const { session, fake, state } = setup({ path: null, recovered: true, notice });
   try {
-    await session.initialize();
     assert.equal(state().path, null);
     assert.equal(state().dirty, true);
     assert.equal(state().error, "");
@@ -272,230 +291,136 @@ test("原文件无法打开时恢复为未命名文档：显示 Rust 的提示�
   }
 });
 
-test("恢复后在关闭弹窗选保存：保存成功清除恢复提示", async () => {
-  const { session, state } = setup({ recovered: true, answers: ["save"] });
+test("没有修改时关闭标签页不询问，直接让 Rust 丢弃工作副本", async () => {
+  const { session, fake } = setup();
   try {
-    await session.initialize();
-    await session.close();
-    assert.equal(state().notice, "");
-  } finally {
-    await teardown(session);
-  }
-});
-
-test("没有修改时新建、打开、关闭都不询问", async () => {
-  const { session, fake, state } = setup();
-  try {
-    await session.initialize();
-    await session.newDocument();
-    assert.equal(state().path, null);
-    fake.openPath = "D:/打开.hush";
-    await session.openDocument();
-    assert.equal(state().path, "D:/打开.hush");
-    await session.close();
+    assert.equal(await session.closeTab(), true);
     assert.deepEqual(fake.asked, []);
-    assert.deepEqual(fake.calls.slice(-2), [
-      "close_document",
-      "plugin:window|destroy",
-    ]);
+    assert.deepEqual(fileCommands(fake), ["close_tab"]);
+    // A released tab stashes nothing any more.
+    session.update(fromText("关闭之后"));
+    await session.flush();
+    assert.deepEqual(fileCommands(fake), ["close_tab"]);
   } finally {
     await teardown(session);
   }
 });
 
-test("新建前询问：取消不动，不保存直接新建，保存先写文件", async () => {
-  const { session, fake, state } = setup({
-    answers: ["cancel", "discard", "save"],
-  });
-  try {
-    await session.initialize();
-    const edited = fromText("改过");
-    session.update(edited);
-    await session.newDocument();
-    assert.equal(state().document, edited);
-    assert.equal(state().dirty, true);
-    assert.ok(!fake.calls.includes("new_document"));
-
-    await session.newDocument();
-    assert.equal(state().generation, 2);
-    assert.equal(state().dirty, false);
-    assert.ok(!fake.calls.includes("save_document"));
-
-    session.update(fromText("新草稿"));
-    fake.savePath = "D:/草稿.hush";
-    await session.newDocument(); // untitled: "save" goes through Save As
-    assert.deepEqual(fake.asked, ["测试.hush", "测试.hush", "未命名"]);
-    const tail = fileCommands(fake).slice(-3);
-    assert.deepEqual(tail, ["stash_document", "save_as", "new_document"]);
-    assert.equal(state().generation, 3);
-  } finally {
-    await teardown(session);
-  }
-});
-
-test("未命名文档选保存但取消另存为时，不打开也不关闭", async () => {
-  const { session, fake, state } = setup({
-    path: null,
-    answers: ["save", "save"],
-  });
-  try {
-    await session.initialize();
-    session.update(fromText("草稿"));
-    fake.openPath = "D:/打开.hush";
-    await session.openDocument();
-    await session.close();
-    assert.equal(state().path, null);
-    assert.equal(state().dirty, true);
-    assert.equal(state().error, "");
-    for (const cmd of [
-      "plugin:dialog|open",
-      "open_document",
-      "close_document",
-      "plugin:window|destroy",
-    ])
-      assert.ok(!fake.calls.includes(cmd), cmd);
-  } finally {
-    await teardown(session);
-  }
-});
-
-test("打开前询问：不保存后选文件打开，保存则先写当前文件", async () => {
-  const { session, fake, state } = setup({ answers: ["discard", "save"] });
-  try {
-    await session.initialize();
-    session.update(fromText("改过"));
-    fake.openPath = "D:/甲.hush";
-    await session.openDocument();
-    assert.equal(state().path, "D:/甲.hush");
-    assert.ok(!fake.calls.includes("save_document"));
-    session.update(fromText("又改过"));
-    fake.openPath = "D:/乙.hush";
-    await session.openDocument();
-    assert.equal(state().path, "D:/乙.hush");
-    assert.deepEqual(fake.calls.slice(-4), [
-      "stash_document",
-      "save_document",
-      "plugin:dialog|open",
-      "open_document",
-    ]);
-  } finally {
-    await teardown(session);
-  }
-});
-
-test("外部请求打开文件：先询问未保存修改，忙碌时等操作结束再打开，取消则不打开", async () => {
-  const { session, fake, state } = setup({ answers: ["cancel", "discard"] });
-  try {
-    await session.initialize();
-    // Nothing waiting: no file dialog, no open.
-    await session.openRequested();
-    assert.ok(!fake.calls.includes("open_document"));
-
-    session.update(fromText("改过"));
-    fake.request = "D:/甲.hush";
-    await session.openRequested();
-    assert.deepEqual(fake.asked, ["测试.hush"]);
-    assert.equal(state().path, "D:/测试.hush");
-    assert.ok(!fake.calls.includes("open_document"));
-
-    // A request during an import waits for it; 不保存 then opens without a file dialog.
-    session.setImporting(true);
-    fake.request = "D:/乙.hush";
-    await session.openRequested();
-    assert.equal(fake.asked.length, 1);
-    session.setImporting(false);
-    for (let i = 0; i < 50 && state().path !== "D:/乙.hush"; i++)
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(fake.asked.length, 2);
-    assert.equal(state().path, "D:/乙.hush");
-    assert.equal(state().dirty, false);
-    assert.ok(!fake.calls.includes("plugin:dialog|open"));
-  } finally {
-    await teardown(session);
-  }
-});
-
-test("关闭前询问：取消保留窗口，保存失败保留窗口，不保存则清理后关闭", async () => {
+test("关闭标签页前询问：取消保留，保存失败保留并说明，不保存则丢弃", async () => {
   const { session, fake, state } = setup({
     answers: ["cancel", "save", "discard"],
   });
   try {
-    await session.initialize();
     session.update(fromText("改过"));
-    await session.close();
-    assert.ok(!fake.calls.includes("close_document"));
+    assert.equal(await session.closeTab(), false);
+    assert.ok(!fake.calls.includes("close_tab"));
 
     fake.failSave = true;
-    await session.close();
-    assert.match(state().error, /^保存失败：.*测试写入失败，窗口未关闭。$/);
+    const failure = (e) => `${e}，标签页未关闭。`;
+    assert.equal(await session.closeTab(failure), false);
+    assert.match(state().error, /^保存失败：.*测试写入失败，标签页未关闭。$/);
     assert.equal(state().status, "保存失败");
-    assert.ok(!fake.calls.includes("close_document"));
+    assert.equal(state().busy, false);
+    assert.ok(!fake.calls.includes("close_tab"));
 
-    await session.close();
-    assert.equal(fake.asked.length, 3);
-    assert.deepEqual(fake.calls.slice(-2), [
-      "close_document",
-      "plugin:window|destroy",
-    ]);
+    assert.equal(await session.closeTab(), true);
+    assert.deepEqual(fake.asked, ["测试.hush", "测试.hush", "测试.hush"]);
+    assert.equal(fake.calls.at(-1), "close_tab");
     assert.equal(fake.calls.filter((cmd) => cmd === "save_document").length, 1);
   } finally {
     await teardown(session);
   }
 });
 
-test("关闭时清理失败也照常关闭窗口，不显示错误", async () => {
-  const { session, fake, state } = setup({ answers: ["discard"] });
+test("恢复后关闭时选保存：保存成功后才丢弃，恢复提示清除", async () => {
+  const { session, fake, state } = setup({ recovered: true, answers: ["save"] });
   try {
-    await session.initialize();
-    session.update(fromText("不要了"));
-    fake.failClose = true;
-    await session.close();
-    assert.deepEqual(fake.calls.slice(-2), [
-      "close_document",
-      "plugin:window|destroy",
-    ]);
-    assert.equal(state().error, "");
+    assert.equal(await session.closeTab(), true);
+    assert.equal(state().notice, "");
+    assert.deepEqual(fileCommands(fake), ["save_document", "close_tab"]);
   } finally {
     await teardown(session);
   }
 });
 
-test("切换文档时显示上一个文件未能清理的提示，保存后仍保留，下次切换清除", async () => {
-  const warning = "上一个文件的未引用图片未能清理：读写失败（disk I/O error）";
-  const { session, fake, state } = setup();
+test("未命名文档选保存但取消另存为时，不关闭；询问用的是标签页的显示名", async () => {
+  const { session, fake, state } = setup({
+    path: null,
+    answers: ["save"],
+    name: "无标题 3",
+  });
   try {
-    await session.initialize();
-    fake.switchNotice = warning;
-    await session.newDocument();
+    session.update(fromText("草稿"));
+    assert.equal(await session.closeTab(), false);
+    assert.deepEqual(fake.asked, ["无标题 3"]);
     assert.equal(state().path, null);
+    assert.equal(state().dirty, true);
+    assert.equal(state().error, "");
+    assert.ok(!fake.calls.includes("close_tab"));
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("关闭时清理失败也照常关闭，不显示错误；忙碌时不关闭", async () => {
+  const { session, fake, state } = setup({ answers: ["discard"] });
+  try {
+    session.update(fromText("不要了"));
+    fake.failClose = true;
+    assert.equal(await session.closeTab(), true);
+    assert.equal(fake.calls.at(-1), "close_tab");
+    assert.equal(state().error, "");
+  } finally {
+    await teardown(session);
+  }
+  const busy = setup();
+  try {
+    // A save waiting for its dialog keeps the session busy.
+    busy.fake.savePath = null;
+    const saving = busy.session.saveDocumentAs();
+    assert.equal(busy.state().busy, true);
+    assert.equal(await busy.session.resolveUnsaved(), false);
+    await saving;
+    assert.equal(await busy.session.resolveUnsaved(), true);
+  } finally {
+    await teardown(busy.session);
+  }
+});
+
+test("切换文档时 Rust 的提示显示在横幅上，保存后仍保留", async () => {
+  const warning = "上一个文件的未引用图片未能清理：读写失败（disk I/O error）";
+  const { session, fake, state } = setup({ path: null });
+  try {
+    session.adopt({
+      document: fromText("打开的内容"),
+      path: "D:/甲.hush",
+      recovered: false,
+      notice: warning,
+    });
+    assert.equal(state().path, "D:/甲.hush");
     assert.equal(state().error, "");
     assert.equal(state().notice, warning);
     assert.equal(state().dirty, false);
-    assert.equal(state().status, "准备就绪");
+    assert.equal(state().status, "已保存");
     session.update(fromText("新内容"));
     fake.savePath = "D:/新.hush";
     await session.saveDocument();
-    assert.equal(state().notice, warning);
-    fake.switchNotice = null;
-    fake.openPath = "D:/甲.hush";
-    await session.openDocument();
-    assert.equal(state().path, "D:/甲.hush");
-    assert.equal(state().notice, "");
-    fake.switchNotice = warning;
-    fake.request = "D:/乙.hush";
-    await session.openRequested();
-    assert.equal(state().path, "D:/乙.hush");
     assert.equal(state().notice, warning);
   } finally {
     await teardown(session);
   }
 });
-test("导出 PDF：对话框默认文件名为 .pdf，打印页用文件名作标题与默认字体，失败显示导出失败", async () => {
-  const { session, fake, state } = setup({ path: "D:/日记/十月.hush" });
+
+test("导出 PDF：默认文件名与标题用显示名，打印页用默认字体，失败显示导出失败", async () => {
+  const { session, fake, state } = setup({
+    path: "D:/日记/十月.hush",
+    name: "十月.hush",
+  });
   try {
-    await session.initialize();
     fake.savePath = "D:/导出/十月.pdf";
     await session.exportDocument("pdf");
+    assert.equal(fake.dialog.defaultPath, "十月.pdf");
+    assert.equal(fake.pdf.tab, "t1");
     assert.equal(fake.pdf.path, "D:/导出/十月.pdf");
     assert.ok(fake.pdf.html.includes("<title>十月</title>"));
     assert.ok(fake.pdf.html.includes('<div class="line">旧日记</div>'));
@@ -514,6 +439,17 @@ test("导出 PDF：对话框默认文件名为 .pdf，打印页用文件名作�
     await session.exportDocument("pdf");
     assert.equal(state().error, "导出失败：无法写入 PDF 文件");
     assert.equal(state().busy, false);
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("未命名文档导出的默认文件名为“无标题”", async () => {
+  const { session, fake } = setup({ path: null, name: "无标题" });
+  try {
+    fake.savePath = null;
+    await session.exportDocument("txt");
+    assert.equal(fake.dialog.defaultPath, "无标题.txt");
   } finally {
     await teardown(session);
   }

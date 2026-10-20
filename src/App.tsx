@@ -1,118 +1,91 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { fileName, stats } from "./core/document";
-import { createSession, type Session } from "./core/session";
-import DiaryEditor, { type DiaryEditorHandle } from "./editor/DiaryEditor";
-import { useImageImport } from "./hooks/useImageImport";
+import type { Session } from "./core/session";
+import { readSettings } from "./core/native";
+import {
+  DEFAULT_SETTINGS,
+  normalizeSettings,
+  type Startup,
+} from "./core/settings";
+import { createTabs, displayName, type Tab } from "./core/tabs";
 import { useImagePreview } from "./hooks/useImagePreview";
 import { useSettings } from "./hooks/useSettings";
 import { useUnsavedPrompt } from "./hooks/useUnsavedPrompt";
 import { useWindowGuards } from "./hooks/useWindowGuards";
-import Banners from "./components/Banners";
 import ImagePreviewDialog from "./components/ImagePreviewDialog";
 import SettingsDialog from "./components/SettingsDialog";
-import StatusBar from "./components/StatusBar";
+import TabPane from "./components/TabPane";
+import TitleBar from "./components/TitleBar";
 import Toolbar from "./components/Toolbar";
 import UnsavedDialog from "./components/UnsavedDialog";
 import "./App.css";
 
 export default function App() {
   const unsaved = useUnsavedPrompt();
-  const [session] = useState(() => createSession(unsaved.ask));
-  const {
-    document,
-    path,
-    generation,
-    ready,
-    busy,
-    importing,
-    dirty,
-    error,
-    notice,
-    status,
-  } = useSyncExternalStore(session.subscribe, session.getSnapshot);
-  const { desktop } = session;
-  const title = fileName(path);
-  const editor = useRef<DiaryEditorHandle>(null);
-  const [position, setPosition] = useState({ line: 1, column: 1 });
-  const counts = useMemo(() => stats(document), [document]);
-  const preview = useImagePreview(session);
-  const images = useImageImport(session, editor);
-  const settings = useSettings(session);
+  // 关窗时按当时的“启动时”设置决定是否询问（见 tabs.closeWindow）；设置还没读完
+  // 就关窗时直接读一次，不按默认值处理。
+  const startup = useRef<Startup | null>(null);
+  const [tabs] = useState(() =>
+    createTabs(unsaved.ask, () => startup.current ?? readStartup()),
+  );
+  const { tabs: list, active, ready, error, focus } = useSyncExternalStore(
+    tabs.subscribe,
+    tabs.getSnapshot,
+  );
+  const current = list.find((tab) => tab.id === active);
+  const currentState = useSessionState(current?.session);
+  const preview = useImagePreview();
+  const settings = useSettings(tabs);
   const settingsDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (settings.loaded) startup.current = settings.settings.startup;
+  }, [settings.loaded, settings.settings.startup]);
 
-  useWindowGuards(session, preview.dialog, settingsDialog);
-  useWindowTitle(session, title, dirty);
-  // Focus waits for `ready` through the dependency list, not through hook order.
-  useEffect(() => {
-    setPosition({ line: 1, column: 1 });
-    if (ready) editor.current?.focus();
-  }, [generation, ready]);
-  // A disabled editor cannot take focus back from a closing dialog, so return it here.
-  useEffect(() => {
-    if (!busy) editor.current?.focus();
-  }, [busy]);
-  const fileDisabled = !desktop || busy || importing;
+  useWindowGuards(tabs);
+  useWindowTitle(tabs.desktop, current, currentState?.dirty ?? false);
+  const fileDisabled =
+    !tabs.desktop ||
+    !currentState ||
+    currentState.busy ||
+    currentState.importing;
   return (
     <main className="app">
+      <TitleBar
+        desktop={tabs.desktop}
+        tabs={list}
+        active={active}
+        onActivate={tabs.activate}
+        onClose={(id) => void tabs.closeTab(id)}
+        onNew={() => void tabs.newTab()}
+      />
       <Toolbar
-        session={session}
+        session={current?.session}
         fileDisabled={fileDisabled}
+        openDisabled={!tabs.desktop}
+        onNew={() => void tabs.newTab()}
+        onOpen={() => void tabs.openFile()}
         onSettings={() => settingsDialog.current?.showModal()}
       />
-      <Banners
-        session={session}
-        error={error}
-        notice={notice}
-        status={status}
-      />
-      {ready ? (
-        <DiaryEditor
-          key={generation}
-          ref={editor}
-          initial={document}
-          disabled={busy}
-          onChange={session.update}
-          onFiles={images.importFiles}
-          onImages={images.pasteCopied}
-          onCopy={images.copy}
-          onPreview={preview.show}
-          onSelection={setPosition}
-        />
-      ) : (
-        <div className="loading">正在打开…</div>
+      {error && !list.length && (
+        <div className="error-banner" role="alert">
+          <p>{error}</p>
+        </div>
       )}
-      <StatusBar
-        line={position.line}
-        column={position.column}
-        characters={counts.characters}
-        images={counts.images}
-      />
-      {/* 工具栏已无“插入图片”按钮，界面上无法打开此选择框；保留它只因 tests/native.mjs 经它导入图片。 */}
-      <input
-        className="visually-hidden"
-        type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
-        multiple
-        tabIndex={-1}
-        onChange={(event) => {
-          void images.importFiles(
-            Array.from(event.currentTarget.files ?? []),
-          );
-          event.currentTarget.value = "";
-        }}
-      />
+      {list.map((tab) => (
+        <TabPane
+          key={tab.id}
+          tab={tab}
+          hidden={tab.id !== active}
+          focus={focus}
+          onPreview={preview.show}
+        />
+      ))}
+      {!ready && <div className="loading">正在打开…</div>}
       <ImagePreviewDialog
         dialogRef={preview.dialog}
         name={preview.name}
         source={preview.source}
-        canSave={desktop}
+        canSave={tabs.desktop}
         onSave={() => void preview.saveOriginal()}
         onClose={preview.close}
       />
@@ -128,19 +101,39 @@ export default function App() {
         onReset={settings.reset}
         onClose={() => {
           settings.flush();
-          editor.current?.focus();
+          tabs.focus();
         }}
       />
     </main>
   );
 }
 
-/** Window title: "● " marks unsaved changes. */
-function useWindowTitle(session: Session, title: string, dirty: boolean) {
+/** 设置文件里的“启动时”；读不出时为默认值。 */
+function readStartup(): Promise<Startup> {
+  return readSettings().then(
+    (value) => normalizeSettings(value).startup,
+    () => DEFAULT_SETTINGS.startup,
+  );
+}
+
+const noSubscription = () => () => {};
+const noSnapshot = () => undefined;
+/** The snapshot of a session that may not exist yet (before the tabs load). */
+function useSessionState(session: Session | undefined) {
+  return useSyncExternalStore(
+    session?.subscribe ?? noSubscription,
+    session?.getSnapshot ?? noSnapshot,
+  );
+}
+
+/**
+ * Window title: the current tab's name; "● " marks unsaved changes. The title bar
+ * is drawn by the page (TitleBar) without it; the taskbar still shows it.
+ */
+function useWindowTitle(desktop: boolean, tab: Tab | undefined, dirty: boolean) {
+  const title = tab ? `${dirty ? "● " : ""}${displayName(tab)}` : "LineHush";
   useEffect(() => {
-    if (session.desktop)
-      void getCurrentWindow()
-        .setTitle(`${dirty ? "● " : ""}${title}`)
-        .catch(console.error);
-  }, [session, title, dirty]);
+    if (desktop)
+      void getCurrentWindow().setTitle(title).catch(console.error);
+  }, [desktop, title]);
 }

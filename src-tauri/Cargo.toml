@@ -47,4 +47,11 @@ clipboard-win = "5.4"
 # 导出 PDF 调用 WebView2 的 PrintToPdf。版本须与 wry 所用的一致（webview2-com 0.38 / windows 0.61），
 # 否则 Tauri 给出的 WebView2 接口类型对不上。
 webview2-com = "0.38"
-windows = "0.61"
+# 自绘标题栏的最大化按钮覆盖窗口（caption.rs）另需这些 Win32 模块。
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }

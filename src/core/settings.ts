@@ -9,7 +9,21 @@ export interface Settings {
    * MIN_FONT_SIZE..MAX_FONT_SIZE. Older files stored `fontSize` in px.
    */
   fontSizePt: number;
+  /**
+   * 打开文件（双击 .hush、再次启动时带文件）：在最近使用的窗口里开新标签页，
+   * 还是开新窗口。Ctrl+O 不受影响。
+   */
+  openFile: OpenFile;
+  /**
+   * 启动时：新建一个窗口（只恢复程序意外退出时留下的未保存修改），还是恢复上次
+   * 关闭时的全部窗口与标签页。为后者时关闭最后一个窗口不询问保存，修改留到下次。
+   */
+  startup: Startup;
 }
+export type OpenFile = "tab" | "window";
+const OPEN_FILE_VALUES: readonly OpenFile[] = ["tab", "window"];
+export type Startup = "newWindow" | "lastSession";
+const STARTUP_VALUES: readonly Startup[] = ["newWindow", "lastSession"];
 
 /**
  * Keep in step with `Settings::default` in src-tauri/src/settings.rs. "微软雅黑"
@@ -19,6 +33,8 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   fontFamily: "微软雅黑",
   fontSizePt: 10,
+  openFile: "tab",
+  startup: "newWindow",
 };
 /** In pt. */
 export const MIN_FONT_SIZE = 6;
@@ -33,14 +49,16 @@ const FALLBACK_FONTS = [
 
 /**
  * Any stored or typed value made valid: size rounded to 0.1 and clamped, an
- * empty font is the default. A file without `fontSizePt` but with the older
- * `fontSize` (px) has it converted (× 0.75).
+ * empty font is the default, an unknown `openFile` or `startup` is the default. A file
+ * without `fontSizePt` but with the older `fontSize` (px) has it converted (× 0.75).
  */
 export function normalizeSettings(value: unknown): Settings {
   const input = (typeof value === "object" && value !== null ? value : {}) as {
     fontFamily?: unknown;
     fontSizePt?: unknown;
     fontSize?: unknown;
+    openFile?: unknown;
+    startup?: unknown;
   };
   const family =
     typeof input.fontFamily === "string" ? input.fontFamily.trim() : "";
@@ -53,6 +71,10 @@ export function normalizeSettings(value: unknown): Settings {
     fontSizePt: Number.isFinite(size)
       ? Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, Math.round(size * 10) / 10))
       : DEFAULT_SETTINGS.fontSizePt,
+    openFile: OPEN_FILE_VALUES.find((value) => value === input.openFile) ??
+      DEFAULT_SETTINGS.openFile,
+    startup: STARTUP_VALUES.find((value) => value === input.startup) ??
+      DEFAULT_SETTINGS.startup,
   };
 }
 

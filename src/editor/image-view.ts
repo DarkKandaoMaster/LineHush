@@ -13,7 +13,6 @@ import type { Mappable } from "@tiptap/pm/transform";
 import { dropPoint } from "@tiptap/pm/transform";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import { GapCursor } from "@tiptap/pm/gapcursor";
-import { imageUrl } from "../core/native";
 import type { Picture } from "../core/document";
 
 /**
@@ -571,6 +570,8 @@ function imagePlugin(copy: ImageOptions["copy"]) {
 export interface ImageOptions {
   /** Opens the original (double click). */
   preview: (pic: Picture) => void;
+  /** A Blob URL of the picture's thumbnail, which the image revokes when it goes. */
+  source: (pic: Picture) => Promise<string>;
   /**
    * Puts the originals on the system clipboard; `afterBrowser` when the browser
    * writes it too (copy events). Returns false when this is unavailable.
@@ -583,7 +584,7 @@ export interface ImageOptions {
  * them out in wrapping rows, and the document model merges them into one
  * `images` block, so the file format does not change.
  */
-export function image({ preview, copy }: ImageOptions) {
+export function image({ preview, source, copy }: ImageOptions) {
   return Node.create({
     name: "image",
     group: "block",
@@ -638,7 +639,7 @@ export function image({ preview, copy }: ImageOptions) {
         dom.append(tile);
         let url: string | undefined;
         let destroyed = false;
-        void imageUrl(pic)
+        void source(pic)
           .then((result) => {
             if (destroyed) {
               URL.revokeObjectURL(result);

@@ -2,9 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import type { ExportFormat, Session } from "../core/session";
 
 interface Props {
-  session: Session;
-  /** File commands need the desktop backend and no running operation or import. */
+  /** The current tab's document; 保存、另存为、导出 act on it. */
+  session: Session | undefined;
+  /** Save and export need the desktop backend and no running operation or import in the current tab. */
   fileDisabled: boolean;
+  /** Opening needs the desktop backend. */
+  openDisabled: boolean;
+  onNew: () => void;
+  onOpen: () => void;
   onSettings: () => void;
 }
 
@@ -28,7 +33,7 @@ function GearIcon() {
 }
 
 export default function Toolbar(props: Props) {
-  const { session, fileDisabled, onSettings } = props;
+  const { session, fileDisabled, openDisabled, onSettings } = props;
   const exportMenu = useRef<HTMLDetailsElement>(null);
   const [exportOpen, setExportOpen] = useState(false);
   // An open export menu closes on a press outside it or on Esc.
@@ -52,35 +57,31 @@ export default function Toolbar(props: Props) {
   }, [exportOpen]);
   const exportAs = (format: ExportFormat) => {
     if (exportMenu.current) exportMenu.current.open = false;
-    void session.exportDocument(format);
+    void session?.exportDocument(format);
   };
   return (
     <header className="toolbar" aria-label="文件操作">
-      <button
-        disabled={fileDisabled}
-        title="新建 (Ctrl+N)"
-        onClick={() => void session.newDocument()}
-      >
+      <button title="新建标签页 (Ctrl+N)" onClick={props.onNew}>
         新建
       </button>
       <button
-        disabled={fileDisabled}
+        disabled={openDisabled}
         title="打开 (Ctrl+O)"
-        onClick={() => void session.openDocument()}
+        onClick={props.onOpen}
       >
         打开
       </button>
       <button
         disabled={fileDisabled}
         title="保存 (Ctrl+S)"
-        onClick={() => void session.saveDocument()}
+        onClick={() => void session?.saveDocument()}
       >
         保存
       </button>
       <button
         disabled={fileDisabled}
         title="另存为 (Ctrl+Shift+S)"
-        onClick={() => void session.saveDocumentAs()}
+        onClick={() => void session?.saveDocumentAs()}
       >
         另存为
       </button>

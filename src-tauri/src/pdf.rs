@@ -1,7 +1,7 @@
 //! 导出 PDF：在隐藏窗口里加载前端生成的打印页（`toPrintHtml`），用 WebView2 自带的
 //! `ICoreWebView2_7::PrintToPdf` 写到用户选的路径。打印页与其中的原图都由自定义协议
 //! `linehush-print` 提供（Windows 上实际 URL 为 `http://linehush-print.localhost/...`）。
-use crate::{errors::describe, fsx::shown, lock_store, model::Result};
+use crate::{errors::describe, fsx::shown, lock_tab, model::Result};
 use std::{
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
@@ -30,12 +30,12 @@ const PAGE_WIDTH: f64 = 8.27;
 const PAGE_HEIGHT: f64 = 11.69;
 const MARGIN: f64 = 0.59;
 
-/// 正在导出的打印页 HTML；Some 表示有一次导出尚未结束。
+/// 正在导出的标签页与打印页 HTML；Some 表示有一次导出尚未结束。
 #[derive(Default)]
-pub struct PrintJob(Mutex<Option<String>>);
+pub struct PrintJob(Mutex<Option<(String, String)>>);
 
 /// `linehush-print` 协议：只回答打印窗口的请求。`/doc.html` 为待打印页面，
-/// `/image/<id>` 为当前文档的原图，其他路径 404。
+/// `/image/<id>` 为正在导出的标签页中的原图，其他路径 404。
 pub fn protocol(
     ctx: UriSchemeContext<'_, Wry>,
     request: Request<Vec<u8>>,
@@ -50,27 +50,31 @@ pub fn protocol(
     tauri::async_runtime::spawn_blocking(move || responder.respond(serve(&app, &path)));
 }
 fn serve(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
+    let Some((tab, html)) = app
+        .state::<PrintJob>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+    else {
+        return status(StatusCode::NOT_FOUND);
+    };
     if path == "/doc.html" {
-        let html = app
-            .state::<PrintJob>()
-            .0
-            .lock()
-            .ok()
-            .and_then(|slot| slot.clone());
-        return match html {
-            Some(html) => Response::builder()
-                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-                // 每次导出的页面都不同，不能用缓存。
-                .header(header::CACHE_CONTROL, "no-store")
-                .body(html.into_bytes())
-                .unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR)),
-            None => status(StatusCode::NOT_FOUND),
-        };
+        return Response::builder()
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            // 每次导出的页面都不同，不能用缓存。
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(html.into_bytes())
+            .unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR));
     }
     let Some(id) = path.strip_prefix("/image/") else {
         return status(StatusCode::NOT_FOUND);
     };
-    let bytes = match lock_store(app).and_then(|store| store.image(id)) {
+    let original = lock_tab(app, &tab).and_then(|store| {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        store.image(id)
+    });
+    let bytes = match original {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("导出 PDF 时无法读取图片 {id}：{e}");
@@ -91,16 +95,17 @@ fn status(code: StatusCode) -> Response<Vec<u8>> {
     response
 }
 
-/// 把打印页 `html` 导出为 `path` 处的 PDF。无论成败，结束时都关闭隐藏窗口、清空页面。
+/// 把标签页 `tab` 的打印页 `html` 导出为 `path` 处的 PDF。无论成败，结束时都关闭
+/// 隐藏窗口、清空页面。
 #[tauri::command]
-pub async fn export_pdf(path: PathBuf, html: String, app: AppHandle) -> Result<()> {
+pub async fn export_pdf(tab: String, path: PathBuf, html: String, app: AppHandle) -> Result<()> {
     {
         let job = app.state::<PrintJob>();
         let mut slot = job.0.lock().map_err(|e| e.to_string())?;
         if slot.is_some() || app.get_webview_window(LABEL).is_some() {
             return Err("上一次导出尚未完成".into());
         }
-        *slot = Some(html);
+        *slot = Some((tab, html));
     }
     let (closed_tx, closed_rx) = mpsc::channel();
     let result = print(&app, &path, closed_tx).await;

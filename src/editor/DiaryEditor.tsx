@@ -20,6 +20,7 @@ import {
   type Diary,
   type Picture,
 } from "../core/document";
+import { imageUrl } from "../core/native";
 export interface DiaryEditorHandle {
   reserveInsertion: () => {
     cancel: () => void;
@@ -28,6 +29,8 @@ export interface DiaryEditorHandle {
   focus: () => void;
 }
 interface Props {
+  /** The tab whose document this is; thumbnails are read from it. Fixed for the editor's lifetime. */
+  tab: string;
   /** Read only on mount; the parent remounts the editor (via `key`) to load another document. */
   initial: Diary;
   disabled: boolean;
@@ -69,6 +72,7 @@ function DiaryEditor(props: Props) {
   const [options] = useState((): UseEditorOptions => ({
     extensions: extensions({
       preview: (pic) => latest.current.onPreview(pic),
+      source: (pic) => imageUrl(latest.current.tab, pic),
       copy: (pictures, afterBrowser) =>
         latest.current.onCopy(pictures, afterBrowser),
     }),
@@ -251,6 +255,7 @@ function DiaryEditor(props: Props) {
 export default memo(
   DiaryEditor,
   (prev, next) =>
+    prev.tab === next.tab &&
     prev.disabled === next.disabled &&
     prev.ref === next.ref &&
     prev.onChange === next.onChange &&

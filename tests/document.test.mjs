@@ -165,9 +165,12 @@ test("PDF 打印页：逐行转义保留空行，图片读 /image/<id>，按设�
   });
   assert.ok(!hostile.includes("</style><script>"));
 });
-test("文件名只取路径最后一段，无路径时为未命名", () => {
+test("文件名只取路径最后一段，无路径时为“无标题”并按编号区分", () => {
   // Windows paths (including the \\?\ prefix Rust returns) show only the file name.
   assert.equal(fileName("\\\\?\\D:\\日记\\测试.hush"), "测试.hush");
-  assert.equal(fileName("D:/日记/测试.hush"), "测试.hush");
-  assert.equal(fileName(null), "未命名");
+  assert.equal(fileName("D:/日记/测试.hush", 3), "测试.hush");
+  assert.equal(fileName(null), "无标题");
+  assert.equal(fileName(null, 1), "无标题");
+  assert.equal(fileName(null, 2), "无标题 2");
+  assert.equal(fileName(null, 12), "无标题 12");
 });

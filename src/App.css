@@ -51,11 +51,175 @@ input:focus-visible {
   gap: 4px;
   padding: 4px 12px;
   border-bottom: 1px solid #e5e5e5;
-  background: #f3f3f3;
+  /* 与当前标签同色，像记事本的菜单行接在当前标签下面。 */
+  background: #f9f9f9;
   flex-wrap: wrap;
 }
 .spacer {
   flex: 1;
+}
+/*
+ * 自绘标题栏：参照 Win11 记事本。高 40px，左侧标签（高 32px，靠下），中间空白可拖动，
+ * 右侧三个 46×32 的标题按钮靠上。当前标签与下方工具栏同色（#f9f9f9）连成一体，
+ * 底部两侧有向外的圆角。窗口失焦时标签文字与按钮图标变淡。
+ */
+.titlebar {
+  display: flex;
+  flex-shrink: 0;
+  height: 40px;
+  background: #ececec;
+  user-select: none;
+}
+.titlebar-drag {
+  flex: 1 0 40px;
+}
+.caption-buttons {
+  display: flex;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+.caption-buttons button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: #1a1a1a;
+  background: transparent;
+  cursor: default;
+}
+.caption-buttons button svg {
+  display: block;
+}
+.caption-buttons button:hover,
+.caption-buttons .caption-max.hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+.caption-buttons button:active,
+.caption-buttons .caption-max.pressed {
+  background: rgba(0, 0, 0, 0.04);
+  color: #5f5f5f;
+}
+.caption-buttons .caption-close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+.caption-buttons .caption-close:active {
+  background: #c83c31;
+  color: #fff;
+}
+.titlebar.inactive .caption-buttons button:not(:hover):not(.hover) {
+  color: #9b9b9b;
+}
+.titlebar.inactive .tab,
+.titlebar.inactive .tab.active,
+.titlebar.inactive .tab-new {
+  color: #8f8f8f;
+}
+/* 标签栏：标签紧凑，× 悬停时才显示，末尾“+”新建。标签多时缩窄，再多则横向滚动。 */
+.tabbar {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 0 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 200px;
+  min-width: 72px;
+  height: 32px;
+  padding: 0 4px 0 12px;
+  border-radius: 6px 6px 0 0;
+  color: #444;
+  font-size: 12px;
+  cursor: default;
+}
+.tab:hover {
+  background: rgba(0, 0, 0, 0.045);
+}
+.tab.active {
+  background: #f9f9f9;
+  color: #1a1a1a;
+}
+/* 当前标签底部两侧向外的小圆角，与工具栏接成一体。 */
+.tab.active::before,
+.tab.active::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 6px;
+  height: 6px;
+  pointer-events: none;
+}
+.tab.active::before {
+  left: -6px;
+  background: radial-gradient(circle at 0 0, transparent 5.5px, #f9f9f9 6px);
+}
+.tab.active::after {
+  right: -6px;
+  background: radial-gradient(circle at 100% 0, transparent 5.5px, #f9f9f9 6px);
+}
+.tab-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab .tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  visibility: hidden;
+}
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  visibility: visible;
+}
+.tab .tab-close:hover {
+  background: rgba(0, 0, 0, 0.07);
+}
+.tabbar .tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 28px;
+  margin: 0 0 2px 4px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+.tabbar .tab-new:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+/* 每个标签页常驻一个编辑器，非当前的隐藏。 */
+.tab-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tab-pane[hidden] {
+  display: none;
 }
 /* 设置按钮：正方形、只有图标，其余沿用工具栏按钮样式。 */
 .toolbar .settings-button {
@@ -85,12 +249,18 @@ input:focus-visible {
   overflow: auto;
   cursor: text;
 }
+/*
+ * 编辑区撑满标题栏、工具栏与状态栏之间的空间（.app 与 .tab-pane 的 flex 布局），
+ * 这样点空白处也能定位光标；不按窗口高度减固定值计算，空文档不会出滚动条。
+ */
 .editor-host > div {
   min-height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 .tiptap {
+  flex: 1 0 auto;
   outline: none;
-  min-height: calc(100vh - 72px);
   /*
    * Win11 Notepad (measured 2026-10-19): text starts 16px from the left of the
    * text area and its first line box 16px below the menu bar. The line height
@@ -431,6 +601,28 @@ input:focus-visible {
   min-width: 32px;
   padding: 3px 6px;
   border-color: #e0e0e0;
+}
+/* 打开文件：单选，一项一行。 */
+#settings-open-file {
+  align-self: start;
+  padding-top: 2px;
+}
+.settings-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-choices label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-dialog .settings-choices input {
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: none;
+  accent-color: #0067c0;
 }
 .settings-size button.selected {
   border-color: #0067c0;
