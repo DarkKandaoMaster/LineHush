@@ -6,16 +6,34 @@ import {
   fileName,
   fromText,
   toHtml,
+  toPrintHtml,
   toText,
   type Diary,
 } from "./document.ts";
 import * as native from "./native.ts";
 import type { Opened } from "./native.ts";
 import { SaveQueue } from "./save-queue.ts";
+import { cssVariables, DEFAULT_SETTINGS } from "./settings.ts";
 
 const filter = [{ name: "LineHush 笔记", extensions: ["hush"] }];
 const recoveredNotice = "已恢复未保存的修改。";
-type ExportFormat = "txt" | "html";
+export type ExportFormat = "txt" | "html" | "pdf";
+/**
+ * 编辑区当前的字体与字号：`useSettings` 把它们写成 <html> 上的 CSS 变量，PDF 按同样的
+ * 字体排版。没有 DOM（Node 测试）或尚未写入时用默认设置。
+ */
+function editorFont() {
+  const defaults = cssVariables(DEFAULT_SETTINGS);
+  const style =
+    typeof document === "undefined" ? undefined : document.documentElement.style;
+  const read = (name: string) =>
+    style?.getPropertyValue(name).trim() || defaults[name];
+  const size = Number.parseFloat(read("--editor-font-size"));
+  return {
+    fontFamily: read("--editor-font-family"),
+    fontSizePt: Number.isFinite(size) ? size : DEFAULT_SETTINGS.fontSizePt,
+  };
+}
 /** The answer to "save changes to <name>?" before the document is replaced or closed. */
 export type UnsavedChoice = "save" | "discard" | "cancel";
 export interface SessionState {
@@ -242,12 +260,19 @@ export function createSession(
         defaultPath: `${fileName(state.path).replace(/\.hush$/, "")}.${format}`,
         filters: [{ name: format.toUpperCase(), extensions: [format] }],
       });
-      if (target) {
-        const doc = state.document;
-        await (format === "html"
-          ? native.exportDocument(target, toHtml(doc), exportImages(doc))
-          : native.exportDocument(target, toText(doc), []));
-      }
+      if (!target) return;
+      const doc = state.document;
+      if (format === "pdf")
+        await native.exportPdf(
+          target,
+          toPrintHtml(doc, {
+            ...editorFont(),
+            title: fileName(state.path).replace(/\.hush$/, ""),
+          }),
+        );
+      else if (format === "html")
+        await native.exportDocument(target, toHtml(doc), exportImages(doc));
+      else await native.exportDocument(target, toText(doc), []);
     }, (e) => `导出失败：${e}`);
   }
   /**

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Session } from "../core/session";
+import type { ExportFormat, Session } from "../core/session";
 
 interface Props {
   session: Session;
@@ -50,7 +50,7 @@ export default function Toolbar(props: Props) {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [exportOpen]);
-  const exportAs = (format: "txt" | "html") => {
+  const exportAs = (format: ExportFormat) => {
     if (exportMenu.current) exportMenu.current.open = false;
     void session.exportDocument(format);
   };
@@ -102,6 +102,12 @@ export default function Toolbar(props: Props) {
             onClick={() => exportAs("html")}
           >
             图文网页 (.html)
+          </button>
+          <button
+            disabled={fileDisabled}
+            onClick={() => exportAs("pdf")}
+          >
+            PDF 文档 (.pdf)
           </button>
         </div>
       </details>

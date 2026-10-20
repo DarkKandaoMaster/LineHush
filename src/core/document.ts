@@ -130,3 +130,34 @@ export function toHtml(doc: Diary): string {
     "</body></html>"
   );
 }
+/** PDF 导出所用打印页的字体、字号与标题。 */
+export interface PrintOptions {
+  /** CSS 字体列表，如 `cssFontFamily` 的结果。 */
+  fontFamily: string;
+  fontSizePt: number;
+  title: string;
+}
+/**
+ * Rust 在隐藏窗口里加载并用 WebView2 PrintToPdf 打印成 PDF 的页面。文字行与编辑区
+ * 一致（同字体、字号、字体自然行高）；图片从 `/image/<id>` 读原图（由 Rust 的
+ * 自定义协议提供），等比缩小到不超出 A4 版心，且不跨页拆开。
+ */
+export function toPrintHtml(doc: Diary, options: PrintOptions): string {
+  const body = doc.blocks
+    .map((block) =>
+      block.type === "line"
+        ? `<div class="line">${escapeHtml(block.text) || "<br>"}</div>`
+        : `<div class="images">${block.images.map((pic) => `<img src="/image/${encodeURIComponent(pic.id)}" alt="${escapeHtml(pic.name)}" width="${pic.width}" height="${pic.height}">`).join("")}</div>`,
+    )
+    .join("\n");
+  // 字体列表里若有 `</` 会提前结束 <style>，转成 CSS 转义。
+  const font = options.fontFamily.replace(/</g, "\\3c ");
+  return (
+    `<!doctype html>\n<html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(options.title)}</title>\n` +
+    `<style>@page{size:A4;margin:15mm}html,body{background:#fff}body{color:#202020;margin:0;font-family:${font};font-size:${options.fontSizePt}pt;line-height:normal}` +
+    ".line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1lh}.images{display:flex;flex-wrap:wrap;gap:8px;break-inside:avoid}" +
+    "img{max-width:100%;max-height:160mm;width:auto;height:auto;object-fit:contain;break-inside:avoid}</style>\n<body>" +
+    body +
+    "</body></html>"
+  );
+}

@@ -18,6 +18,12 @@ const appData = path.join(root, "app");
 const working = path.join(appData, "working.hush");
 await mkdir(root, { recursive: true });
 const profile = process.argv.includes("--release") ? "release" : "debug";
+/**
+ * `--only <名称>` 只跑一项可单独运行的用例（见下方 `cases`），不跑整套回归。
+ * 整套只在发布前跑。
+ */
+const onlyAt = process.argv.indexOf("--only");
+const only = onlyAt === -1 ? undefined : process.argv[onlyAt + 1];
 const exe = path.resolve(`src-tauri/target/${profile}/LineHush.exe`);
 const errors = [];
 const checks = [];
@@ -197,7 +203,10 @@ if ($env:LH_REPLACE -eq '1') {
 }
 [Console]::Out.Write($suggested)
 `;
-const answerSaveDialog = (target, { replace = false } = {}) =>
+const answerSaveDialog = (
+  target,
+  { replace = false, title = "保存日记" } = {},
+) =>
   new Promise((resolve, reject) =>
     execFile(
       "powershell.exe",
@@ -214,7 +223,7 @@ const answerSaveDialog = (target, { replace = false } = {}) =>
         env: {
           ...process.env,
           LH_PID: String(processHandle.pid),
-          LH_TITLE: "保存日记",
+          LH_TITLE: title,
           LH_PATH: target,
           LH_REPLACE: replace ? "1" : "0",
         },
@@ -281,7 +290,93 @@ const expectGroups = (editor, count) =>
   expect.poll(() => imageGroups(editor)).toBe(count);
 const imageNames = (editor) =>
   editor.locator(".image-tile img").evaluateAll((images) => images.map((img) => img.alt));
-try {
+/**
+ * 导出 PDF：新建文档输入中文（含空行）与两张图片，经导出菜单与系统保存对话框
+ * 导出，再覆盖导出一次。只检查文件头尾与隐藏窗口已关闭；文字、图片与版式另用
+ * Poppler（pdftotext / pdfimages / pdftoppm）检查。返回 PDF 路径。
+ */
+async function exportPdfCase() {
+  const page = await start();
+  const editor = page.getByRole("textbox", { name: "日记正文" });
+  await editor.click();
+  await page.keyboard.insertText("导出 PDF 的中文第一行");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("空行之后的第二行，后面接两张图片");
+  await page.keyboard.press("Enter");
+  const sources = path.join(root, "PDF 源图");
+  await mkdir(sources, { recursive: true });
+  const files = [];
+  for (const [name, options] of [
+    ["横图.png", { clip: { x: 0, y: 0, width: 480, height: 240 } }],
+    ["截图.jpg", { type: "jpeg", quality: 85 }],
+  ]) {
+    const file = path.join(sources, name);
+    await writeFile(file, await page.screenshot(options));
+    files.push(file);
+  }
+  await page.locator("input[type=file]").setInputFiles(files);
+  await expect(editor.locator(".image-tile img")).toHaveCount(2);
+  await editor.locator(".image-tile").last().click();
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("图片之后的最后一行");
+  const target = path.join(root, "导出.pdf");
+  const newButton = page.getByRole("button", { name: "新建", exact: true });
+  const exportPdf = async (replace) => {
+    await page.getByText("导出", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "PDF 文档 (.pdf)", exact: true })
+      .click();
+    const suggested = await answerSaveDialog(target, {
+      title: "导出日记",
+      replace,
+    });
+    // 导出期间文件按钮不可用，结束后恢复。
+    await expect.poll(() => existsSync(target), { timeout: 60000 }).toBe(true);
+    await expect(newButton).toBeEnabled({ timeout: 60000 });
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    const bytes = await readFile(target);
+    expect(bytes.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    expect(bytes.subarray(-1024).toString("latin1")).toContain("%%EOF");
+    // 隐藏的打印窗口已经关闭。
+    expect(await call(page, "plugin:window|get_all_windows")).toEqual(["main"]);
+    return suggested;
+  };
+  const suggested = await exportPdf(false);
+  const first = await stat(target);
+  await copyFile(target, path.join(root, "导出-第一次.pdf"));
+  // 同一路径再导出一次：覆盖，标签 print 可以重复使用。
+  await editor.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("第二次导出追加的一行");
+  await exportPdf(true);
+  expect((await stat(target)).mtimeMs).toBeGreaterThan(first.mtimeMs);
+  passed("导出 PDF");
+  await requestClose(page);
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "不保存", exact: true })
+    .click();
+  await exited();
+  return { pdf: target, suggested };
+}
+const cases = { "导出 PDF": exportPdfCase };
+if (only !== undefined) {
+  try {
+    const run = cases[only];
+    if (!run)
+      throw Error(
+        `没有名为“${only}”的单项用例，可选：${Object.keys(cases).join("、")}`,
+      );
+    const result = await run();
+    expect(errors).toEqual([]);
+    console.log(JSON.stringify({ passed: true, profile, root, checks, result }));
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    if (processHandle?.exitCode === null) processHandle.kill();
+  }
+} else try {
   // --- Unnamed draft: stashed, recovered after a crash, saved via Save As ---
   let page = await start();
   let editor = page.getByRole("textbox", { name: "日记正文" });
@@ -790,6 +885,7 @@ try {
   expect(stash()).toBeNull();
   passed("启动参数打开文件");
   await kill();
+  await exportPdfCase();
   expect(errors).toEqual([]);
   console.log(
     JSON.stringify({

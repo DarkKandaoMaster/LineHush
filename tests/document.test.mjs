@@ -6,6 +6,7 @@ import {
   toEditor,
   fromEditor,
   toHtml,
+  toPrintHtml,
   fileName,
   exportFile,
   exportImages,
@@ -115,6 +116,54 @@ test("HTML 导出按 id 前缀命名附件，列表按 id 与文件名去重", (
     ),
   );
   assert.ok(html.includes('src="附件/bbbbbbbbbbbb"'));
+});
+test("PDF 打印页：逐行转义保留空行，图片读 /image/<id>，按设置的字体与字号排版", () => {
+  const a = { id: idA, name: "图 <1>.png", width: 1200, height: 800 };
+  const b = { id: idB, name: "", width: 5, height: 5 };
+  const doc = {
+    blocks: [
+      { type: "line", text: '<b>粗</b> & "引号"' },
+      { type: "line", text: "" },
+      { type: "images", images: [a, b] },
+      { type: "line", text: "  缩进" },
+    ],
+  };
+  const html = toPrintHtml(doc, {
+    fontFamily: '"微软雅黑", "Microsoft YaHei UI", sans-serif',
+    fontSizePt: 10.5,
+    title: "日记 <草稿>",
+  });
+  assert.ok(html.startsWith("<!doctype html>"));
+  assert.ok(html.includes("<title>日记 &lt;草稿&gt;</title>"));
+  assert.ok(
+    html.includes(
+      '<div class="line">&lt;b&gt;粗&lt;/b&gt; &amp; &quot;引号&quot;</div>\n<div class="line"><br></div>',
+    ),
+  );
+  assert.ok(html.includes('<div class="line">  缩进</div>'));
+  assert.ok(
+    html.includes(
+      `<div class="images"><img src="/image/${idA}" alt="图 &lt;1&gt;.png" width="1200" height="800"><img src="/image/${idB}" alt="" width="5" height="5"></div>`,
+    ),
+  );
+  assert.ok(!html.includes("附件/"));
+  assert.ok(html.includes("@page{size:A4;margin:15mm}"));
+  assert.ok(
+    html.includes(
+      'font-family:"微软雅黑", "Microsoft YaHei UI", sans-serif;font-size:10.5pt;line-height:normal',
+    ),
+  );
+  assert.ok(html.includes("background:#fff"));
+  assert.ok(html.includes("white-space:pre-wrap"));
+  assert.ok(html.includes("max-height:160mm"));
+  assert.ok(html.includes(".images{display:flex;flex-wrap:wrap;gap:8px;break-inside:avoid}"));
+  // 字体列表不能提前结束 <style>。
+  const hostile = toPrintHtml(fromText("x"), {
+    fontFamily: "a</style><script>",
+    fontSizePt: 10,
+    title: "t",
+  });
+  assert.ok(!hostile.includes("</style><script>"));
 });
 test("文件名只取路径最后一段，无路径时为未命名", () => {
   // Windows paths (including the \\?\ prefix Rust returns) show only the file name.

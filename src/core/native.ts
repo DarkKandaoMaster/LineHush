@@ -41,6 +41,12 @@ export const exportDocument = (
   content: string,
   images: { id: string; file: string }[],
 ) => invoke<void>("export_document", { path, content, images });
+/**
+ * 在隐藏窗口里加载打印页 `html`（见 `toPrintHtml`），用 WebView2 打印成 PDF 写到 `path`；
+ * 页面中的 `/image/<id>` 由 Rust 按当前文档的原图提供。
+ */
+export const exportPdf = (path: string, html: string) =>
+  invoke<void>("export_pdf", { path, html });
 /** The file bytes are sent as the raw request body; the returned name is empty. */
 export const importImage = (bytes: ArrayBuffer) =>
   invoke<Picture>("import_image", bytes);

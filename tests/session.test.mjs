@@ -32,6 +32,10 @@ function setup({
       return { document: fromText("旧日记\n\n"), path, recovered, notice };
     if (cmd === "save_document" && fake.failSave) throw Error("测试写入失败");
     if (cmd === "close_document" && fake.failClose) throw "测试清理失败";
+    if (cmd === "export_pdf") {
+      fake.pdf = args;
+      if (fake.failPdf) throw "无法写入 PDF 文件";
+    }
     if (cmd === "plugin:dialog|save") return fake.savePath;
     if (cmd === "plugin:dialog|open") return fake.openPath;
     if (cmd === "take_open_request") {
@@ -482,6 +486,34 @@ test("切换文档时显示上一个文件未能清理的提示，保存后仍�
     await session.openRequested();
     assert.equal(state().path, "D:/乙.hush");
     assert.equal(state().notice, warning);
+  } finally {
+    await teardown(session);
+  }
+});
+test("导出 PDF：对话框默认文件名为 .pdf，打印页用文件名作标题与默认字体，失败显示导出失败", async () => {
+  const { session, fake, state } = setup({ path: "D:/日记/十月.hush" });
+  try {
+    await session.initialize();
+    fake.savePath = "D:/导出/十月.pdf";
+    await session.exportDocument("pdf");
+    assert.equal(fake.pdf.path, "D:/导出/十月.pdf");
+    assert.ok(fake.pdf.html.includes("<title>十月</title>"));
+    assert.ok(fake.pdf.html.includes('<div class="line">旧日记</div>'));
+    // Node 里没有 DOM：用默认设置（微软雅黑 10 pt）。
+    assert.ok(fake.pdf.html.includes('font-family:"微软雅黑", "Microsoft YaHei UI"'));
+    assert.ok(fake.pdf.html.includes("font-size:10pt"));
+    assert.equal(state().error, "");
+    assert.equal(state().notice, "");
+    // 取消对话框不调用 Rust。
+    fake.pdf = undefined;
+    fake.savePath = null;
+    await session.exportDocument("pdf");
+    assert.equal(fake.pdf, undefined);
+    fake.savePath = "D:/导出/十月.pdf";
+    fake.failPdf = true;
+    await session.exportDocument("pdf");
+    assert.equal(state().error, "导出失败：无法写入 PDF 文件");
+    assert.equal(state().busy, false);
   } finally {
     await teardown(session);
   }

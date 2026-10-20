@@ -4,6 +4,7 @@ mod errors;
 mod fsx;
 mod images;
 mod model;
+mod pdf;
 mod settings;
 mod store;
 #[cfg(test)]
@@ -326,6 +327,8 @@ pub fn run() {
     }
     builder = builder
         .manage(OpenRequest(Mutex::new(launch)))
+        .manage(pdf::PrintJob::default())
+        .register_asynchronous_uri_scheme_protocol(pdf::SCHEME, pdf::protocol)
         .plugin(tauri_plugin_dialog::init());
     // Remembers size, position and maximized state across launches. Tests skip it so
     // they always start at the configured size and never touch the user's saved state.
@@ -339,6 +342,8 @@ pub fn run() {
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(WINDOW_STATE)
                 .skip_initial_state("main")
+                // 导出 PDF 的隐藏窗口不记忆、也不恢复位置。
+                .with_denylist(&[pdf::LABEL])
                 .build(),
         );
     }
@@ -412,6 +417,7 @@ pub fn run() {
             copied_images,
             paste_images,
             close_document,
+            pdf::export_pdf,
             settings::read_settings,
             settings::write_settings
         ])
