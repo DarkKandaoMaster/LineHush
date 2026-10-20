@@ -119,7 +119,7 @@ input:focus-visible {
 .titlebar.inactive .tab-new {
   color: #8f8f8f;
 }
-/* 标签栏：标签紧凑，× 悬停时才显示，末尾“+”新建。标签多时缩窄，再多则横向滚动。 */
+/* 标签栏：× 悬停时才显示，末尾“+”新建。标签多到放不下时等宽缩窄，再多则横向滚动。 */
 .tabbar {
   display: flex;
   flex: 0 1 auto;
@@ -136,8 +136,13 @@ input:focus-visible {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 0 1 200px;
-  min-width: 72px;
+  /*
+   * 宽度照记事本（WinUI TabView 标签最宽 240、最窄 100）。用 width 而不是 flex-basis：
+   * 标签栏按内容取宽时 Chromium 只看 width，用 flex-basis 会被缩到文字宽度。
+   */
+  flex: 0 1 auto;
+  width: 240px;
+  min-width: 100px;
   height: 32px;
   padding: 0 4px 0 12px;
   border-radius: 6px 6px 0 0;
