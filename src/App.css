@@ -45,15 +45,19 @@ input:focus-visible {
   flex-direction: column;
 }
 .toolbar {
-  min-height: 42px;
+  /* 内容高 32px 与记事本菜单栏相同（border-box，含 1px 分隔线共 33px）；窄窗口换行时 min-height 仍能撑开。 */
+  min-height: 33px;
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 12px;
+  padding: 0 12px;
   border-bottom: 1px solid #e5e5e5;
   /* 与当前标签同色，像记事本的菜单行接在当前标签下面。 */
   background: #f9f9f9;
   flex-wrap: wrap;
+}
+.toolbar button {
+  padding: 3px 10px;
 }
 .spacer {
   flex: 1;
@@ -476,7 +480,7 @@ input:focus-visible {
   position: relative;
 }
 .export-menu summary {
-  padding: 5px 10px;
+  padding: 4px 10px;
   border-radius: 4px;
   cursor: pointer;
   list-style: none;
@@ -486,7 +490,7 @@ input:focus-visible {
 }
 .menu-items {
   position: absolute;
-  top: 30px;
+  top: 28px;
   left: 0;
   z-index: 5;
   background: #fff;
@@ -507,10 +511,10 @@ input:focus-visible {
 @media (max-width: 760px) {
   .toolbar {
     gap: 0;
-    padding: 4px;
+    padding: 0 4px;
   }
   .toolbar button {
-    padding: 5px 8px;
+    padding: 3px 8px;
   }
   .statusbar {
     gap: 12px;
