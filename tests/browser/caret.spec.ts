@@ -225,6 +225,207 @@ test("文档以图片结尾：点图片下方空白，光标停在最后一张�
   expect(errors).toEqual([]);
 });
 
+test("鼠标拖选文字与图片：拖到图片上按左右半区、拖过文档末尾的图片都能选中图片", async ({
+  page,
+}) => {
+  const errors = await load(page);
+  // "文本1" 0-5, then the image as the document's last node (no empty line after it).
+  const reset = (nodes: string[]) =>
+    editorOf(page).evaluate((el: any, nodes: string[]) => {
+      el.editor.commands.setContent({
+        type: "doc",
+        content: nodes.map((n) =>
+          n === "[a]"
+            ? { type: "image", attrs: { id: "a", name: "a.png", width: 200, height: 100 } }
+            : { type: "paragraph", content: [{ type: "text", text: n }] },
+        ),
+      });
+      (window as any).drags = 0;
+      el.addEventListener("dragstart", () => (window as any).drags++);
+    }, nodes);
+  type Point = { x: number; y: number };
+  async function drag(from: Point, to: Point) {
+    // A press inside the previous range would drag that range as content, so
+    // a click far below first leaves a caret (not where the drag starts, which
+    // would make the press a double click).
+    const box = (await editorOf(page).boundingBox())!;
+    await page.mouse.click(box.x + 300, box.y + box.height - 20);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++)
+      await page.mouse.move(
+        from.x + ((to.x - from.x) * i) / 10,
+        from.y + ((to.y - from.y) * i) / 10,
+      );
+    await page.mouse.up();
+  }
+  const line = async (at: "start" | "end") => {
+    const box = (await editorOf(page).locator("p").first().boundingBox())!;
+    return { x: box.x + (at === "start" ? 2 : 40), y: box.y + box.height / 2 };
+  };
+  const onImage = async (side: "left" | "right") => {
+    const box = (await tile(page, 0).boundingBox())!;
+    return {
+      x: box.x + (side === "left" ? 10 : box.width - 10),
+      y: box.y + box.height / 2,
+    };
+  };
+  const belowImage = async () => {
+    const box = (await tile(page, 0).boundingBox())!;
+    return { x: box.x + 50, y: box.y + box.height + 80 };
+  };
+  const selected = () => editorOf(page).locator(".image-selected");
+
+  await reset(["文本1", "[a]"]);
+  // The caret after the image, as in the report.
+  const below = await belowImage();
+  await page.mouse.click(below.x, below.y);
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 6 });
+  // Past the end of the document, below the image.
+  await drag(await line("start"), await belowImage());
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 1, head: 6 });
+  await expect(selected()).toHaveCount(1);
+  // Onto the image: its right half takes it, its left half stops before it.
+  await drag(await line("start"), await onImage("right"));
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 1, head: 6 });
+  await expect(selected()).toHaveCount(1);
+  await drag(await line("start"), await onImage("left"));
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 1, head: 5 });
+  await expect(selected()).toHaveCount(0);
+  // Backwards, from below the image to the text.
+  await drag(await belowImage(), await line("start"));
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 1 });
+  await expect(selected()).toHaveCount(1);
+  // Mirrored: the image starts the document. Up onto its left half takes it.
+  await reset(["[a]", "文本1"]);
+  await drag(await line("end"), await onImage("left"));
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 5, head: 0 });
+  await expect(selected()).toHaveCount(1);
+  await drag(await line("end"), await onImage("right"));
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 5, head: 1 });
+  await expect(selected()).toHaveCount(0);
+  // The range is the editor's; the browser never turned the drag into dragging content.
+  expect(await page.evaluate(() => (window as any).drags)).toBe(0);
+  // The DOM selection catches up on mouseup: copying / deleting acts on the range.
+  await drag(await line("end"), await onImage("left"));
+  await page.keyboard.press("Delete");
+  expect(await content(page)).toEqual([""]);
+  expect(errors).toEqual([]);
+});
+
+test("拖选经过图片：松开鼠标之前文字高亮（DOM 选区）就与编辑器选区一致，松开后不变", async ({
+  page,
+}) => {
+  const errors = await load(page);
+  await page.evaluate(() => {
+    (window as any).drags = 0;
+    document.addEventListener("dragstart", () => (window as any).drags++);
+  });
+  // Tiles show a real picture, as in the app: over an <img> the browser's own
+  // end of a drag selection jumps back to the press.
+  const reset = async (nodes: string[]) => {
+    await editorOf(page).evaluate((el: any, nodes: string[]) => {
+      el.editor.commands.setContent({
+        type: "doc",
+        content: nodes.map((n) =>
+          n === "[a]"
+            ? { type: "image", attrs: { id: "a", name: "a.png", width: 200, height: 100 } }
+            : { type: "paragraph", content: [{ type: "text", text: n }] },
+        ),
+      });
+    }, nodes);
+    // The tile shows its placeholder (no desktop), or the picture put in
+    // before when the same image was kept.
+    await expect(
+      editorOf(page).locator(".image-error, .image-tile img.test-picture"),
+    ).toHaveCount(1);
+    await editorOf(page).evaluate((el: any) => {
+      if (el.querySelector(".test-picture")) return;
+      const canvas = document.createElement("canvas");
+      canvas.width = 200;
+      canvas.height = 100;
+      canvas.getContext("2d")!.fillRect(0, 0, 200, 100);
+      const tile = el.querySelector(".image-tile");
+      tile.classList.remove("image-error");
+      tile.textContent = "";
+      const img = document.createElement("img");
+      img.className = "test-picture";
+      img.draggable = false;
+      img.src = canvas.toDataURL();
+      tile.append(img);
+    });
+  };
+  /** The editor's selection and the DOM's, after the next frame is drawn. */
+  const both = () =>
+    editorOf(page).evaluate(async (el: any) => {
+      await new Promise((done) => requestAnimationFrame(() => setTimeout(done)));
+      const view = el.editor.view;
+      const dom = getSelection()!;
+      const { anchor, head } = view.state.selection;
+      return {
+        state: [anchor, head],
+        dom: [
+          view.posAtDOM(dom.anchorNode, dom.anchorOffset),
+          view.posAtDOM(dom.focusNode, dom.focusOffset),
+        ],
+        // The whole text "文本1" is highlighted.
+        text: dom.containsNode(el.querySelector("p").firstChild, false),
+      };
+    });
+  type Point = { x: number; y: number };
+  const point = async (at: string): Promise<Point> => {
+    const line = (await editorOf(page).locator("p").first().boundingBox())!;
+    const image = (await tile(page, 0).boundingBox())!;
+    const y = image.y + image.height / 2;
+    if (at === "start") return { x: line.x + 2, y: line.y + line.height / 2 };
+    if (at === "end") return { x: line.x + 40, y: line.y + line.height / 2 };
+    if (at === "left") return { x: image.x + 10, y };
+    if (at === "right") return { x: image.x + image.width - 10, y };
+    return { x: image.x + 50, y: image.y + image.height + 80 }; // below
+  };
+  /** Presses at the first point and moves through the others; returns before releasing. */
+  async function press(...stops: string[]) {
+    const box = (await editorOf(page).boundingBox())!;
+    await page.mouse.click(box.x + 300, box.y + box.height - 20);
+    let from = await point(stops[0]);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (const stop of stops.slice(1)) {
+      const to = await point(stop);
+      for (let i = 1; i <= 8; i++)
+        await page.mouse.move(
+          from.x + ((to.x - from.x) * i) / 8,
+          from.y + ((to.y - from.y) * i) / 8,
+        );
+      from = to;
+    }
+    // Small moves over the same spot keep the selection where it is.
+    await page.mouse.move(from.x - 3, from.y + 2);
+    await page.mouse.move(from.x - 1, from.y - 2);
+  }
+  async function expectDrag(nodes: string[], stops: string[], range: number[], text = true) {
+    await reset(nodes);
+    await press(...stops);
+    const during = await both();
+    expect(during, stops.join(" → ")).toEqual({ state: range, dom: range, text });
+    await page.mouse.up();
+    expect(await both(), stops.join(" → ") + "（松开后）").toEqual(during);
+  }
+  // "文本1" 0-5, the image 5-6 as the document's last node.
+  await expectDrag(["文本1", "[a]"], ["start", "right"], [1, 6]);
+  await expectDrag(["文本1", "[a]"], ["start", "left"], [1, 5]);
+  // Over the image's left half, then below it: past the end of the document.
+  await expectDrag(["文本1", "[a]"], ["start", "left", "below"], [1, 6]);
+  // Over the image and back into the text: the browser's own selection again.
+  await expectDrag(["文本1", "[a]"], ["start", "right", "end"], [1, 4]);
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(0);
+  // Mirrored: the image 0-1 starts the document, "文本1" 1-6.
+  await expectDrag(["[a]", "文本1"], ["end", "left"], [5, 0]);
+  await expectDrag(["[a]", "文本1"], ["end", "right"], [5, 1]);
+  expect(await page.evaluate(() => (window as any).drags)).toBe(0);
+  expect(errors).toEqual([]);
+});
+
 test("拖动图片仍按左右半区落位", async ({ page }) => {
   const errors = await load(page);
   const target = (await tile(page, 1).boundingBox())!;

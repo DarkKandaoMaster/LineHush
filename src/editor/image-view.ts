@@ -102,6 +102,22 @@ export function rangeSelection(
 }
 
 /**
+ * The selection for a DOM selection from `$anchor` to `$head`, or null to leave
+ * it to ProseMirror. An end between blocks next to an image (a click beside a
+ * row of images, a drag past the last image or from beside images) stays there:
+ * ProseMirror's `TextSelection.between` would snap it into the nearest text,
+ * dropping the images from the range.
+ */
+export function selectionBetween(
+  $anchor: ResolvedPos,
+  $head: ResolvedPos,
+): Selection | null {
+  const ends = [$anchor, $head].filter(($pos) => !$pos.parent.inlineContent);
+  if (!ends.length || !ends.every(caretSpot)) return null;
+  return rangeSelection($head.doc, $anchor.pos, $head.pos);
+}
+
+/**
  * A caret at `pos`: between blocks next to an image, otherwise the near end of
  * the text line next to it, on side `dir` if both sides are lines. Never a
  * selected image (typing would replace it).
@@ -645,6 +661,47 @@ function clickBesideImages(view: EditorView, event: MouseEvent) {
   return true;
 }
 
+/** The pointer during a drag selection in the editor. */
+const pointers = new WeakMap<EditorView, { x: number; y: number }>();
+
+/** During a drag selection over an image, the side of it under the pointer. */
+function dragOverImage(view: EditorView) {
+  const pointer = pointers.get(view);
+  if (!pointer) return null;
+  const hit = view.posAtCoords({ left: pointer.x, top: pointer.y });
+  const node = hit && hit.inside >= 0 ? view.state.doc.nodeAt(hit.inside) : null;
+  if (!hit || !node || !isImage(node)) return null;
+  return imageSide(hit.inside, node, pointer.x, imageRect(view, hit.inside));
+}
+
+/**
+ * Puts the editor's selection into the DOM during a drag over an image, so the
+ * text in it is highlighted as the pointer moves. While the browser drags a
+ * selection in Chrome, ProseMirror leaves the DOM alone until mouseup
+ * (`selectionToDOM` with `mouseDown.delaySelUpdate()`), and the browser's own
+ * end stays in the text line (over an image, often back at the press), so
+ * without this the text would light up only on release. Called in an animation
+ * frame: the browser moves its end after the mousemove listeners (cancelling
+ * the event does not stop it), and the frame comes after that and before the
+ * paint. The selectionchange this causes reads back as the same selection (see
+ * createSelectionBetween).
+ */
+function drawDragSelection(view: EditorView) {
+  const { anchor, head } = view.state.selection;
+  const domSel = view.dom.ownerDocument.getSelection();
+  if (!domSel) return;
+  const a = view.domAtPos(anchor);
+  const h = view.domAtPos(head);
+  if (
+    domSel.anchorNode === a.node &&
+    domSel.anchorOffset === a.offset &&
+    domSel.focusNode === h.node &&
+    domSel.focusOffset === h.offset
+  )
+    return;
+  domSel.setBaseAndExtent(a.node, a.offset, h.node, h.offset);
+}
+
 const marks = new PluginKey<number | null>("imageMarks");
 
 /**
@@ -666,6 +723,85 @@ export function imagePlugin(copy: ImageOptions["copy"]) {
   };
   return new Plugin<number | null>({
     key: marks,
+    // Follows the pointer through a drag selection: the primary button pressed
+    // in the editor but not on an image (that drags the image). Listened to on
+    // the window, so the drag is followed outside the editor too.
+    view(view) {
+      const win = view.dom.ownerDocument.defaultView!;
+      const down = (event: MouseEvent) => {
+        const target = event.target as Element;
+        if (
+          event.button === 0 &&
+          view.dom.contains(target) &&
+          !target.closest(".image-item")
+        )
+          pointers.set(view, { x: event.clientX, y: event.clientY });
+      };
+      // Bubbling to the window, this runs after ProseMirror's own mousemove
+      // listener (on the document) has marked the drag as the browser's, so
+      // ProseMirror syncs the DOM selection only on mouseup. Over an image the
+      // DOM selection is drawn in the next animation frame instead (see
+      // drawDragSelection).
+      let frame = 0;
+      let drawn = false;
+      const move = (event: MouseEvent) => {
+        if (!(event.buttons & 1)) {
+          pointers.delete(view);
+          drawn = false;
+          return;
+        }
+        if (!pointers.has(view)) return;
+        pointers.set(view, { x: event.clientX, y: event.clientY });
+        // Over an image the browser's end stays in the nearest text line, often
+        // without a selection change to read, so the range is set here.
+        const head = dragOverImage(view);
+        if (head === null) {
+          // Off the image again, the browser's end takes over. It is moved
+          // after this listener, but not if the browser deems the new end the
+          // same as the drawn one (both ends of a final image are, so below it
+          // the range would stay before it): the selection is first collapsed
+          // to its anchor, which the browser then extends to the pointer.
+          if (drawn) {
+            drawn = false;
+            const domSel = view.dom.ownerDocument.getSelection();
+            const a = view.domAtPos(view.state.selection.anchor);
+            domSel?.collapse(a.node, a.offset);
+          }
+          return;
+        }
+        const { doc, selection } = view.state;
+        if (head !== selection.head)
+          view.dispatch(
+            view.state.tr
+              .setSelection(rangeSelection(doc, selection.anchor, head))
+              .setMeta("pointer", true),
+          );
+        if (!frame)
+          frame = win.requestAnimationFrame(() => {
+            frame = 0;
+            if (!view.isDestroyed && dragOverImage(view) !== null) {
+              drawDragSelection(view);
+              drawn = true;
+            }
+          });
+      };
+      const up = () => {
+        pointers.delete(view);
+        drawn = false;
+      };
+      win.addEventListener("mousedown", down, true);
+      win.addEventListener("mousemove", move);
+      win.addEventListener("mouseup", up, true);
+      return {
+        destroy() {
+          win.cancelAnimationFrame(frame);
+          win.removeEventListener("mousedown", down, true);
+          win.removeEventListener("mousemove", move);
+          win.removeEventListener("mouseup", up, true);
+          pointers.delete(view);
+        },
+      };
+    },
     state: {
       init: () => null,
       apply(tr, drop) {
@@ -732,11 +868,16 @@ export function imagePlugin(copy: ImageOptions["copy"]) {
           : null;
       },
       // A DOM selection between blocks next to an image (a click beside a row of
-      // images, the browser's own moves) is the caret there, not snapped into text.
-      createSelectionBetween: (_view, $anchor, $head) =>
-        $anchor.pos === $head.pos && caretSpot($head)
-          ? new BlockRange($head)
-          : null,
+      // images, the browser's own moves, a drag past the last image) keeps that
+      // end there, not snapped into text. Dragging over an image, the browser
+      // puts the end in the nearest text line; the half under the pointer
+      // decides instead, as for a click.
+      createSelectionBetween: (view, $anchor, $head) => {
+        const head = dragOverImage(view);
+        return head === null
+          ? selectionBetween($anchor, $head)
+          : rangeSelection(view.state.doc, $anchor.pos, head);
+      },
       handleClickOn: (view, _pos, node, nodePos, event, direct) =>
         clickImage(view, node, nodePos, event, direct),
       handleTripleClickOn: (view, _pos, node, nodePos, event, direct) =>

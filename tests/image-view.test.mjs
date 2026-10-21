@@ -18,6 +18,7 @@ import {
   moveCaret,
   removeNear,
   selectedPictures,
+  selectionBetween,
   typeBetween,
 } from "../src/editor/image-view.ts";
 
@@ -194,6 +195,33 @@ test("单击图片按左右半区把光标放到图片前 / 后，不产生节�
     ),
     null,
   );
+});
+
+test("拖选的一端落在图片旁的块间位置时保留在那里，范围包含图片", () => {
+  // "文本1" 0-5 (text 1-4), a 5-6: the document ends with the image.
+  const d = doc("文本1", img("a"));
+  const between = (anchor, head) => {
+    const sel = selectionBetween(d.resolve(anchor), d.resolve(head));
+    return sel && `${sel.constructor.name} ${sel.anchor}-${sel.head}`;
+  };
+  // From the text to past the last image, and back: the image is in the range.
+  assert.equal(between(1, 6), "BlockRange 1-6");
+  assert.equal(between(6, 1), "BlockRange 6-1");
+  assert.deepEqual(
+    decorations(stateOf(d, selectionBetween(d.resolve(1), d.resolve(6)))),
+    ["5-6 image-selected"],
+  );
+  // A DOM caret there is the caret between blocks; text ranges are ProseMirror's.
+  assert.equal(between(6, 6), "BlockRange 6-6");
+  assert.equal(between(1, 3), null);
+  // Mirrored: the document starts with the image.
+  const first = doc(img("a"), "文本1");
+  const sel = selectionBetween(first.resolve(5), first.resolve(0));
+  assert.ok(sel instanceof BlockRange);
+  assert.equal(`${sel.anchor}-${sel.head}`, "5-0");
+  // Between two text lines the end is snapped into text as usual.
+  const lines = doc("A", "B");
+  assert.equal(selectionBetween(lines.resolve(1), lines.resolve(3)), null);
 });
 
 test("块间光标处打字：文字落到新起的一行，图片仍独占一行", () => {
