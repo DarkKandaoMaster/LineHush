@@ -802,7 +802,7 @@ fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
     };
     let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .title("LineHush")
-        .inner_size(1000.0, 720.0)
+        .inner_size(900.0, 680.0)
         .min_inner_size(600.0, 400.0)
         // 自绘标题栏（TitleBar.tsx），像 Win11 记事本：去掉系统标题栏，保留 DWM 阴影、
         // 圆角与边缘调整大小。
