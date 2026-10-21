@@ -520,7 +520,7 @@ test("缩略图与原图按 id 读取，可保存原图，HTML 导出列出附�
   );
 });
 
-test("插入图片：光标在空行时替换该空行，不并入相邻图片组，插入后光标停在图片后", async ({
+test("插入图片：光标在空行时替换该空行，自成一行（不补空行），插入后光标停在图片后", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -538,7 +538,10 @@ test("插入图片：光标在空行时替换该空行，不并入相邻图片�
   const content = () =>
     editor.evaluate((el) =>
       Array.from(el.children)
-        .filter((child) => !child.matches(".ProseMirror-gapcursor, .drop-line"))
+        .filter(
+          (child) =>
+            !child.matches(".ProseMirror-gapcursor, .drop-line, .image-row-break"),
+        )
         .map((child) =>
           child.classList.contains("image-item")
             ? `[${child.querySelector("img")?.alt}]`
@@ -586,8 +589,8 @@ test("插入图片：光标在空行时替换该空行，不并入相邻图片�
   await expect
     .poll(content)
     .toEqual(["已有日记", "[甲.png]", "之后", "[乙.png]", "末行"]);
-  // Several images on an empty line right above a group replace it as a group
-  // of their own: an empty line keeps them apart from the group below.
+  // Several images on an empty line right above a row of images replace it as
+  // a row of their own: the row below starts a new row (a line break, no empty line).
   await editor.locator("p").first().click();
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
@@ -606,7 +609,6 @@ test("插入图片：光标在空行时替换该空行，不并入相邻图片�
       "已有日记",
       "[丙.png]",
       "[丁.png]",
-      "",
       "[甲.png]",
       "之后",
       "[乙.png]",
@@ -617,7 +619,6 @@ test("插入图片：光标在空行时替换该空行，不并入相邻图片�
   expect(await saved()).toEqual([
     "已有日记",
     "[丙.png][丁.png]",
-    "",
     "[甲.png]",
     "之后",
     "[乙.png]",

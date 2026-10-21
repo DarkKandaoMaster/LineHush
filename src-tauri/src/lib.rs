@@ -78,7 +78,14 @@ struct ClipboardState {
     latest: AtomicU64,
     /// The images of the last copy and the clipboard sequence number right after
     /// it: while the number is unchanged, the clipboard still holds them.
-    last: Mutex<Option<(u32, Vec<Picture>)>>,
+    last: Mutex<Option<(u32, Copied)>>,
+}
+/// The images of a copy and, for each, whether it starts a new row of images
+/// after the one before it (a line break between them in the editor).
+#[derive(Clone, Serialize)]
+struct Copied {
+    pictures: Vec<Picture>,
+    rows: Vec<bool>,
 }
 impl ClipboardState {
     /// Makes sure the document in `tab` holds each image: an image from another
@@ -640,9 +647,12 @@ async fn export_image(tab: String, id: String, path: PathBuf, app: AppHandle) ->
 async fn copy_images(
     tab: String,
     pictures: Vec<Picture>,
+    rows: Option<Vec<bool>>,
     after_browser: bool,
     app: AppHandle,
 ) -> Result<()> {
+    let mut rows = rows.unwrap_or_default();
+    rows.resize(pictures.len(), false);
     let job = app.state::<ClipboardState>().latest.fetch_add(1, Ordering::SeqCst) + 1;
     blocking(move || {
         if after_browser {
@@ -669,13 +679,14 @@ async fn copy_images(
         let written = clipboard::write(
             &clipboard::Content {
                 files: items.iter().map(|(_, path)| path.clone()).collect(),
-                html: clipboard::html(&items),
+                html: clipboard::html(&items, &rows),
                 pixels,
             },
             since,
         )?;
         if let (Some(sequence), Ok(mut last)) = (written, state.last.lock()) {
-            *last = Some((sequence, items.into_iter().map(|(pic, _)| pic).collect()));
+            let pictures = items.into_iter().map(|(pic, _)| pic).collect();
+            *last = Some((sequence, Copied { pictures, rows }));
         }
         Ok(())
     })
@@ -685,15 +696,15 @@ async fn copy_images(
 /// copy, made available to the document in `tab`; None otherwise (the files on
 /// the clipboard are then imported like any others).
 #[tauri::command]
-async fn copied_images(tab: String, app: AppHandle) -> Result<Option<Vec<Picture>>> {
+async fn copied_images(tab: String, app: AppHandle) -> Result<Option<Copied>> {
     blocking(move || {
         let state = app.state::<ClipboardState>();
         let last = lock(&state.last)?.clone();
-        let Some((_, pictures)) = last.filter(|(seq, _)| *seq == clipboard::sequence()) else {
+        let Some((_, copied)) = last.filter(|(seq, _)| *seq == clipboard::sequence()) else {
             return Ok(None);
         };
-        state.adopt(&app, &tab, pictures.iter().map(|pic| pic.id.clone()))?;
-        Ok(Some(pictures))
+        state.adopt(&app, &tab, copied.pictures.iter().map(|pic| pic.id.clone()))?;
+        Ok(Some(copied))
     })
     .await
 }

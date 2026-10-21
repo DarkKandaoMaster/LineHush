@@ -292,6 +292,13 @@ input:focus-visible {
   overflow-wrap: anywhere;
   tab-size: 4;
   caret-color: #151515;
+  /*
+   * Space between rows of images: a row that wraps 8px (the images' 4px
+   * margins), rows a line break apart 8px more (the spacer), rows a text line
+   * apart a whole line more (an empty line: 1lh + 8px).
+   */
+  --image-wrap-margin: 4px;
+  --image-row-gap: 8px;
 }
 .tiptap p {
   margin: 0;
@@ -316,8 +323,9 @@ input:focus-visible {
 /*
  * The caret between blocks (a collapsed BlockRange) only exists next to an
  * image and is drawn on it at its full height (.gap-before / .gap-after); the
- * browser's own caret, which would sit in the editor root, is hidden.
- * ProseMirror's block-level widget would break the row of images.
+ * browser's own caret, which would sit in the editor root, is hidden. (A
+ * block-level widget would break the row of images, as .image-row-break does
+ * on purpose.)
  */
 .tiptap.ProseMirror-hideselection {
   caret-color: transparent;
@@ -365,15 +373,23 @@ input:focus-visible {
 }
 /*
  * One node per image. Neighbouring images flow in rows and wrap like words;
- * paragraphs are blocks, so text lines (blank ones too) separate the groups.
+ * a line break between two images is a block spacer (.image-row-break), and
+ * paragraphs are blocks too, so text lines (blank ones too) separate rows
+ * further.
  */
 .image-item {
   display: inline-block;
   vertical-align: top;
   position: relative;
-  margin: 4px 8px 4px 0;
+  margin: var(--image-wrap-margin, 4px) 8px var(--image-wrap-margin, 4px) 0;
   max-width: 100%;
   cursor: default;
+}
+/* A line break between two images: the next one starts a new row, a little further down. */
+.image-row-break {
+  display: block;
+  height: var(--image-row-gap, 8px);
+  pointer-events: auto;
 }
 /* Carets between images: centred in the 8px gap, as tall as the image. */
 .image-item.gap-before::before,

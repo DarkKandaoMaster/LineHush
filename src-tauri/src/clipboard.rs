@@ -6,7 +6,7 @@
 //!   pastes the very same files;
 //! - an HTML fragment with one `<img>` per image: its `file:` URL for programs
 //!   such as Word, and `data-linehush-*` attributes from which LineHush pastes the
-//!   same images (same ids) without importing them again;
+//!   same images (same ids) in the same rows without importing them again;
 //! - for a single image, its pixels as CF_DIB and PNG, for Paint, chat programs
 //!   and the like.
 //!
@@ -98,19 +98,27 @@ fn file_url(path: &Path) -> String {
     }
     url
 }
-/// The fragment LineHush reads back when pasting (see `linehushImages` in the editor).
-pub fn html(items: &[(Picture, PathBuf)]) -> String {
+/// The fragment LineHush reads back when pasting (see `clipboardImages` in the
+/// editor). `rows[i]` marks an image that starts a new row after the one before
+/// it (`data-linehush-newline`); missing entries count as false.
+pub fn html(items: &[(Picture, PathBuf)], rows: &[bool]) -> String {
     items
         .iter()
-        .map(|(pic, path)| {
+        .enumerate()
+        .map(|(i, (pic, path))| {
             format!(
-                r#"<img src="{}" alt="{}" data-linehush-id="{}" data-linehush-name="{}" data-linehush-width="{}" data-linehush-height="{}">"#,
+                r#"<img src="{}" alt="{}" data-linehush-id="{}" data-linehush-name="{}" data-linehush-width="{}" data-linehush-height="{}"{}>"#,
                 escape(&file_url(path)),
                 escape(&pic.name),
                 escape(&pic.id),
                 escape(&pic.name),
                 pic.width,
-                pic.height
+                pic.height,
+                if rows.get(i).copied().unwrap_or(false) {
+                    r#" data-linehush-newline="true""#
+                } else {
+                    ""
+                }
             )
         })
         .collect()
@@ -230,13 +238,27 @@ mod tests {
     }
     #[test]
     fn html_carries_the_ids_and_file_urls() {
-        let html = html(&[(
-            picture("ab", "a \"b\".png"),
-            PathBuf::from(r"C:\Temp\linehush-clipboard\ab-a #b.png"),
-        )]);
+        let html = html(
+            &[(
+                picture("ab", "a \"b\".png"),
+                PathBuf::from(r"C:\Temp\linehush-clipboard\ab-a #b.png"),
+            )],
+            &[],
+        );
         assert_eq!(
             html,
             r#"<img src="file:///C:/Temp/linehush-clipboard/ab-a%20%23b.png" alt="a &quot;b&quot;.png" data-linehush-id="ab" data-linehush-name="a &quot;b&quot;.png" data-linehush-width="3" data-linehush-height="2">"#
         );
+    }
+    #[test]
+    fn html_marks_images_that_start_a_new_row() {
+        let item = |id: &str| (picture(id, "p.png"), PathBuf::from(format!(r"C:\T\{id}.png")));
+        let html = html(&[item("a"), item("b"), item("c")], &[false, true]);
+        let marked: Vec<bool> = html
+            .split("<img")
+            .skip(1)
+            .map(|img| img.contains(r#" data-linehush-newline="true""#))
+            .collect();
+        assert_eq!(marked, [false, true, false]);
     }
 }

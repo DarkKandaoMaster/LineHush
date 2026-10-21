@@ -10,13 +10,21 @@ import {
   BlockRange,
   caretAt,
   caretSpot,
+  deleteBlocks,
+  enterKey,
   extendByImage,
   imagePlugin,
   imageSide,
   insertImages,
+  joinAt,
   leaveImages,
+  lineOf,
   moveCaret,
+  placeRows,
   removeNear,
+  removeRange,
+  rowBreak,
+  selectedImages,
   selectedPictures,
   selectionBetween,
   typeBetween,
@@ -26,8 +34,8 @@ import {
 const schema = getSchema(
   extensions({ preview() {}, source: async () => "", copy: () => false }),
 );
-const img = (id) =>
-  schema.nodes.image.create({ id, name: `${id}.png`, width: 40, height: 30 });
+const img = (id, newline = false) =>
+  schema.nodes.image.create({ id, name: `${id}.png`, width: 40, height: 30, newline });
 /** Strings are text lines (possibly empty), other values image nodes. */
 const doc = (...nodes) =>
   schema.nodes.doc.create(
@@ -375,89 +383,146 @@ test("选中图片的样式是与文字选区同色的半透明蒙层，没有�
   );
 });
 
+// ---- Rows of images (2026-10-22): an image with `newline` starts a new row. ----
+
+/** An image starting a new row after the image before it (a line break between them). */
+const row = (id) => img(id, true);
+/** Lines as their text, each row of images as "[a b]". */
+const layout = (state) => {
+  const out = [];
+  let image = false;
+  state.doc.forEach((node) => {
+    if (node.type.name !== "image") {
+      out.push(node.textContent);
+      image = false;
+      return;
+    }
+    if (image && !node.attrs.newline)
+      out[out.length - 1] = `${out[out.length - 1].slice(0, -1)} ${node.attrs.id}]`;
+    else out.push(`[${node.attrs.id}]`);
+    image = true;
+  });
+  return out;
+};
+/** Like `where`, with the side of a caret between blocks. */
+const spot = (state) => {
+  const sel = state.selection;
+  return sel instanceof BlockRange && sel.empty
+    ? `caret ${sel.head} ${sel.side}`
+    : where(state);
+};
+const caretOn = (d, pos, side) => stateOf(d, new BlockRange(d.resolve(pos), undefined, side));
+const decorationsWithSpacers = (state) =>
+  (plugin.props.decorations.call(plugin, state)?.find() ?? [])
+    .map((d) => `${d.from}-${d.to} ${d.type.attrs?.class ?? d.spec.key}`)
+    .sort();
+
 /** Inserts new images (by id) at the selection, as an import or a paste does. */
 function insert(state, ...ids) {
+  return insertNodes(state, ids.map((id) => img(id)));
+}
+function insertNodes(state, nodes) {
   const tr = state.tr;
-  const range = insertImages(tr, ids.map(img));
+  const range = insertImages(tr, nodes);
   return { state: state.apply(tr), range };
 }
 
-test("插入图片：块间光标或选中图片时就地插入、并入那一组，不加分隔空行", () => {
-  // Caret between two images: inside their group.
+test("插入图片：块间光标或选中图片时就地插入、并入那一行", () => {
+  // Caret between two images of one row: inside that row.
   const pair = doc(img("a"), img("b"));
   const between = insert(caret(pair, 1), "n");
-  assert.deepEqual(content(between.state), ["[a]", "[n]", "[b]"]);
+  assert.deepEqual(layout(between.state), ["[a n b]"]);
   assert.deepEqual(between.range, { from: 1, to: 2 });
-  assert.equal(where(between.state), "caret 2");
-  // Caret after a final image: appended to that group.
+  assert.equal(spot(between.state), "caret 2 -1");
+  // Caret after a final image: appended to its row.
   const end = insert(caret(doc("A", img("a")), 4), "n");
-  assert.deepEqual(content(end.state), ["A", "[a]", "[n]"]);
+  assert.deepEqual(layout(end.state), ["A", "[a n]"]);
   assert.equal(where(end.state), "caret 5");
-  // Caret between a line and an image: before the image, in its group.
+  // Caret between a line and an image: before the image, in its row.
   const before = insert(caret(doc("A", img("a")), 3), "n");
-  assert.deepEqual(content(before.state), ["A", "[n]", "[a]"]);
+  assert.deepEqual(layout(before.state), ["A", "[n a]"]);
   assert.equal(where(before.state), "caret 4");
-  // A selected image (NodeSelection) or a range of images: after them.
+  // A selected image (NodeSelection) or a range of images: after them, in the last one's row.
   const node = insert(stateOf(pair, NodeSelection.create(pair, 0)), "n");
-  assert.deepEqual(content(node.state), ["[a]", "[n]", "[b]"]);
+  assert.deepEqual(layout(node.state), ["[a n b]"]);
   assert.equal(where(node.state), "caret 2");
   const range = insert(
     stateOf(pair, new BlockRange(pair.resolve(0), pair.resolve(2))),
     "n",
     "m",
   );
-  assert.deepEqual(content(range.state), ["[a]", "[b]", "[n]", "[m]"]);
+  assert.deepEqual(layout(range.state), ["[a b n m]"]);
   assert.equal(where(range.state), "caret 4");
+  const rows = doc(img("a"), row("b"));
+  const across = insert(stateOf(rows, new BlockRange(rows.resolve(0), rows.resolve(2))), "n");
+  assert.deepEqual(layout(across.state), ["[a]", "[b n]"]);
 });
 
-test("插入图片：在文字行上不并入相邻图片组，紧挨图片的一侧补一个空行", () => {
-  // The empty line the caret is on is replaced; the image below gets a line in between.
-  const above = insert(text(doc("", img("a"), ""), 1), "n");
-  assert.deepEqual(content(above.state), ["[n]", "", "[a]", ""]);
-  assert.deepEqual(above.range, { from: 0, to: 1 });
-  assert.equal(where(above.state), "caret 1");
-  // Two groups in the file, not one.
+test("插入图片：在两行图片之间的换行处，行末（side -1）并入上一行，行首（side 1）并入下一行", () => {
+  const rows = doc(img("a"), row("b"));
+  assert.deepEqual(layout(stateOf(rows)), ["[a]", "[b]"]);
+  const end = insert(caretOn(rows, 1, -1), "n");
+  assert.deepEqual(layout(end.state), ["[a n]", "[b]"]);
+  assert.equal(spot(end.state), "caret 2 -1");
+  const start = insert(caretOn(rows, 1, 1), "n", "m");
+  assert.deepEqual(layout(start.state), ["[a]", "[n m b]"]);
+  assert.equal(spot(start.state), "caret 3 -1");
+  // The new first image starts the row, the old one no longer does.
   assert.deepEqual(
-    fromEditor(above.state.doc.toJSON()).blocks.map((b) => b.type),
-    ["images", "line", "images", "line"],
+    [1, 2, 3].map((pos) => start.state.doc.nodeAt(pos).attrs.newline),
+    [true, false, false],
   );
-  // An image above: a line before the new one.
-  const below = insert(text(doc(img("a"), "", "文字"), 2), "n");
-  assert.deepEqual(content(below.state), ["[a]", "", "[n]", "文字"]);
-  assert.deepEqual(below.range, { from: 3, to: 4 });
-  assert.equal(where(below.state), "caret 4");
-  // Images on both sides: a line on both sides.
-  const both = insert(text(doc(img("a"), "", img("b")), 2), "n");
-  assert.deepEqual(content(both.state), ["[a]", "", "[n]", "", "[b]"]);
-  assert.equal(where(both.state), "caret 4");
-  // No image next to it: the empty line is replaced and no line is added.
-  const plain = insert(text(doc("文字", ""), 5), "n");
-  assert.deepEqual(content(plain.state), ["文字", "[n]"]);
-  assert.equal(where(plain.state), "caret 5");
-  // The caret at the end of a line above an image: after the line, then a line.
-  const lineEnd = insert(text(doc("文字", img("a")), 3), "n");
-  assert.deepEqual(content(lineEnd.state), ["文字", "[n]", "", "[a]"]);
-  assert.equal(where(lineEnd.state), "caret 5");
-  // At the start of a line below an image: before the line, after a new one.
-  const lineStart = insert(text(doc(img("a"), "文字"), 2), "n");
-  assert.deepEqual(content(lineStart.state), ["[a]", "", "[n]", "文字"]);
-  assert.equal(where(lineStart.state), "caret 4");
-  // In the middle of a line: it is split, the halves are text, nothing is added.
-  const middle = insert(text(doc("甲乙", img("a")), 2), "n");
-  assert.deepEqual(content(middle.state), ["甲", "[n]", "乙", "[a]"]);
-  assert.equal(where(middle.state), "caret 4");
-  // Several images stay together, the caret after the last one.
-  const several = insert(text(doc("", img("a"), ""), 1), "n", "m");
-  assert.deepEqual(content(several.state), ["[n]", "[m]", "", "[a]", ""]);
-  assert.deepEqual(several.range, { from: 0, to: 2 });
-  assert.equal(where(several.state), "caret 2");
-  // A second insertion at that caret joins them.
-  const again = insert(several.state, "k");
-  assert.deepEqual(content(again.state), ["[n]", "[m]", "[k]", "", "[a]", ""]);
-  assert.equal(where(again.state), "caret 3");
 });
 
-test("插入图片连同补的空行是一步撤销", () => {
+test("插入图片：在文字行上自成一行，不补空行；之后的图片另起一行", () => {
+  // The report: an image, then an empty line with the caret → the new image on a row of its own below.
+  const report = insert(text(doc(img("a"), ""), 2), "n");
+  assert.deepEqual(layout(report.state), ["[a]", "[n]"]);
+  assert.deepEqual(content(report.state), ["[a]", "[n]"]);
+  assert.deepEqual(report.range, { from: 1, to: 2 });
+  assert.equal(spot(report.state), "caret 2 -1");
+  // Two rows in the file, one after the other.
+  assert.deepEqual(
+    fromEditor(report.state.doc.toJSON()).blocks.map((b) => b.images.map((p) => p.id)),
+    [["a"], ["n"]],
+  );
+  // The empty line replaced, the image below starts a new row.
+  const above = insert(text(doc("", img("a"), ""), 1), "n");
+  assert.deepEqual(layout(above.state), ["[n]", "[a]", ""]);
+  assert.equal(above.state.doc.nodeAt(1).attrs.newline, true);
+  assert.deepEqual(above.range, { from: 0, to: 1 });
+  assert.equal(spot(above.state), "caret 1 -1");
+  // Images on both sides: three rows.
+  const both = insert(text(doc(img("a"), "", img("b")), 2), "n");
+  assert.deepEqual(layout(both.state), ["[a]", "[n]", "[b]"]);
+  assert.equal(spot(both.state), "caret 2 -1");
+  // No image next to it: the empty line is replaced.
+  const plain = insert(text(doc("文字", ""), 5), "n");
+  assert.deepEqual(layout(plain.state), ["文字", "[n]"]);
+  assert.equal(where(plain.state), "caret 5");
+  // The caret at the end of a line above an image: after the line, the image a row below.
+  const lineEnd = insert(text(doc("文字", img("a")), 3), "n");
+  assert.deepEqual(layout(lineEnd.state), ["文字", "[n]", "[a]"]);
+  assert.equal(where(lineEnd.state), "caret 5");
+  // At the start of a line below an image: before the line, on a row of its own.
+  const lineStart = insert(text(doc(img("a"), "文字"), 2), "n");
+  assert.deepEqual(layout(lineStart.state), ["[a]", "[n]", "文字"]);
+  assert.equal(where(lineStart.state), "caret 2");
+  // In the middle of a line: it is split, nothing is added.
+  const middle = insert(text(doc("甲乙", img("a")), 2), "n");
+  assert.deepEqual(layout(middle.state), ["甲", "[n]", "乙", "[a]"]);
+  assert.equal(where(middle.state), "caret 4");
+  // Several images: one row, the caret at its end; a second insertion there joins it.
+  const several = insert(text(doc("", img("a"), ""), 1), "n", "m");
+  assert.deepEqual(layout(several.state), ["[n m]", "[a]", ""]);
+  assert.deepEqual(several.range, { from: 0, to: 2 });
+  assert.equal(spot(several.state), "caret 2 -1");
+  const again = insert(several.state, "k");
+  assert.deepEqual(layout(again.state), ["[n m k]", "[a]", ""]);
+  assert.equal(spot(again.state), "caret 3 -1");
+});
+
+test("插入图片是一步撤销", () => {
   const d = doc(img("a"), "", img("b"));
   const state = EditorState.create({
     doc: d,
@@ -467,7 +532,254 @@ test("插入图片连同补的空行是一步撤销", () => {
   const tr = closeHistory(state.tr);
   insertImages(tr, [img("n"), img("m")]);
   const inserted = state.apply(tr);
-  assert.deepEqual(content(inserted), ["[a]", "", "[n]", "[m]", "", "[b]"]);
+  assert.deepEqual(layout(inserted), ["[a]", "[n m]", "[b]"]);
   const undone = run(inserted, undo).state;
-  assert.deepEqual(content(undone), ["[a]", "", "[b]"]);
+  assert.deepEqual(layout(undone), ["[a]", "", "[b]"]);
+  assert.equal(undone.doc.nodeAt(3).attrs.newline, false);
+});
+
+test("粘贴复制的多行图片：第一张按落点，其余保留各自的换行", () => {
+  const pasted = insertNodes(text(doc(img("a"), ""), 2), [img("x"), row("y"), img("z")]);
+  assert.deepEqual(layout(pasted.state), ["[a]", "[x]", "[y z]"]);
+  // Into a row from its end: the first joins it, the rest keep their rows.
+  const joined = insertNodes(caret(doc(img("a")), 1), [row("x"), row("y")]);
+  assert.deepEqual(layout(joined.state), ["[a x]", "[y]"]);
+});
+
+test("joinAt / placeRows：插入位置决定并入哪一行", () => {
+  // a 0-1, b 1-2 (new row), c 2-3, "x" 3-6.
+  const d = doc(img("a"), row("b"), img("c"), "x");
+  assert.equal(rowBreak(d.resolve(1)), true);
+  assert.equal(rowBreak(d.resolve(2)), false);
+  assert.equal(joinAt(d.resolve(1), -1), -1); // end of the upper row
+  assert.equal(joinAt(d.resolve(1), 1), 1); // start of the lower row
+  assert.equal(joinAt(d.resolve(2), 1), -1); // inside a row: that row
+  assert.equal(joinAt(d.resolve(3), 1), -1); // after a row, before a line
+  assert.equal(joinAt(d.resolve(0), -1), 1); // before a row
+  assert.equal(joinAt(doc("x", "y").resolve(3), -1), 0); // between lines: a row of its own
+  const state = stateOf(d);
+  const placed = (at, join) => {
+    const tr = state.tr.insert(at, [img("n"), row("m")]);
+    placeRows(tr, at, at + 2, join);
+    return layout(state.apply(tr));
+  };
+  assert.deepEqual(placed(1, 1), ["[a]", "[n]", "[m b c]", "x"]);
+  assert.deepEqual(placed(1, -1), ["[a n]", "[m]", "[b c]", "x"]);
+  assert.deepEqual(placed(1, 0), ["[a]", "[n]", "[m]", "[b c]", "x"]);
+});
+
+test("删除图片保持行结构：删掉行首图片时下一张接过换行，删掉图片之间的空行留下换行", () => {
+  const rows = doc(img("a"), row("b"), img("c"));
+  // The row's first image goes: the next one starts the row; the caret at its start.
+  const first = removeRange(stateOf(rows).tr, 1, 2, -1);
+  assert.deepEqual(layout(stateOf(first.doc)), ["[a]", "[c]"]);
+  assert.equal(spot(stateOf(first.doc, first.selection)), "caret 1 1");
+  // Inside a row: the row closes up.
+  const inside = removeRange(stateOf(doc(img("a"), img("b"), img("c"))).tr, 1, 2, -1);
+  assert.deepEqual(layout(stateOf(inside.doc)), ["[a c]"]);
+  assert.equal(spot(stateOf(inside.doc, inside.selection)), "caret 1 -1");
+  // An empty line between images counts as a line break: rows, not one row.
+  const blank = run(text(doc(img("a"), "", img("b")), 2), removeNear(-1));
+  assert.deepEqual(layout(blank.state), ["[a]", "[b]"]);
+  assert.equal(spot(blank.state), "caret 1 -1");
+  // Deleting a range of images (deleteSelection, e.g. typing over it) keeps the break.
+  const four = doc(img("a"), row("b"), img("c"), img("d"));
+  const ranged = stateOf(four, new BlockRange(four.resolve(1), four.resolve(3)));
+  const deleted = ranged.apply(ranged.tr.deleteSelection());
+  assert.deepEqual(layout(deleted), ["[a]", "[d]"]);
+  // deleteBlocks directly: nothing to keep when no break was deleted.
+  const tr = stateOf(four).tr;
+  deleteBlocks(tr, 2, 3);
+  assert.deepEqual(layout(stateOf(tr.doc)), ["[a]", "[b d]"]);
+});
+
+test("换行处 Backspace / Delete：行首 Backspace、行末 Delete 去掉换行合并两行；另一侧删图片", () => {
+  const rows = doc(img("a"), row("b"), img("c"));
+  const merged = run(caretOn(rows, 1, 1), removeNear(-1));
+  assert.equal(merged.handled, true);
+  assert.deepEqual(layout(merged.state), ["[a b c]"]);
+  assert.equal(where(merged.state), "caret 1");
+  const mergedByDelete = run(caretOn(rows, 1, -1), removeNear(1));
+  assert.deepEqual(layout(mergedByDelete.state), ["[a b c]"]);
+  // Backspace at the end of the upper row removes its last image.
+  const back = run(caretOn(rows, 1, -1), removeNear(-1));
+  assert.deepEqual(layout(back.state), ["[b c]"]);
+  assert.equal(where(back.state), "caret 0");
+  // Delete at the start of the lower row removes its first image; the caret stays at the row's start.
+  const del = run(caretOn(rows, 1, 1), removeNear(1));
+  assert.deepEqual(layout(del.state), ["[a]", "[c]"]);
+  assert.equal(spot(del.state), "caret 1 1");
+  // Inside a row: the image before / after goes, as before.
+  const row3 = doc(img("a"), img("b"), img("c"));
+  assert.deepEqual(layout(run(caretOn(row3, 1, 1), removeNear(-1)).state), ["[b c]"]);
+  assert.deepEqual(layout(run(caretOn(row3, 1, -1), removeNear(1)).state), ["[a c]"]);
+});
+
+test("Enter：同一行两图之间换行，换行处行首插空行在前、行末插空行在后", () => {
+  const enter = (state) => run(state, enterKey);
+  // Inside a row: the images after the caret start a new row, the caret at its start.
+  const split = enter(caretOn(doc(img("a"), img("b")), 1, -1));
+  assert.equal(split.handled, true);
+  assert.deepEqual(layout(split.state), ["[a]", "[b]"]);
+  assert.equal(spot(split.state), "caret 1 1");
+  // Enter again at the start of that row: an empty line above it, the caret stays before b.
+  const down = enter(split.state);
+  assert.deepEqual(layout(down.state), ["[a]", "", "[b]"]);
+  assert.equal(where(down.state), "caret 3");
+  // At the end of the upper row: an empty line below it with the caret in it.
+  const below = enter(caretOn(doc(img("a"), row("b")), 1, -1));
+  assert.deepEqual(layout(below.state), ["[a]", "", "[b]"]);
+  assert.equal(where(below.state), "text 2");
+  // Next to a text line and at the document's edges: an empty line with the caret in it, as before.
+  assert.deepEqual(layout(enter(caret(doc(img("a"), "x"), 1)).state), ["[a]", "", "x"]);
+  assert.equal(where(enter(caret(doc(img("a"), "x"), 1)).state), "text 2");
+  assert.deepEqual(layout(enter(caret(doc(img("a")), 0)).state), ["", "[a]"]);
+  assert.deepEqual(layout(enter(caret(doc(img("a")), 1)).state), ["[a]", ""]);
+  // Selected images in a row are replaced by the line break.
+  const three = doc(img("a"), img("b"), img("c"));
+  const replaced = enter(stateOf(three, new BlockRange(three.resolve(1), three.resolve(2))));
+  assert.deepEqual(layout(replaced.state), ["[a]", "[c]"]);
+  // In a text line Enter is the editor's own.
+  assert.equal(enter(text(doc("文字"), 2)).handled, false);
+});
+
+test("左右键在两行图片之间的换行处走两步：上一行行末、下一行行首", () => {
+  // "A" 0-3, a 3-4, b 4-5 (new row), "B" 5-8.
+  const d = doc("A", img("a"), row("b"), "B");
+  const steps = (state, dir, count) => {
+    const seen = [];
+    for (let i = 0; i < count; i++) {
+      state = run(state, moveCaret(dir)).state;
+      seen.push(spot(state));
+    }
+    return seen;
+  };
+  assert.deepEqual(steps(text(d, 2), 1, 5), [
+    "caret 3 -1",
+    "caret 4 -1",
+    "caret 4 1",
+    "caret 5 -1",
+    "text 6",
+  ]);
+  assert.deepEqual(steps(text(d, 6), -1, 5), [
+    "caret 5 -1",
+    "caret 4 1",
+    "caret 4 -1",
+    "caret 3 1",
+    "text 2",
+  ]);
+  // Inside a row it is one step, as before.
+  const same = doc(img("a"), img("b"));
+  assert.deepEqual(steps(caretOn(same, 0, 1), 1, 2), ["caret 1 -1", "caret 2 -1"]);
+});
+
+test("换行处的光标按 side 画在上一行末图片右侧或下一行首图片左侧；换行画成 spacer", () => {
+  const rows = doc(img("a"), row("b"));
+  assert.deepEqual(decorationsWithSpacers(caretOn(rows, 1, -1)), [
+    "0-1 gap-after",
+    "1-1 image-row-break",
+  ]);
+  assert.deepEqual(decorationsWithSpacers(caretOn(rows, 1, 1)), [
+    "1-1 image-row-break",
+    "1-2 gap-before",
+  ]);
+  // Inside a row the side does not show: drawn after the image before it.
+  assert.deepEqual(decorationsWithSpacers(caretOn(doc(img("a"), img("b")), 1, 1)), [
+    "0-1 gap-after",
+  ]);
+  // No spacer after a text line or at the document's start, whatever newline says.
+  assert.deepEqual(decorationsWithSpacers(stateOf(doc(row("a"), "x", row("b")))), []);
+});
+
+test("单击换行两侧的图片：上一行末图片右半为行末，下一行首图片左半为行首", () => {
+  const rows = doc(img("a"), row("b"));
+  const click = (pos, clientX) => {
+    const view = fakeView(caret(rows, 0));
+    plugin.props.handleClickOn.call(plugin, view, pos, rows.nodeAt(pos), pos, { clientX }, true);
+    return spot(view.state);
+  };
+  assert.equal(click(0, 190), "caret 1 -1");
+  assert.equal(click(1, 110), "caret 1 1");
+  // The DOM reads back the same position whichever side: the side is kept.
+  const state = caretOn(rows, 1, 1);
+  const kept = plugin.props.createSelectionBetween.call(
+    plugin,
+    fakeView(state),
+    rows.resolve(1),
+    rows.resolve(1),
+  );
+  assert.equal(kept, state.selection);
+});
+
+test("块间光标的 side：eq / toJSON / 书签 / 映射 / 撤销都保留", () => {
+  const rows = doc(img("a"), row("b"));
+  const start = new BlockRange(rows.resolve(1), undefined, 1);
+  const end = new BlockRange(rows.resolve(1), undefined, -1);
+  assert.equal(start.eq(end), false);
+  assert.equal(start.eq(new BlockRange(rows.resolve(1), undefined, 1)), true);
+  assert.deepEqual(start.toJSON(), { type: "blockRange", anchor: 1, head: 1, side: 1 });
+  assert.deepEqual(new BlockRange(rows.resolve(0), rows.resolve(2)).toJSON(), {
+    type: "blockRange",
+    anchor: 0,
+    head: 2,
+  });
+  const state = stateOf(rows, start);
+  const moved = state.apply(state.tr.insert(0, schema.nodes.paragraph.create()));
+  assert.equal(spot(moved), "caret 3 1");
+  const tr = state.tr.insert(0, schema.nodes.paragraph.create());
+  assert.equal(start.getBookmark().map(tr.mapping).resolve(tr.doc).side, 1);
+  // Undo brings back the caret on its side.
+  const h = EditorState.create({ doc: rows, selection: start, plugins: [plugin, history()] });
+  const merged = run(h, removeNear(-1)).state;
+  assert.deepEqual(layout(merged), ["[a b]"]);
+  const undone = run(merged, undo).state;
+  assert.deepEqual(layout(undone), ["[a]", "[b]"]);
+  assert.equal(spot(undone), "caret 1 1");
+});
+
+test("拖动图片：落在行首图片左半 → 成为该行行首；落在图片右半 → 并入该行，拖走的行首图片把换行交给下一张", () => {
+  // Rows [a b] [c d]: a 0-1, b 1-2, c 2-3 (new row), d 3-4.
+  const d = doc(img("a"), img("b"), row("c"), img("d"));
+  const drop = (from, inside, clientX) => {
+    const state = stateOf(d);
+    const view = fakeView(state);
+    const node = NodeSelection.create(d, from);
+    view.dragging = { slice: node.content(), move: true, node };
+    view.posAtCoords = () => ({ pos: inside, inside });
+    view.focus = () => {};
+    const handled = plugin.props.handleDOMEvents.drop.call(plugin, view, {
+      clientX,
+      clientY: 0,
+      ctrlKey: false,
+      target: null,
+      preventDefault() {},
+    });
+    assert.equal(handled, true);
+    return layout(view.state);
+  };
+  // a onto the left half of c (the start of the second row).
+  assert.deepEqual(drop(0, 2, 110), ["[b]", "[a c d]"]);
+  // c onto the right half of b: c joins the first row, d starts the second.
+  assert.deepEqual(drop(2, 1, 190), ["[a b c]", "[d]"]);
+});
+
+test("状态栏行号：每行图片算一行（折行不算），文字行各算一行", () => {
+  // "A", [a b], [c], "", [d]
+  const d = doc("A", img("a"), img("b"), row("c"), "", img("d"));
+  assert.deepEqual(
+    Array.from({ length: d.childCount }, (_, i) => lineOf(d, i)),
+    [1, 2, 2, 3, 4, 5],
+  );
+});
+
+test("复制选中的图片：rows 标出另起一行的图片（第一张恒为 false）", () => {
+  const d = doc(img("a"), row("b"), img("c"));
+  const all = selectedImages(stateOf(d, new BlockRange(d.resolve(0), d.resolve(3))));
+  assert.deepEqual(all.pictures.map((p) => p.id), ["a", "b", "c"]);
+  assert.deepEqual(all.rows, [false, true, false]);
+  // The pictures never carry the row flag (Rust's Picture rejects unknown fields).
+  assert.deepEqual(Object.keys(all.pictures[1]), ["id", "name", "width", "height"]);
+  const tail = selectedImages(stateOf(d, new BlockRange(d.resolve(1), d.resolve(3))));
+  assert.deepEqual(tail.rows, [false, false]);
+  assert.equal(selectedImages(caret(d, 1)), null);
 });

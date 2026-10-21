@@ -12,7 +12,7 @@ import { Fragment, Slice, type Node as PmNode } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 import { closeHistory, redo, undo } from "@tiptap/pm/history";
 import { extensions } from "./schema";
-import { clipboardImages, insertImages } from "./image-view";
+import { clipboardImages, insertImages, lineOf } from "./image-view";
 import {
   fromEditor,
   fromText,
@@ -24,7 +24,8 @@ import { imageUrl } from "../core/native";
 export interface DiaryEditorHandle {
   reserveInsertion: () => {
     cancel: () => void;
-    insert: (pictures: Picture[]) => void;
+    /** `rows`: which pictures start a new row (a paste of copied rows). */
+    insert: (pictures: Picture[], rows?: boolean[]) => void;
   };
   focus: () => void;
 }
@@ -39,22 +40,15 @@ interface Props {
   onSelection: (position: { line: number; column: number }) => void;
   /** `fromClipboard`: pasted, possibly the files of a LineHush copy. */
   onFiles: (files: File[], fromClipboard?: boolean) => void;
-  /** Images copied in LineHush, pasted under the same ids. */
-  onImages: (pictures: Picture[]) => void;
+  /** Images copied in LineHush, pasted under the same ids and in the same rows. */
+  onImages: (pictures: Picture[], rows: boolean[]) => void;
   /** See ImageOptions.copy. */
-  onCopy: (pictures: Picture[], afterBrowser: boolean) => boolean;
+  onCopy: (
+    pictures: Picture[],
+    rows: boolean[],
+    afterBrowser: boolean,
+  ) => boolean;
   onPreview: (pic: Picture) => void;
-}
-/** Status bar line of top-level node `index`: a run of images is one line, as in the file. */
-function lineOf(doc: PmNode, index: number) {
-  let line = 0;
-  for (let i = 0; i <= index && i < doc.childCount; i++)
-    if (
-      doc.child(i).type.name !== "image" ||
-      doc.maybeChild(i - 1)?.type.name !== "image"
-    )
-      line++;
-  return Math.max(line, 1);
 }
 // Files without a MIME type still go to Rust, which rejects anything that is not an image.
 const imageFiles = (files: FileList | undefined) =>
@@ -73,8 +67,8 @@ function DiaryEditor(props: Props) {
     extensions: extensions({
       preview: (pic) => latest.current.onPreview(pic),
       source: (pic) => imageUrl(latest.current.tab, pic),
-      copy: (pictures, afterBrowser) =>
-        latest.current.onCopy(pictures, afterBrowser),
+      copy: (pictures, rows, afterBrowser) =>
+        latest.current.onCopy(pictures, rows, afterBrowser),
     }),
     content: toEditor(props.initial),
     editorProps: {
@@ -84,13 +78,14 @@ function DiaryEditor(props: Props) {
         "aria-multiline": "true",
         spellcheck: "false",
       },
-      // One line per text line or run of images, like the TXT export.
+      // One line per text line or row of images, like the TXT export.
       clipboardTextSerializer: (slice) => {
         const lines: string[] = [];
         let images = false;
-        slice.content.forEach((node) => {
+        slice.content.forEach((node: PmNode) => {
           const image = node.type.name === "image";
-          if (image && images) lines[lines.length - 1] += " [图片]";
+          if (image && images && !node.attrs.newline)
+            lines[lines.length - 1] += " [图片]";
           else lines.push(image ? "[图片]" : node.textContent);
           images = image;
         });
@@ -134,9 +129,9 @@ function DiaryEditor(props: Props) {
         // Copied in LineHush: the same images, not imported again. WebView2 hides
         // the HTML when there are files too (a copy from Rust), so those are
         // recognised in onFiles; this covers HTML without files.
-        const pictures = clipboardImages(data.getData("text/html"));
-        if (pictures) {
-          latest.current.onImages(pictures);
+        const copied = clipboardImages(data.getData("text/html"));
+        if (copied) {
+          latest.current.onImages(copied.pictures, copied.rows);
           return true;
         }
         const files = imageFiles(data.files);
@@ -195,7 +190,7 @@ function DiaryEditor(props: Props) {
     editor.on("transaction", map);
     return {
       cancel: () => editor.off("transaction", map),
-      insert: (pictures: Picture[]) => {
+      insert: (pictures: Picture[], rows: boolean[] = []) => {
         editor.off("transaction", map);
         editor.view.dispatch(
           editor.state.tr.setSelection(bookmark.resolve(editor.state.doc)),
@@ -203,14 +198,17 @@ function DiaryEditor(props: Props) {
         const { state, view } = editor;
         // One undo step for the whole batch.
         const tr = closeHistory(state.tr);
-        // Each picture is its own node; neighbouring images make up one group.
-        // At images (selected, or the caret between blocks) the new ones join
-        // that group; on a text line they start a group of their own. Nothing
-        // ends up selected: the caret sits after the last new image, where a
-        // second paste joins them and Enter or typing starts a line.
+        // Each picture is its own node; neighbouring images share a row unless
+        // a line break (`newline`) starts a new one. At images (selected, or
+        // the caret between blocks) the new ones join the row there; on a text
+        // line they make a row of their own. Nothing ends up selected: the
+        // caret sits at the end of their row, where a second paste joins them
+        // and Enter starts a new row.
         insertImages(
           tr,
-          pictures.map((pic) => state.schema.nodes.image.create(pic)),
+          pictures.map((pic, i) =>
+            state.schema.nodes.image.create({ ...pic, newline: !!rows[i] }),
+          ),
         );
         view.dispatch(tr.scrollIntoView());
         view.focus();

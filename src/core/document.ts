@@ -31,9 +31,13 @@ export function toText(doc: Diary): string {
     .join("\n");
 }
 /**
- * The editor holds one `image` node per picture; an `images` block becomes a
- * run of them, and `fromEditor` merges every run back into one block, so the
- * file keeps one block per image group.
+ * The editor holds one `image` node per picture. Each `images` block is one row
+ * of images (wrapping when it does not fit), and consecutive `images` blocks are
+ * consecutive rows, as text lines are. In the editor the first image of a row
+ * has `newline: true`: after another image it starts a new row (a line break
+ * between the two images). `fromEditor` starts a block at such an image and at
+ * any image that does not follow an image, so older files, with one block per
+ * run of images, read back and save unchanged.
  */
 export function toEditor(doc: Diary): JSONContent {
   return {
@@ -48,27 +52,30 @@ export function toEditor(doc: Diary): JSONContent {
                 : {}),
             },
           ]
-        : block.images.map(({ id, name, width, height }) => ({
+        : block.images.map(({ id, name, width, height }, i) => ({
             type: "image",
-            attrs: { id, name, width, height },
+            attrs: { id, name, width, height, newline: i === 0 },
           })),
     ),
   };
 }
 export function fromEditor(doc: JSONContent): Diary {
   const blocks: Block[] = [];
+  let previous: JSONContent | undefined;
   for (const node of doc.content ?? []) {
     if (node.type === "image") {
-      const { id, name, width, height } = node.attrs ?? {};
+      const { id, name, width, height, newline } = node.attrs ?? {};
       const pic: Picture = { id, name, width, height };
       const last = blocks[blocks.length - 1];
-      if (last?.type === "images") last.images.push(pic);
+      if (previous?.type === "image" && !newline && last?.type === "images")
+        last.images.push(pic);
       else blocks.push({ type: "images", images: [pic] });
     } else
       blocks.push({
         type: "line",
         text: (node.content ?? []).map((child) => child.text ?? "").join(""),
       });
+    previous = node;
   }
   return { blocks };
 }
@@ -131,7 +138,7 @@ export function toHtml(doc: Diary): string {
     .join("\n");
   return (
     '<!doctype html>\n<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LineHush 日记</title>\n' +
-    '<style>body{background:#f9f9f9;color:#202020;font:16px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;margin:24px}.line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1.6em}.images{display:flex;flex-wrap:wrap;gap:8px}img{max-width:280px;max-height:200px;object-fit:contain;width:auto;height:auto}</style>\n<body>' +
+    '<style>body{background:#f9f9f9;color:#202020;font:16px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;margin:24px}.line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1.6em}.images{display:flex;flex-wrap:wrap;gap:8px}.images+.images{margin-top:16px}img{max-width:280px;max-height:200px;object-fit:contain;width:auto;height:auto}</style>\n<body>' +
     body +
     "</body></html>"
   );
@@ -161,7 +168,7 @@ export function toPrintHtml(doc: Diary, options: PrintOptions): string {
   return (
     `<!doctype html>\n<html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(options.title)}</title>\n` +
     `<style>@page{size:A4;margin:15mm}html,body{background:#fff}body{color:#202020;margin:0;font-family:${font};font-size:${options.fontSizePt}pt;line-height:normal}` +
-    ".line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1lh}.images{display:flex;flex-wrap:wrap;gap:8px;break-inside:avoid}" +
+    ".line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1lh}.images{display:flex;flex-wrap:wrap;gap:8px;break-inside:avoid}.images+.images{margin-top:16px}" +
     "img{max-width:100%;max-height:160mm;width:auto;height:auto;object-fit:contain;break-inside:avoid}</style>\n<body>" +
     body +
     "</body></html>"

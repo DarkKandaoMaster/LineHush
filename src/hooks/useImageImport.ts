@@ -16,8 +16,8 @@ const STAGED = /^([0-9a-f]{12})-(.+)$/;
  * Image import, paste and copy for one tab:
  * - `importFiles` imports files one by one through Rust; pasted files that are
  *   still LineHush's last copy are not imported but used as they are;
- * - `pasteCopied` pastes images copied in LineHush under the same ids, after
- *   Rust has made sure this document holds their originals;
+ * - `pasteCopied` pastes images copied in LineHush under the same ids and in
+ *   the same rows, after Rust has made sure this document holds their originals;
  * - `copy` puts selected images on the system clipboard.
  * Imported and pasted images go where the selection was when the work started.
  */
@@ -29,7 +29,7 @@ export function useImageImport(
   const insertAfter = useCallback(
     async (
       count: number,
-      load: (images: Picture[]) => Promise<void>,
+      load: (images: Picture[], rows: boolean[]) => Promise<void>,
       failure: (e: unknown) => string,
     ) => {
       // The session snapshot updates synchronously, so overlapping paste events see the lock.
@@ -42,8 +42,10 @@ export function useImageImport(
       if (!insertion) return;
       session.setImporting(true);
       const images: Picture[] = [];
+      // Which images start a new row; only a paste of copied rows has any.
+      const rows: boolean[] = [];
       try {
-        await load(images);
+        await load(images, rows);
       } catch (e) {
         session.setError(failure(e));
       } finally {
@@ -51,7 +53,7 @@ export function useImageImport(
         session.setImporting(false);
         // Keep successfully imported images visible if a later file fails.
         try {
-          if (images.length) insertion.insert(images);
+          if (images.length) insertion.insert(images, rows);
           else insertion.cancel();
         } catch (e) {
           session.setError(String(e));
@@ -65,11 +67,12 @@ export function useImageImport(
       let current = "";
       return insertAfter(
         files.length,
-        async (images) => {
+        async (images, rows) => {
           if (fromClipboard) {
             const copied = await copiedImages(session.tab);
             if (copied) {
-              images.push(...copied);
+              images.push(...copied.pictures);
+              rows.push(...copied.rows);
               return;
             }
           }
@@ -92,24 +95,25 @@ export function useImageImport(
     [insertAfter, session],
   );
   const pasteCopied = useCallback(
-    (pictures: Picture[]) =>
+    (pictures: Picture[], copiedRows: boolean[]) =>
       insertAfter(
         pictures.length,
-        async (images) => {
+        async (images, rows) => {
           await pasteImages(
             session.tab,
             pictures.map((pic) => pic.id),
           );
           images.push(...pictures);
+          rows.push(...copiedRows);
         },
         (e) => `无法粘贴图片：${e}`,
       ),
     [insertAfter, session],
   );
   const copy = useCallback(
-    (pictures: Picture[], afterBrowser: boolean) => {
+    (pictures: Picture[], rows: boolean[], afterBrowser: boolean) => {
       if (!session.desktop) return false;
-      copyImages(session.tab, pictures, afterBrowser).catch((e) =>
+      copyImages(session.tab, pictures, rows, afterBrowser).catch((e) =>
         session.setError(`复制图片失败：${e}`),
       );
       return true;

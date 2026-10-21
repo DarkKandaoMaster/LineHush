@@ -46,42 +46,103 @@ test("图片组前后的空行往返完整", () => {
   assert.deepEqual(fromEditor(toEditor(doc)), doc);
   assert.equal(toText(doc), "\n[图片：图.png]\n\n");
 });
-test("图片组在编辑器中展开为单张图片节点，相邻图片合并回一个图片组", () => {
+test("每个图片块是一行图片：编辑器中展开为单张图片节点，行首图片 newline，往返不变", () => {
   const a = { id: idA, name: "甲.png", width: 20, height: 10 };
   const b = { id: idB, name: "乙.jpg", width: 300, height: 400 };
+  // Two rows a line break apart (consecutive blocks), then a row after an empty line.
   const doc = {
     blocks: [
       { type: "line", text: "前" },
       { type: "images", images: [a, b, a] },
+      { type: "images", images: [b, a] },
       { type: "line", text: "" },
       { type: "images", images: [b] },
     ],
   };
   const editor = toEditor(doc);
   assert.deepEqual(
-    editor.content.map((node) => node.type),
-    ["paragraph", "image", "image", "image", "paragraph", "image"],
+    editor.content.map((node) =>
+      node.type === "image" ? (node.attrs.newline ? "图↵" : "图") : "行",
+    ),
+    ["行", "图↵", "图", "图", "图↵", "图", "行", "图↵"],
   );
-  assert.deepEqual(editor.content[2], { type: "image", attrs: b });
-  assert.deepEqual(fromEditor(editor), doc);
-  // Images that become neighbours (the line between them deleted) form one group;
-  // extra node attributes never reach the file.
-  const merged = fromEditor({
-    type: "doc",
-    content: [
-      { type: "image", attrs: { ...a, extra: 1 } },
-      { type: "image", attrs: b },
-      { type: "paragraph" },
-      { type: "image", attrs: a },
-    ],
+  assert.deepEqual(editor.content[2], {
+    type: "image",
+    attrs: { ...b, newline: false },
   });
-  assert.deepEqual(merged, {
+  assert.deepEqual(fromEditor(editor), doc);
+  // Extra node attributes (newline among them) never reach the file.
+  for (const block of fromEditor(editor).blocks)
+    if (block.type === "images")
+      for (const pic of block.images)
+        assert.deepEqual(Object.keys(pic), ["id", "name", "width", "height"]);
+});
+test("fromEditor：newline 或前一个节点不是图片时开新行；相邻且无 newline 的图片同一行", () => {
+  const a = { id: idA, name: "甲.png", width: 20, height: 10 };
+  const b = { id: idB, name: "乙.jpg", width: 300, height: 400 };
+  const blocks = (...content) =>
+    fromEditor({ type: "doc", content }).blocks.map((block) =>
+      block.type === "line"
+        ? `行${block.text}`
+        : block.images.map((pic) => (pic.id === idA ? "a" : "b")).join(""),
+    );
+  const image = (pic, newline) => ({ type: "image", attrs: { ...pic, newline } });
+  // Images that become neighbours without a line break share a row.
+  assert.deepEqual(blocks(image(a, true), image(b, false), image(a, false)), ["aba"]);
+  // A line break splits the row.
+  assert.deepEqual(blocks(image(a, true), image(b, true), image(a, false)), ["a", "ba"]);
+  // After a text line an image starts a row whatever its newline (no meaning there).
+  assert.deepEqual(
+    blocks(image(a, false), { type: "paragraph" }, image(b, false), image(a, false)),
+    ["a", "行", "ba"],
+  );
+  // Without the attribute at all (older editor JSON): neighbours share a row.
+  assert.deepEqual(
+    blocks({ type: "image", attrs: a }, { type: "image", attrs: { ...b, extra: 1 } }),
+    ["ab"],
+  );
+});
+test("旧文件（每组一个图片块）读回后首图 newline，原样存回", () => {
+  const a = { id: idA, name: "甲.png", width: 20, height: 10 };
+  const b = { id: idB, name: "乙.jpg", width: 300, height: 400 };
+  const old = {
+    blocks: [
+      { type: "images", images: [a, b, a, b] },
+      { type: "line", text: "" },
+      { type: "images", images: [b] },
+      { type: "line", text: "后" },
+    ],
+  };
+  const editor = toEditor(JSON.parse(JSON.stringify(old)));
+  assert.deepEqual(
+    editor.content.filter((n) => n.type === "image").map((n) => n.attrs.newline),
+    [true, false, false, false, true],
+  );
+  assert.deepEqual(fromEditor(editor), old);
+  // TXT: one line per row of images.
+  const rows = {
     blocks: [
       { type: "images", images: [a, b] },
-      { type: "line", text: "" },
+      { type: "images", images: [b] },
+    ],
+  };
+  assert.equal(toText(rows), "[图片：甲.png] [图片：乙.jpg]\n[图片：乙.jpg]");
+});
+test("HTML 与 PDF 导出：每行图片一个 div.images，相邻两行之间是换行间距", () => {
+  const a = { id: idA, name: "甲.png", width: 20, height: 10 };
+  const doc = {
+    blocks: [
+      { type: "images", images: [a, a] },
       { type: "images", images: [a] },
     ],
-  });
+  };
+  for (const html of [
+    toHtml(doc),
+    toPrintHtml(doc, { fontFamily: "sans-serif", fontSizePt: 10, title: "t" }),
+  ]) {
+    assert.equal(html.match(/<div class="images">/g).length, 2);
+    assert.ok(html.includes(".images+.images{margin-top:16px}"));
+  }
 });
 test("HTML 导出转义正文，保留换行", () => {
   const html = toHtml(fromText('<script>\n\n & "\n'));

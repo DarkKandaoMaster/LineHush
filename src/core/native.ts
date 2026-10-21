@@ -117,22 +117,27 @@ export const exportImage = (tab: string, id: string, path: string) =>
   invoke<void>("export_image", { tab, id, path });
 /**
  * Puts the originals on the system clipboard: as files, as HTML that LineHush
- * pastes back under the same ids and, for one image, as pixels. With
+ * pastes back under the same ids and in the same rows (`rows` marks the
+ * pictures that start a new row) and, for one image, as pixels. With
  * `afterBrowser` (a copy event the browser also writes) Rust lets the browser's
  * write land first and replaces it.
  */
 export const copyImages = (
   tab: string,
   pictures: Picture[],
+  rows: boolean[],
   afterBrowser: boolean,
-) => invoke<void>("copy_images", { tab, pictures, afterBrowser });
+) => invoke<void>("copy_images", { tab, pictures, rows, afterBrowser });
 /**
- * The images of LineHush's last copy, made available to the tab's document,
- * while the clipboard still holds exactly that copy; otherwise null. WebView2
- * shows such a paste only as files, so this is how it keeps the same images.
+ * The images of LineHush's last copy and their rows, made available to the
+ * tab's document, while the clipboard still holds exactly that copy; otherwise
+ * null. WebView2 shows such a paste only as files, so this is how it keeps the
+ * same images.
  */
 export const copiedImages = (tab: string) =>
-  invoke<Picture[] | null>("copied_images", { tab });
+  invoke<{ pictures: Picture[]; rows: boolean[] } | null>("copied_images", {
+    tab,
+  });
 /** Makes copied images (from any document) available to the tab's document before they are pasted. */
 export const pasteImages = (tab: string, ids: string[]) =>
   invoke<void>("paste_images", { tab, ids });
