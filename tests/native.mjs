@@ -346,6 +346,13 @@ const expectGroups = (ed, count) =>
   expect.poll(() => imageGroups(ed)).toBe(count);
 const imageNames = (ed) =>
   ed.locator(".image-tile img").evaluateAll((images) => images.map((img) => img.alt));
+/** A click on an image's left / right half puts the caret before / after it (no image gets selected). */
+async function clickImageSide(tile, side) {
+  const box = await tile.boundingBox();
+  await tile.click({
+    position: { x: side === "before" ? 8 : box.width - 8, y: box.height / 2 },
+  });
+}
 const thumbnailsLoaded = (ed) =>
   expect
     .poll(() =>
@@ -1301,12 +1308,11 @@ async function imagesCase() {
   ]);
   await expectGroups(ed, 1);
   await expect(ed.locator(".image-tile img")).toHaveCount(2);
-  // A click selects just that image; an import goes in right after it, inside the group.
-  await ed.locator(".image-tile").first().click();
-  await expect(ed.locator(".ProseMirror-selectednode")).toHaveCount(1);
-  await expect(ed.locator(".image-item").first()).toHaveClass(
-    /ProseMirror-selectednode/,
-  );
+  // A click on an image's right half puts the caret after it (no image is
+  // selected); an import goes in right there, inside the group.
+  await clickImageSide(ed.locator(".image-tile").first(), "after");
+  await expect(ed.locator(".ProseMirror-selectednode, .image-selected")).toHaveCount(0);
+  await expect(ed.locator(".image-item").first()).toHaveClass(/gap-after/);
   await input(page).setInputFiles(source["追加.jpg"].file);
   await expect(ed.locator(".image-tile img")).toHaveCount(3);
   expect(await imageNames(ed)).toEqual(["第一张.png", "追加.jpg", "第二张.png"]);
@@ -1314,10 +1320,10 @@ async function imagesCase() {
   await page.keyboard.press("Control+z");
   await expect(ed.locator(".image-tile img")).toHaveCount(2);
   // The first import replaced the empty line it went to: the document ends with
-  // the group. Enter on its last image starts a line after it; an import on an
+  // the group. Enter at the caret after its last image starts a line; an import on an
   // empty line below a text line replaces that line and makes a second group.
   expect(await ed.locator("p").count()).toBe(draftLines.length - 1);
-  await ed.locator(".image-tile").last().click();
+  await clickImageSide(ed.locator(".image-tile").last(), "after");
   await page.keyboard.press("Enter");
   await page.keyboard.insertText("组后文字");
   await page.keyboard.press("Enter");
@@ -1429,8 +1435,8 @@ async function imagesCase() {
   await page.keyboard.press("Control+s");
   await dirty(page, false);
   expect(pictures(body(file)).map((p) => p.id)).toContain(doomed.id);
-  // Delete removes only the selected image, the last one, which was a group on its own.
-  await ed.locator(".image-tile").last().click();
+  // Delete at the caret before the last image (a group on its own) removes only that image.
+  await clickImageSide(ed.locator(".image-tile").last(), "before");
   await page.keyboard.press("Delete");
   await expect(ed.locator(".image-tile")).toHaveCount(2);
   await expectGroups(ed, 1);
@@ -1727,8 +1733,10 @@ async function copyPasteCase() {
   await input(page).setInputFiles(picture.file);
   await expect(editor(page).locator(".image-tile img")).toHaveCount(1);
   await thumbnailsLoaded(editor(page));
-  await editor(page).locator(".image-tile").click();
-  await expect(editor(page).locator(".ProseMirror-selectednode")).toHaveCount(1);
+  // A click only places the caret; Shift+Left from after the image selects it.
+  await clickImageSide(editor(page).locator(".image-tile"), "after");
+  await page.keyboard.press("Shift+ArrowLeft");
+  await expect(editor(page).locator(".image-selected")).toHaveCount(1);
   await page.keyboard.press("Control+c");
   // Rust writes the clipboard in the background.
   await sleep(1500);
@@ -1772,7 +1780,7 @@ async function exportCase() {
   );
   await input(page).setInputFiles([source["横图.png"].file, source["截图.jpg"].file]);
   await expect(ed.locator(".image-tile img")).toHaveCount(2);
-  await ed.locator(".image-tile").last().click();
+  await clickImageSide(ed.locator(".image-tile").last(), "after");
   await page.keyboard.press("Enter");
   await page.keyboard.insertText("图片之后的最后一行");
   const newButton = page.getByRole("button", { name: "新建", exact: true });

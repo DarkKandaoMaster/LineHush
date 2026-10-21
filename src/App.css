@@ -300,17 +300,27 @@ input:focus-visible {
 .tiptap ::selection {
   background: #b7d9f8;
 }
-.tiptap .ProseMirror-selectednode,
-.tiptap .image-selected {
-  outline: 2px solid #0067c0;
+/*
+ * Images inside a selection: a translucent layer in the text selection's
+ * colour, no frame. A click never selects an image; a NodeSelection can still
+ * come from ProseMirror itself and looks the same.
+ */
+.tiptap .ProseMirror-selectednode .image-tile::after,
+.tiptap .image-selected .image-tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgb(183 217 248 / 50%);
+  pointer-events: none;
 }
 /*
- * Gap cursors only exist next to images (the only atoms), where they are drawn
- * on the neighbouring image at its full height (.gap-before / .gap-after).
- * ProseMirror's own block-level widget would break the row of images.
+ * The caret between blocks (a collapsed BlockRange) only exists next to an
+ * image and is drawn on it at its full height (.gap-before / .gap-after); the
+ * browser's own caret, which would sit in the editor root, is hidden.
+ * ProseMirror's block-level widget would break the row of images.
  */
-.editor-host .tiptap .ProseMirror-gapcursor {
-  display: none;
+.tiptap.ProseMirror-hideselection {
+  caret-color: transparent;
 }
 @keyframes blink {
   to {
@@ -417,6 +427,7 @@ input:focus-visible {
   border-top: 2px solid #0067c0;
 }
 .image-tile {
+  position: relative;
   display: block;
   box-sizing: border-box;
   padding: 0;

@@ -9,7 +9,7 @@ import {
 } from "react";
 import { EditorContent, useEditor, type UseEditorOptions } from "@tiptap/react";
 import { Fragment, Slice, type Node as PmNode } from "@tiptap/pm/model";
-import { NodeSelection, type Transaction } from "@tiptap/pm/state";
+import type { Transaction } from "@tiptap/pm/state";
 import { closeHistory, redo, undo } from "@tiptap/pm/history";
 import { extensions } from "./schema";
 import { BlockRange, clipboardImages, selectedPictures } from "./image-view";
@@ -212,8 +212,9 @@ function DiaryEditor(props: Props) {
         } else {
           // replaceSelectionWith places a block next to a line instead of splitting it
           // at either end, and replaces an empty line the caret is on (the images
-          // take its place); the other pictures follow the first one. The document
-          // may end with an image: Enter on it or the gap cursor after it starts a line.
+          // take its place); the other pictures follow the first one. A caret
+          // between blocks inserts right there. The document may end with an
+          // image: Enter or typing at the caret after it starts a line.
           tr.replaceSelectionWith(nodes[0]);
           tr.doc.forEach((node, offset) => {
             if (node === nodes[0]) at = offset;
@@ -221,12 +222,10 @@ function DiaryEditor(props: Props) {
           tr.insert(at + nodes[0].nodeSize, nodes.slice(1));
         }
         const end = at + nodes.reduce((size, node) => size + node.nodeSize, 0);
-        // The new images end up selected, so a second paste follows them and
-        // Ctrl+C / Delete act on them.
+        // The new images end up selected (a range, also for one image), so a
+        // second paste follows them and Ctrl+C / Delete act on them.
         tr.setSelection(
-          nodes.length === 1
-            ? NodeSelection.create(tr.doc, at)
-            : new BlockRange(tr.doc.resolve(at), tr.doc.resolve(end)),
+          new BlockRange(tr.doc.resolve(at), tr.doc.resolve(end)),
         );
         view.dispatch(tr.scrollIntoView());
         view.focus();

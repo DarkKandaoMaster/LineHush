@@ -555,14 +555,14 @@ test("插入图片：光标在空行时替换该空行，不再补空行，文�
   await page.keyboard.press("Control+End");
   await insert("甲.png");
   await expect.poll(content).toEqual(["已有日记", "[甲.png]"]);
-  await expect(editor.locator(".ProseMirror-selectednode")).toHaveCount(1);
+  await expect(editor.locator(".image-selected")).toHaveCount(1);
   await page.keyboard.press("Control+s");
   await expectTitle(page, "已有.hush");
   expect(await saved()).toEqual(["已有日记", "[甲.png]"]);
-  // Down on the last image only leaves it for the gap cursor after it; Enter there starts a line.
+  // Down on the last image only leaves it for the caret after it; Enter there starts a line.
   await page.keyboard.press("ArrowDown");
   await expect.poll(content).toEqual(["已有日记", "[甲.png]"]);
-  await expect(editor.locator(".ProseMirror-selectednode")).toHaveCount(0);
+  await expect(editor.locator(".image-selected")).toHaveCount(0);
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await page.keyboard.insertText("之后");
