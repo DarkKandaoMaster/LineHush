@@ -135,12 +135,14 @@ fn save_session(session: &Session) {
 /// exists (so it compares equal to the open file). A missing file is kept as is,
 /// so opening it reports the error.
 fn hush_argument(args: impl IntoIterator<Item = String>, cwd: &Path) -> Option<PathBuf> {
+    let suffix = format!(".{}", store::EXTENSION);
     let path = args
         .into_iter()
         .map(|arg| PathBuf::from(arg.trim().trim_matches('"')))
         .find(|path| {
-            path.extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case(store::EXTENSION))
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.to_ascii_lowercase().ends_with(&suffix))
         })?;
     let path = cwd.join(path);
     Some(fs::canonicalize(&path).unwrap_or(path))
@@ -1087,6 +1089,11 @@ mod tests {
         assert_eq!(
             hush_argument(args(&["缺失.hush"]), &cwd),
             Some(cwd.join("缺失.hush"))
+        );
+        // A file named just ".hush" has no `extension()`, but is still a .hush file.
+        assert_eq!(
+            hush_argument(args(&[".hush"]), &cwd),
+            Some(cwd.join(".hush"))
         );
         let absolute = PathBuf::from(r"Z:\不存在\a.hush");
         assert_eq!(
