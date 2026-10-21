@@ -520,7 +520,7 @@ test("缩略图与原图按 id 读取，可保存原图，HTML 导出列出附�
   );
 });
 
-test("插入图片：光标在空行时替换该空行，不再补空行，文档可以以图片结尾", async ({
+test("插入图片：光标在空行时替换该空行，不并入相邻图片组，插入后光标停在图片后", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -555,15 +555,17 @@ test("插入图片：光标在空行时替换该空行，不再补空行，文�
   await page.keyboard.press("Control+End");
   await insert("甲.png");
   await expect.poll(content).toEqual(["已有日记", "[甲.png]"]);
-  await expect(editor.locator(".image-selected")).toHaveCount(1);
+  // Nothing is selected; the caret is after the new image.
+  await expect(
+    editor.locator(".image-selected, .ProseMirror-selectednode"),
+  ).toHaveCount(0);
+  await expect(editor.locator(".image-item").last()).toHaveClass(/gap-after/);
   await page.keyboard.press("Control+s");
   await expectTitle(page, "已有.hush");
   expect(await saved()).toEqual(["已有日记", "[甲.png]"]);
-  // Down on the last image only leaves it for the caret after it; Enter there starts a line.
+  // Down at the caret after the last image keeps it there; Enter starts a line.
   await page.keyboard.press("ArrowDown");
   await expect.poll(content).toEqual(["已有日记", "[甲.png]"]);
-  await expect(editor.locator(".image-selected")).toHaveCount(0);
-  await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await page.keyboard.insertText("之后");
   await expect.poll(content).toEqual(["已有日记", "[甲.png]", "之后"]);
@@ -584,7 +586,8 @@ test("插入图片：光标在空行时替换该空行，不再补空行，文�
   await expect
     .poll(content)
     .toEqual(["已有日记", "[甲.png]", "之后", "[乙.png]", "末行"]);
-  // Several images on an empty line replace it as one group.
+  // Several images on an empty line right above a group replace it as a group
+  // of their own: an empty line keeps them apart from the group below.
   await editor.locator("p").first().click();
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
@@ -603,6 +606,7 @@ test("插入图片：光标在空行时替换该空行，不再补空行，文�
       "已有日记",
       "[丙.png]",
       "[丁.png]",
+      "",
       "[甲.png]",
       "之后",
       "[乙.png]",
@@ -612,7 +616,9 @@ test("插入图片：光标在空行时替换该空行，不再补空行，文�
   await expectTitle(page, "已有.hush");
   expect(await saved()).toEqual([
     "已有日记",
-    "[丙.png][丁.png][甲.png]",
+    "[丙.png][丁.png]",
+    "",
+    "[甲.png]",
     "之后",
     "[乙.png]",
     "末行",

@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { getSchema } from "@tiptap/core";
 import { EditorState, NodeSelection, TextSelection } from "@tiptap/pm/state";
+import { closeHistory, history, undo } from "@tiptap/pm/history";
 import { extensions } from "../src/editor/schema.ts";
+import { fromEditor } from "../src/core/document.ts";
 import {
   BlockRange,
   caretAt,
@@ -11,6 +13,7 @@ import {
   extendByImage,
   imagePlugin,
   imageSide,
+  insertImages,
   leaveImages,
   moveCaret,
   removeNear,
@@ -342,4 +345,101 @@ test("选中图片的样式是与文字选区同色的半透明蒙层，没有�
     selected.some((r) => r.body.includes(`rgb(${rgb} /`)),
     `overlay in rgb(${rgb} / …)`,
   );
+});
+
+/** Inserts new images (by id) at the selection, as an import or a paste does. */
+function insert(state, ...ids) {
+  const tr = state.tr;
+  const range = insertImages(tr, ids.map(img));
+  return { state: state.apply(tr), range };
+}
+
+test("插入图片：块间光标或选中图片时就地插入、并入那一组，不加分隔空行", () => {
+  // Caret between two images: inside their group.
+  const pair = doc(img("a"), img("b"));
+  const between = insert(caret(pair, 1), "n");
+  assert.deepEqual(content(between.state), ["[a]", "[n]", "[b]"]);
+  assert.deepEqual(between.range, { from: 1, to: 2 });
+  assert.equal(where(between.state), "caret 2");
+  // Caret after a final image: appended to that group.
+  const end = insert(caret(doc("A", img("a")), 4), "n");
+  assert.deepEqual(content(end.state), ["A", "[a]", "[n]"]);
+  assert.equal(where(end.state), "caret 5");
+  // Caret between a line and an image: before the image, in its group.
+  const before = insert(caret(doc("A", img("a")), 3), "n");
+  assert.deepEqual(content(before.state), ["A", "[n]", "[a]"]);
+  assert.equal(where(before.state), "caret 4");
+  // A selected image (NodeSelection) or a range of images: after them.
+  const node = insert(stateOf(pair, NodeSelection.create(pair, 0)), "n");
+  assert.deepEqual(content(node.state), ["[a]", "[n]", "[b]"]);
+  assert.equal(where(node.state), "caret 2");
+  const range = insert(
+    stateOf(pair, new BlockRange(pair.resolve(0), pair.resolve(2))),
+    "n",
+    "m",
+  );
+  assert.deepEqual(content(range.state), ["[a]", "[b]", "[n]", "[m]"]);
+  assert.equal(where(range.state), "caret 4");
+});
+
+test("插入图片：在文字行上不并入相邻图片组，紧挨图片的一侧补一个空行", () => {
+  // The empty line the caret is on is replaced; the image below gets a line in between.
+  const above = insert(text(doc("", img("a"), ""), 1), "n");
+  assert.deepEqual(content(above.state), ["[n]", "", "[a]", ""]);
+  assert.deepEqual(above.range, { from: 0, to: 1 });
+  assert.equal(where(above.state), "caret 1");
+  // Two groups in the file, not one.
+  assert.deepEqual(
+    fromEditor(above.state.doc.toJSON()).blocks.map((b) => b.type),
+    ["images", "line", "images", "line"],
+  );
+  // An image above: a line before the new one.
+  const below = insert(text(doc(img("a"), "", "文字"), 2), "n");
+  assert.deepEqual(content(below.state), ["[a]", "", "[n]", "文字"]);
+  assert.deepEqual(below.range, { from: 3, to: 4 });
+  assert.equal(where(below.state), "caret 4");
+  // Images on both sides: a line on both sides.
+  const both = insert(text(doc(img("a"), "", img("b")), 2), "n");
+  assert.deepEqual(content(both.state), ["[a]", "", "[n]", "", "[b]"]);
+  assert.equal(where(both.state), "caret 4");
+  // No image next to it: the empty line is replaced and no line is added.
+  const plain = insert(text(doc("文字", ""), 5), "n");
+  assert.deepEqual(content(plain.state), ["文字", "[n]"]);
+  assert.equal(where(plain.state), "caret 5");
+  // The caret at the end of a line above an image: after the line, then a line.
+  const lineEnd = insert(text(doc("文字", img("a")), 3), "n");
+  assert.deepEqual(content(lineEnd.state), ["文字", "[n]", "", "[a]"]);
+  assert.equal(where(lineEnd.state), "caret 5");
+  // At the start of a line below an image: before the line, after a new one.
+  const lineStart = insert(text(doc(img("a"), "文字"), 2), "n");
+  assert.deepEqual(content(lineStart.state), ["[a]", "", "[n]", "文字"]);
+  assert.equal(where(lineStart.state), "caret 4");
+  // In the middle of a line: it is split, the halves are text, nothing is added.
+  const middle = insert(text(doc("甲乙", img("a")), 2), "n");
+  assert.deepEqual(content(middle.state), ["甲", "[n]", "乙", "[a]"]);
+  assert.equal(where(middle.state), "caret 4");
+  // Several images stay together, the caret after the last one.
+  const several = insert(text(doc("", img("a"), ""), 1), "n", "m");
+  assert.deepEqual(content(several.state), ["[n]", "[m]", "", "[a]", ""]);
+  assert.deepEqual(several.range, { from: 0, to: 2 });
+  assert.equal(where(several.state), "caret 2");
+  // A second insertion at that caret joins them.
+  const again = insert(several.state, "k");
+  assert.deepEqual(content(again.state), ["[n]", "[m]", "[k]", "", "[a]", ""]);
+  assert.equal(where(again.state), "caret 3");
+});
+
+test("插入图片连同补的空行是一步撤销", () => {
+  const d = doc(img("a"), "", img("b"));
+  const state = EditorState.create({
+    doc: d,
+    selection: TextSelection.create(d, 2),
+    plugins: [plugin, history()],
+  });
+  const tr = closeHistory(state.tr);
+  insertImages(tr, [img("n"), img("m")]);
+  const inserted = state.apply(tr);
+  assert.deepEqual(content(inserted), ["[a]", "", "[n]", "[m]", "", "[b]"]);
+  const undone = run(inserted, undo).state;
+  assert.deepEqual(content(undone), ["[a]", "", "[b]"]);
 });

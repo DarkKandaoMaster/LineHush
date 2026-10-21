@@ -12,7 +12,7 @@ import { Fragment, Slice, type Node as PmNode } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 import { closeHistory, redo, undo } from "@tiptap/pm/history";
 import { extensions } from "./schema";
-import { BlockRange, clipboardImages, selectedPictures } from "./image-view";
+import { clipboardImages, insertImages } from "./image-view";
 import {
   fromEditor,
   fromText,
@@ -201,31 +201,16 @@ function DiaryEditor(props: Props) {
           editor.state.tr.setSelection(bookmark.resolve(editor.state.doc)),
         );
         const { state, view } = editor;
+        // One undo step for the whole batch.
         const tr = closeHistory(state.tr);
-        const image = state.schema.nodes.image;
         // Each picture is its own node; neighbouring images make up one group.
-        const nodes = pictures.map((pic) => image.create(pic));
-        let at = state.selection.to;
-        if (selectedPictures(state)) {
-          // After the selected image(s), inside their group.
-          tr.insert(at, nodes);
-        } else {
-          // replaceSelectionWith places a block next to a line instead of splitting it
-          // at either end, and replaces an empty line the caret is on (the images
-          // take its place); the other pictures follow the first one. A caret
-          // between blocks inserts right there. The document may end with an
-          // image: Enter or typing at the caret after it starts a line.
-          tr.replaceSelectionWith(nodes[0]);
-          tr.doc.forEach((node, offset) => {
-            if (node === nodes[0]) at = offset;
-          });
-          tr.insert(at + nodes[0].nodeSize, nodes.slice(1));
-        }
-        const end = at + nodes.reduce((size, node) => size + node.nodeSize, 0);
-        // The new images end up selected (a range, also for one image), so a
-        // second paste follows them and Ctrl+C / Delete act on them.
-        tr.setSelection(
-          new BlockRange(tr.doc.resolve(at), tr.doc.resolve(end)),
+        // At images (selected, or the caret between blocks) the new ones join
+        // that group; on a text line they start a group of their own. Nothing
+        // ends up selected: the caret sits after the last new image, where a
+        // second paste joins them and Enter or typing starts a line.
+        insertImages(
+          tr,
+          pictures.map((pic) => state.schema.nodes.image.create(pic)),
         );
         view.dispatch(tr.scrollIntoView());
         view.focus();

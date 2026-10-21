@@ -1308,6 +1308,9 @@ async function imagesCase() {
   ]);
   await expectGroups(ed, 1);
   await expect(ed.locator(".image-tile img")).toHaveCount(2);
+  // Nothing ends up selected: the caret is after the last new image.
+  await expect(ed.locator(".ProseMirror-selectednode, .image-selected")).toHaveCount(0);
+  await expect(ed.locator(".image-item").last()).toHaveClass(/gap-after/);
   // A click on an image's right half puts the caret after it (no image is
   // selected); an import goes in right there, inside the group.
   await clickImageSide(ed.locator(".image-tile").first(), "after");
@@ -1319,9 +1322,10 @@ async function imagesCase() {
   await expectGroups(ed, 1);
   await page.keyboard.press("Control+z");
   await expect(ed.locator(".image-tile img")).toHaveCount(2);
-  // The first import replaced the empty line it went to: the document ends with
-  // the group. Enter at the caret after its last image starts a line; an import on an
-  // empty line below a text line replaces that line and makes a second group.
+  // The first import replaced the empty line it went to (a text line above it,
+  // so no line was added): the document ends with the group. Enter at the caret
+  // after its last image starts a line; an import on an empty line below a text
+  // line replaces that line and makes a second group.
   expect(await ed.locator("p").count()).toBe(draftLines.length - 1);
   await clickImageSide(ed.locator(".image-tile").last(), "after");
   await page.keyboard.press("Enter");

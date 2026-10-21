@@ -403,9 +403,7 @@ const pictureOf = (node: PmNode): Picture => ({
   height: node.attrs.height,
 });
 
-/** The pictures of a selection made only of whole images (one, or a range of them); else null. */
-export function selectedPictures(state: EditorState): Picture[] | null {
-  const sel = state.selection;
+function picturesIn(sel: Selection): Picture[] | null {
   if (!(sel instanceof NodeSelection || sel instanceof BlockRange) || sel.empty)
     return null;
   const slice = sel.content();
@@ -413,6 +411,55 @@ export function selectedPictures(state: EditorState): Picture[] | null {
   const pictures: Picture[] = [];
   slice.content.forEach((node) => pictures.push(pictureOf(node)));
   return pictures;
+}
+
+/** The pictures of a selection made only of whole images (one, or a range of them); else null. */
+export const selectedPictures = (state: EditorState) =>
+  picturesIn(state.selection);
+
+/**
+ * Inserts imported or pasted images (one node each) at `tr`'s selection and
+ * leaves the caret between blocks after the last of them; returns where they are.
+ *
+ * Selected images, or the caret between blocks: right there, inside the group
+ * around it (the images join that group). Otherwise (a text selection) the
+ * images take the place of an empty line the caret is on, go before / after a
+ * line with the caret at its start / end, split it in the middle, or replace
+ * selected text; they then start a group of their own: an image right before or
+ * after them gets an empty line in between, as neighbouring images would merge
+ * into one group. A second insertion at the caret left after them joins them.
+ */
+export function insertImages(
+  tr: Transaction,
+  nodes: PmNode[],
+): { from: number; to: number } {
+  const sel = tr.selection;
+  let from = sel.to;
+  if (!nodes.length) return { from, to: from };
+  const size = nodes.reduce((sum, node) => sum + node.nodeSize, 0);
+  if (picturesIn(sel) || (sel instanceof BlockRange && sel.empty)) {
+    tr.insert(from, nodes);
+  } else {
+    // replaceSelectionWith places a block next to a line instead of splitting
+    // it at either end, and replaces an empty line; the other images follow
+    // the first one.
+    tr.replaceSelectionWith(nodes[0]);
+    tr.doc.forEach((node, offset) => {
+      if (node === nodes[0]) from = offset;
+    });
+    tr.insert(from + nodes[0].nodeSize, nodes.slice(1));
+    const blank = tr.doc.type.schema.nodes.paragraph.create();
+    // The line after them first, so `from` stays put.
+    if (isImage(tr.doc.resolve(from + size).nodeAfter))
+      tr.insert(from + size, blank);
+    if (isImage(tr.doc.resolve(from).nodeBefore)) {
+      tr.insert(from, blank);
+      from += blank.nodeSize;
+    }
+  }
+  const to = from + size;
+  tr.setSelection(new BlockRange(tr.doc.resolve(to)));
+  return { from, to };
 }
 
 /**
