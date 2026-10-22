@@ -115,7 +115,7 @@ class RangeBookmark {
   }
 }
 
-const isImage = (node: PmNode | null | undefined) =>
+export const isImage = (node: PmNode | null | undefined) =>
   node?.type.name === "image";
 const imageAt = (state: EditorState) =>
   state.selection instanceof NodeSelection && isImage(state.selection.node);
@@ -1076,7 +1076,7 @@ export function imageSide(
 }
 
 /** A position next to an image and the side of it the caret is on there. */
-interface Spot {
+export interface Spot {
   pos: number;
   side: Side;
 }
@@ -1085,7 +1085,7 @@ interface Spot {
  * `imageSide` with the caret's side: before the image it is at the start of the
  * image's row (1), after it at the end (-1).
  */
-const spotBy = (
+export const spotBy = (
   pos: number,
   node: PmNode,
   clientX: number,
@@ -1169,16 +1169,44 @@ const ROW_REACH = 12;
  * neighbouring line, or ProseMirror's `Selection.near` would select an image.
  */
 function clickBesideImages(view: EditorView, event: MouseEvent) {
-  if ((event.target as Element | null)?.closest?.("p")) return false;
+  const spot = spotBeside(
+    view,
+    event.clientX,
+    event.clientY,
+    event.target as Element | null,
+  );
+  if (spot === null) return false;
+  view.dispatch(
+    view.state.tr
+      .setSelection(
+        new BlockRange(view.state.doc.resolve(spot.pos), undefined, spot.side),
+      )
+      .setMeta("pointer", true),
+  );
+  return true;
+}
+
+/**
+ * Where a point beside images (not on one) puts the caret, `target` being the
+ * element there: see `clickBesideImages`. Null when it is on a text line or
+ * level with one, which the browser / `posAtCoords` places. Also used for
+ * PageUp / PageDown (see reveal.ts).
+ */
+export function spotBeside(
+  view: EditorView,
+  x: number,
+  y: number,
+  target: Element | null,
+): Spot | null {
+  if (target?.closest?.("p")) return null;
   const { doc } = view.state;
-  const { clientX: x, clientY: y } = event;
   const away = (rect: DOMRect) =>
     Math.hypot(
       Math.max(rect.left - x, x - rect.right, 0),
       Math.max(rect.top - y, y - rect.bottom, 0),
     );
   let spot: Spot | null = null;
-  const spacer = rowSpacer(event);
+  const spacer = target?.closest?.(".image-row-break") ?? null;
   if (spacer) {
     const pos = view.posAtDOM(spacer, 0);
     if (rowBreak(doc.resolve(pos)))
@@ -1230,13 +1258,7 @@ function clickBesideImages(view: EditorView, event: MouseEvent) {
     }
     if (level) spot = null;
   }
-  if (spot === null) return false;
-  view.dispatch(
-    view.state.tr
-      .setSelection(new BlockRange(doc.resolve(spot.pos), undefined, spot.side))
-      .setMeta("pointer", true),
-  );
-  return true;
+  return spot;
 }
 
 /** Whether a pointer event is over the selection as drawn (where the browser starts dragging it). */

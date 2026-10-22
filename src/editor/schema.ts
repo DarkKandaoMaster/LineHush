@@ -11,6 +11,7 @@ import {
   type ImageOptions,
 } from "./image-view.ts";
 import { NewlineSelection } from "./newline-selection.ts";
+import { Reveal } from "./reveal.ts";
 
 const PlainKeys = Extension.create({
   name: "plainKeys",
@@ -45,5 +46,7 @@ export function extensions(images: ImageOptions) {
     image(images),
     PlainKeys,
     NewlineSelection,
+    // Scrolling to the caret (safe zone) and PageUp / PageDown.
+    Reveal,
   ];
 }
