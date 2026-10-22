@@ -10,6 +10,7 @@ import {
   typeBetween,
   type ImageOptions,
 } from "./image-view.ts";
+import { NewlineSelection } from "./newline-selection.ts";
 
 const PlainKeys = Extension.create({
   name: "plainKeys",
@@ -43,5 +44,6 @@ export function extensions(images: ImageOptions) {
     // caret between blocks is image-view's collapsed BlockRange.
     image(images),
     PlainKeys,
+    NewlineSelection,
   ];
 }

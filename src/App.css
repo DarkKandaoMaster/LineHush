@@ -308,6 +308,27 @@ input:focus-visible {
   background: #b7d9f8;
 }
 /*
+ * A selected line break (src/editor/newline-selection.ts): a block half a
+ * character wide in the selection colour after the line's text, as Notepad
+ * draws it. The negative margin keeps it out of line breaking, so a full line
+ * never wraps because of it (it overhangs into the padding). In an empty line
+ * the trailing <br> would push ::after onto a second line; it is hidden there
+ * and the block (1lh high, like the line's min-height) holds the line open.
+ */
+.tiptap p.newline-selected::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1lh;
+  margin-right: -0.5em;
+  vertical-align: top;
+  background: #b7d9f8;
+  pointer-events: none;
+}
+.tiptap p.newline-selected > br.ProseMirror-trailingBreak {
+  display: none;
+}
+/*
  * Images inside a selection: a translucent layer in the text selection's
  * colour, no frame. A click never selects an image; a NodeSelection can still
  * come from ProseMirror itself and looks the same.

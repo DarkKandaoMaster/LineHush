@@ -627,3 +627,73 @@ test("图片后的空行上插入图片：新图自成一行在图 1 下方，�
   expect(copied!.pictures.map((p: any) => p.name)).toEqual(["a.png", "b.png", "c.png"]);
   expect(errors).toEqual([]);
 });
+
+test("选中换行：行末画半个字宽的选区色块，空行隐藏 trailingBreak，行高不变，收起后消失", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto("/");
+  const editor = editorOf(page);
+  await expect(editor).toBeVisible();
+  await editor.evaluate((el: any) => {
+    const line = (text: string) => ({
+      type: "paragraph",
+      content: text ? [{ type: "text", text }] : [],
+    });
+    el.editor.commands.setContent({ type: "doc", content: [line("我"), line(""), line("你")] });
+    el.editor.commands.focus();
+    el.editor.commands.setTextSelection(2); // after "我"
+  });
+  const lines = () =>
+    editor.evaluate((el: any) =>
+      Array.from(el.querySelectorAll(":scope > p")).map((p: any) => {
+        const after = getComputedStyle(p, "::after");
+        const br = p.querySelector("br.ProseMirror-trailingBreak");
+        return {
+          selected: p.classList.contains("newline-selected"),
+          height: p.getBoundingClientRect().height,
+          em: parseFloat(getComputedStyle(p).fontSize),
+          after: after.content === "none" || after.content === "normal" ? null : parseFloat(after.width),
+          afterHeight: parseFloat(after.height),
+          br: br ? getComputedStyle(br).display : null,
+        };
+      }),
+    );
+  const before = await lines();
+  expect(before.map((l) => l.selected)).toEqual([false, false, false]);
+  expect(before[1].br).not.toBe("none");
+
+  // "我|" + Shift+→: the selection is just the line break of the first line.
+  await page.keyboard.press("Shift+ArrowRight");
+  expect(await selection(page)).toEqual({ type: "text", anchor: 2, head: 4 });
+  let now = await lines();
+  expect(now.map((l) => l.selected)).toEqual([true, false, false]);
+  expect(now[0].after).toBeCloseTo(now[0].em / 2, 1);
+  expect(now[0].afterHeight).toBeCloseTo(before[0].height, 0);
+  expect(now.map((l) => l.height)).toEqual(before.map((l) => l.height));
+
+  // Across the empty line too: its trailing <br> is hidden, the block holds it open.
+  await page.keyboard.press("Shift+ArrowRight");
+  expect(await selection(page)).toEqual({ type: "text", anchor: 2, head: 6 });
+  now = await lines();
+  expect(now.map((l) => l.selected)).toEqual([true, true, false]);
+  expect(now[1].br).toBe("none");
+  expect(now[1].after).toBeCloseTo(now[1].em / 2, 1);
+  expect(now.map((l) => l.height)).toEqual(before.map((l) => l.height));
+
+  // Select all: the last line has no line break after it.
+  await page.keyboard.press("Control+a");
+  now = await lines();
+  expect(now.map((l) => l.selected)).toEqual([true, true, false]);
+  expect(now[2].after).toBeNull();
+
+  // Collapsing the selection removes the blocks.
+  await page.keyboard.press("ArrowRight");
+  now = await lines();
+  expect(now.map((l) => l.selected)).toEqual([false, false, false]);
+  expect(now.every((l) => l.after === null)).toBe(true);
+  expect(now[1].br).not.toBe("none");
+  expect(now.map((l) => l.height)).toEqual(before.map((l) => l.height));
+  expect(errors).toEqual([]);
+});
