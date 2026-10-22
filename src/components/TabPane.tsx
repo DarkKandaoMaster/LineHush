@@ -63,7 +63,9 @@ export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
         onChange={session.update}
         onFiles={images.importFiles}
         onImages={images.pasteCopied}
+        onBlocks={images.pasteBlocks}
         onCopy={images.copy}
+        onStage={images.stage}
         onPreview={preview}
         onSelection={setPosition}
       />

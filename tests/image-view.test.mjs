@@ -2,7 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { getSchema } from "@tiptap/core";
-import { EditorState, NodeSelection, TextSelection } from "@tiptap/pm/state";
+import {
+  AllSelection,
+  EditorState,
+  NodeSelection,
+  TextSelection,
+} from "@tiptap/pm/state";
 import { closeHistory, history, undo } from "@tiptap/pm/history";
 import { extensions } from "../src/editor/schema.ts";
 import { fromEditor } from "../src/core/document.ts";
@@ -28,6 +33,14 @@ import {
   selectedPictures,
   selectionBetween,
   typeBetween,
+  BLOCKS_MIME,
+  blockNodes,
+  blockPictures,
+  clipboardBlocks,
+  insertBlocks,
+  mixedSlice,
+  sliceBlocks,
+  withoutPictures,
 } from "../src/editor/image-view.ts";
 
 // The editor's real schema (paragraphs of plain text, one node per image).
@@ -782,4 +795,223 @@ test("复制选中的图片：rows 标出另起一行的图片（第一张恒为
   const tail = selectedImages(stateOf(d, new BlockRange(d.resolve(1), d.resolve(3))));
   assert.deepEqual(tail.rows, [false, false]);
   assert.equal(selectedImages(caret(d, 1)), null);
+});
+
+/** Pastes lines (strings) and images (nodes) at the selection, as a paste of a mixed copy does. */
+function paste(state, ...items) {
+  const tr = state.tr;
+  const range = insertBlocks(
+    tr,
+    items.map((item) =>
+      typeof item === "string"
+        ? schema.nodes.paragraph.create(null, item ? schema.text(item) : null)
+        : item,
+    ),
+  );
+  return { state: state.apply(tr), range };
+}
+
+test("粘贴文字 + 图片：在文字行上首尾文字与光标所在行合并，图片自成一行", () => {
+  // In the middle of a line: 甲|乙 → 甲一 / [a] / 二乙, the caret after 二.
+  const middle = paste(text(doc("甲乙", img("x")), 2), "一", img("a"), "二");
+  assert.deepEqual(layout(middle.state), ["甲一", "[a]", "二乙", "[x]"]);
+  assert.equal(where(middle.state), "text 7");
+  assert.deepEqual(middle.range, { from: 2, to: 7 });
+  // Ending with an image at the end of a line above an image: that image starts a new row.
+  const end = paste(text(doc("甲", img("x")), 2), "一", img("a"));
+  assert.deepEqual(layout(end.state), ["甲一", "[a]", "[x]"]);
+  assert.equal(end.state.doc.nodeAt(5).attrs.newline, true);
+  assert.equal(spot(end.state), "caret 5 -1");
+  // Starting with an image on an empty line below an image: the line is replaced, a new row.
+  const empty = paste(text(doc(img("x"), "", "B"), 2), img("a"), "一");
+  assert.deepEqual(layout(empty.state), ["[x]", "[a]", "一", "B"]);
+  assert.equal(where(empty.state), "text 4");
+  // At the start of a line: the image before it, the last line joins it.
+  const start = paste(text(doc("乙"), 1), img("a"), "一");
+  assert.deepEqual(layout(start.state), ["[a]", "一乙"]);
+  assert.equal(where(start.state), "text 3");
+  assert.deepEqual(start.range, { from: 0, to: 3 });
+  // Rows inside the content keep their line breaks; images at the ends of a line
+  // with text on both sides split it.
+  const rows = paste(text(doc("甲乙"), 2), img("a"), row("b"), img("c"));
+  assert.deepEqual(layout(rows.state), ["甲", "[a]", "[b c]", "乙"]);
+  assert.equal(spot(rows.state), "caret 6 -1");
+});
+
+test("粘贴文字 + 图片：块间光标处首尾图片按 joinAt 并入那一行，文字自成一行", () => {
+  // Inside a row: both ends join it.
+  const inside = paste(caret(doc(img("a"), img("b")), 1), img("x"), "一", img("y"));
+  assert.deepEqual(layout(inside.state), ["[a x]", "一", "[y b]"]);
+  assert.equal(spot(inside.state), "caret 6 -1");
+  // At the start of the lower row (side 1): the first image starts a row of its own.
+  const lower = paste(caretOn(doc(img("a"), row("b")), 1, 1), img("x"), "t");
+  assert.deepEqual(layout(lower.state), ["[a]", "[x]", "t", "[b]"]);
+  assert.equal(where(lower.state), "text 4");
+  // At the end of the upper row (side -1): the row after keeps its line break.
+  const upper = paste(caretOn(doc(img("a"), row("b")), 1, -1), "t", img("y"));
+  assert.deepEqual(layout(upper.state), ["[a]", "t", "[y]", "[b]"]);
+  // Before the first image of the document: the last image joins that row.
+  const first = paste(caretOn(doc(img("a")), 0, 1), "t", img("y"));
+  assert.deepEqual(layout(first.state), ["t", "[y a]"]);
+});
+
+test("粘贴文字 + 图片替换选区：删除走 deleteBlocks，全选后粘贴得到粘贴的内容", () => {
+  const word = paste(stateOf(doc("甲乙丙"), TextSelection.create(doc("甲乙丙"), 2, 3)), "一", img("a"), "二");
+  assert.deepEqual(layout(word.state), ["甲一", "[a]", "二丙"]);
+  const d = doc("A", img("a"), "B");
+  const all = paste(stateOf(d, new AllSelection(d)), "一", img("x"));
+  assert.deepEqual(layout(all.state), ["一", "[x]"]);
+  // A range from a line into a row of images: the row's next image starts its row.
+  const r = doc("A", img("a"), img("b"), "B");
+  const range = paste(stateOf(r, new BlockRange(r.resolve(2), r.resolve(4))), img("x"));
+  assert.deepEqual(layout(range.state), ["A", "[x]", "[b]", "B"]);
+});
+
+test("粘贴文字 + 图片是一步撤销", () => {
+  const d = doc("甲乙", img("x"));
+  const state = EditorState.create({
+    doc: d,
+    selection: TextSelection.create(d, 2),
+    plugins: [plugin, history()],
+  });
+  const tr = closeHistory(state.tr);
+  insertBlocks(tr, blockNodes(schema, [
+    { type: "line", text: "一" },
+    { type: "images", images: [{ id: "a", name: "a.png", width: 40, height: 30 }] },
+    { type: "line", text: "二" },
+  ]));
+  const pasted = state.apply(tr);
+  assert.deepEqual(layout(pasted), ["甲一", "[a]", "二乙", "[x]"]);
+  assert.deepEqual(layout(run(pasted, undo).state), ["甲乙", "[x]"]);
+});
+
+test("混合选区：sliceBlocks / blockNodes 保留换行，mixedSlice 只认既有图片又有文字行的选区", () => {
+  const d = doc("A", img("a"), row("b"), img("c"), "", "B");
+  const all = stateOf(d, new AllSelection(d));
+  const blocks = sliceBlocks(mixedSlice(all));
+  assert.deepEqual(
+    blocks.map((b) => (b.type === "line" ? b.text : b.images.map((p) => p.id).join(" "))),
+    ["A", "a", "b c", "", "B"],
+  );
+  assert.deepEqual(
+    blockNodes(schema, blocks).map((n) => (n.type.name === "image" ? n.attrs.newline : n.textContent)),
+    ["A", true, true, false, "", "B"],
+  );
+  assert.deepEqual(blockPictures(blocks).map((p) => p.id), ["a", "b", "c"]);
+  // A partial line is cut.
+  const part = stateOf(d, TextSelection.create(d, 2, 7));
+  assert.deepEqual(sliceBlocks(mixedSlice(part)).map((b) => b.type), ["line", "images", "images", "line"]);
+  // Only text, only images, nothing: not mixed. An image with an empty line is.
+  assert.equal(mixedSlice(stateOf(doc("A", "B"), TextSelection.create(doc("A", "B"), 1, 5))), null);
+  assert.equal(mixedSlice(stateOf(d, new BlockRange(d.resolve(3), d.resolve(6)))), null);
+  assert.equal(mixedSlice(caret(d, 3)), null);
+  assert.notEqual(mixedSlice(stateOf(d, new BlockRange(d.resolve(5), d.resolve(8)))), null);
+});
+
+test("clipboardBlocks：只认版本 1、64 位十六进制 id、字段类型正确的数据", () => {
+  const id = "ab".repeat(32);
+  const pic = { id, name: "a.png", width: 3, height: 2 };
+  const good = { v: 1, blocks: [{ type: "line", text: "甲" }, { type: "images", images: [{ ...pic, extra: 1 }] }] };
+  assert.deepEqual(clipboardBlocks(JSON.stringify(good)), [
+    { type: "line", text: "甲" },
+    { type: "images", images: [pic] },
+  ]);
+  const bad = [
+    "",
+    "不是 JSON",
+    JSON.stringify({ ...good, v: 2 }),
+    JSON.stringify({ v: 1, blocks: [] }),
+    JSON.stringify({ v: 1, blocks: [{ type: "line", text: "a\nb" }] }),
+    JSON.stringify({ v: 1, blocks: [{ type: "line" }] }),
+    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [] }] }),
+    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [{ ...pic, id: "a".repeat(63) }] }] }),
+    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [{ ...pic, id: id.toUpperCase() }] }] }),
+    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [{ ...pic, width: "3" }] }] }),
+    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [{ ...pic, name: 1 }] }] }),
+    JSON.stringify({ v: 1, blocks: [{ type: "heading", text: "x" }] }),
+    JSON.stringify([good]),
+  ];
+  for (const data of bad) assert.equal(clipboardBlocks(data), null, data);
+  // Images no longer available are left out, a row left empty with them.
+  const blocks = [
+    { type: "line", text: "甲" },
+    { type: "images", images: [pic, { ...pic, id: "cd".repeat(32) }] },
+    { type: "images", images: [{ ...pic, id: "ef".repeat(32) }] },
+  ];
+  assert.deepEqual(withoutPictures(blocks, ["cd".repeat(32), "ef".repeat(32)]), [
+    { type: "line", text: "甲" },
+    { type: "images", images: [pic] },
+  ]);
+  assert.equal(withoutPictures(blocks, []), blocks);
+});
+
+test("复制 / 剪切混合选区：写纯文字与 blocks、不写 HTML，暂存原图；剪切按 deleteBlocks 保持行结构", () => {
+  const staged = [];
+  const mixedPlugin = imagePlugin(() => false, (pictures) => staged.push(...pictures.map((p) => p.id)));
+  // a 0-1, "t" 1-4, b 4-5, c 5-6: cut "t" and b.
+  const d = doc(img("a"), "t", img("b"), img("c"));
+  const view = fakeView(stateOf(d, new BlockRange(d.resolve(1), d.resolve(5))));
+  // The editor's text serializer (DiaryEditor's, images as placeholders) writes the text.
+  view.someProp = (name, f) =>
+    name === "clipboardTextSerializer" ? f(() => "t\n[图片]") : undefined;
+  const written = {};
+  let prevented = false;
+  const event = {
+    clipboardData: {
+      clearData() {},
+      setData(type, value) {
+        written[type] = value;
+      },
+    },
+    preventDefault() {
+      prevented = true;
+    },
+  };
+  assert.equal(mixedPlugin.props.handleDOMEvents.cut.call(mixedPlugin, view, event), true);
+  assert.equal(prevented, true);
+  assert.deepEqual(Object.keys(written).sort(), [BLOCKS_MIME, "text/plain"].sort());
+  assert.equal(written["text/plain"], "t\n[图片]");
+  assert.deepEqual(JSON.parse(written[BLOCKS_MIME]), {
+    v: 1,
+    blocks: [
+      { type: "line", text: "t" },
+      { type: "images", images: [{ id: "b", name: "b.png", width: 40, height: 30 }] },
+    ],
+  });
+  assert.deepEqual(staged, ["b"]);
+  // The text line went, so c starts a new row after a.
+  assert.deepEqual(layout(view.state), ["[a]", "[c]"]);
+  // Only images, or only text: not this path.
+  const plain = fakeView(stateOf(doc("A", "B"), TextSelection.create(doc("A", "B"), 1, 5)));
+  assert.equal(mixedPlugin.props.handleDOMEvents.copy.call(mixedPlugin, plain, event), false);
+});
+
+test("拖动混合选区：剪切后粘贴到落点；Ctrl 为复制；落在选区内不动", () => {
+  // 甲 0-3, a 3-4, 乙 4-7, 丙 7-10; "甲" and a selected.
+  const d = doc("甲", img("a"), "乙", "丙");
+  const drop = (pos, ctrlKey = false) => {
+    const view = fakeView(stateOf(d, new BlockRange(d.resolve(1), d.resolve(4))));
+    view.dragging = { slice: view.state.selection.content(), move: true };
+    view.posAtCoords = () => ({ pos, inside: -1 });
+    view.focus = () => {};
+    const handled = plugin.props.handleDOMEvents.drop.call(plugin, view, {
+      clientX: 0,
+      clientY: 0,
+      ctrlKey,
+      target: null,
+      preventDefault() {},
+    });
+    assert.equal(handled, true);
+    assert.equal(view.dragging, null);
+    return view.state;
+  };
+  // To the end of 丙: 甲 joins it, the image a row of its own after it; the dropped content selected.
+  const moved = drop(9);
+  assert.deepEqual(layout(moved), ["", "乙", "丙甲", "[a]"]);
+  assert.equal(where(moved), "BlockRange 7-10");
+  assert.deepEqual(layout(drop(9, true)), ["甲", "[a]", "乙", "丙甲", "[a]"]);
+  // Inside the selection: nothing changes.
+  const still = drop(2);
+  assert.equal(still.doc.eq(d), true);
+  assert.equal(where(still), "BlockRange 1-4");
 });

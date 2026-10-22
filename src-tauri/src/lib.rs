@@ -87,21 +87,60 @@ struct Copied {
     pictures: Vec<Picture>,
     rows: Vec<bool>,
 }
+/// What pasting images no longer to be found reports.
+const COPIED_IMAGES_GONE: &str = "剪贴板中的图片已不可用，请重新复制";
 impl ClipboardState {
-    /// Makes sure the document in `tab` holds each image: an image from another
-    /// document (or an earlier session) is read back from the file its copy left.
-    fn adopt(&self, app: &AppHandle, tab: &str, ids: impl IntoIterator<Item = String>) -> Result<()> {
-        let store = lock_tab(app, tab)?;
-        for id in ids {
-            if lock(&store)?.has_image(&id)? {
-                continue;
-            }
-            let bytes =
-                clipboard::staged(&self.dir, &id).ok_or("剪贴板中的图片已不可用，请重新复制")?;
-            lock(&store)?.adopt_image(&id, &bytes)?;
-        }
-        Ok(())
+    /// Makes sure the document in `tab` holds each image (see `adopt_images`);
+    /// returns the ids of those no longer to be found.
+    fn adopt(&self, app: &AppHandle, tab: &str, ids: impl IntoIterator<Item = String>) -> Result<Vec<String>> {
+        let target = lock_tab(app, tab)?;
+        let others: Vec<Arc<Mutex<Store>>> = lock(&app.state::<AppState>().tabs)?
+            .iter()
+            .filter(|(id, _)| id.as_str() != tab)
+            .map(|(_, store)| store.clone())
+            .collect();
+        adopt_images(&self.dir, &target, &others, ids)
     }
+}
+/// Makes sure `target` holds each image: an image from another document is read
+/// back from the file its copy left in `dir` (also from an earlier session) or,
+/// failing that, from another open tab that holds it. Only one store is locked
+/// at a time. Returns the ids found nowhere.
+fn adopt_images(
+    dir: &Path,
+    target: &Mutex<Store>,
+    others: &[Arc<Mutex<Store>>],
+    ids: impl IntoIterator<Item = String>,
+) -> Result<Vec<String>> {
+    let mut missing = Vec::new();
+    for id in ids {
+        if lock(target)?.has_image(&id)? {
+            continue;
+        }
+        let bytes = clipboard::staged(dir, &id).or_else(|| {
+            others.iter().find_map(|store| {
+                let source = lock(store).ok()?;
+                if !source.has_image(&id).ok()? {
+                    return None;
+                }
+                source.image(&id).ok()
+            })
+        });
+        match bytes {
+            Some(bytes) => lock(target)?.adopt_image(&id, &bytes)?,
+            None if !missing.contains(&id) => missing.push(id),
+            None => {}
+        }
+    }
+    Ok(missing)
+}
+/// Writes the originals of `pictures` from `store` into `dir`, as a copy does.
+fn stage_pictures(dir: &Path, store: &Mutex<Store>, pictures: &[Picture]) -> Result<()> {
+    for pic in pictures {
+        let bytes = lock(store)?.image(&pic.id)?;
+        clipboard::stage(dir, pic, &bytes)?;
+    }
+    Ok(())
 }
 /// One tab as the frontend gets it.
 #[derive(Serialize)]
@@ -703,17 +742,34 @@ async fn copied_images(tab: String, app: AppHandle) -> Result<Option<Copied>> {
         let Some((_, copied)) = last.filter(|(seq, _)| *seq == clipboard::sequence()) else {
             return Ok(None);
         };
-        state.adopt(&app, &tab, copied.pictures.iter().map(|pic| pic.id.clone()))?;
+        let missing = state.adopt(&app, &tab, copied.pictures.iter().map(|pic| pic.id.clone()))?;
+        if !missing.is_empty() {
+            return Err(COPIED_IMAGES_GONE.into());
+        }
         Ok(Some(copied))
     })
     .await
 }
 /// Makes copied images available to the document in `tab` before they are
 /// pasted: images from another document (or an earlier session) are read back
-/// from the files the copy left and stored in its working copy, under the same ids.
+/// from the files the copy left, or from another open tab, and stored in its
+/// working copy under the same ids. Returns the ids of images found nowhere.
 #[tauri::command]
-async fn paste_images(tab: String, ids: Vec<String>, app: AppHandle) -> Result<()> {
+async fn paste_images(tab: String, ids: Vec<String>, app: AppHandle) -> Result<Vec<String>> {
     blocking(move || app.state::<ClipboardState>().adopt(&app, &tab, ids)).await
+}
+/// Images copied with text lines: the browser writes that clipboard, and the
+/// originals are only written to the copy folder (as `copy_images` does), for a
+/// paste into another document. The clipboard and the last image copy are left
+/// alone; an image copy still being prepared is dropped, as this copy is newer.
+#[tauri::command]
+async fn stage_images(tab: String, pictures: Vec<Picture>, app: AppHandle) -> Result<()> {
+    app.state::<ClipboardState>().latest.fetch_add(1, Ordering::SeqCst);
+    blocking(move || {
+        let store = lock_tab(&app, &tab)?;
+        stage_pictures(&app.state::<ClipboardState>().dir, &store, &pictures)
+    })
+    .await
 }
 
 /// A window gained focus: remembered as the target for files opened from outside.
@@ -1037,6 +1093,7 @@ pub fn run() {
             copy_images,
             copied_images,
             paste_images,
+            stage_images,
             pdf::export_pdf,
             caption::set_caption_buttons,
             settings::read_settings,
@@ -1048,8 +1105,64 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{adopt_main_window_state, hush_argument};
+    use super::{adopt_images, adopt_main_window_state, hush_argument, stage_pictures};
+    use crate::{clipboard, images, store::Store};
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    /// A small PNG that `images::prepare` accepts.
+    fn png(shade: u8) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(3, 2, image::Rgb([shade, 0, 0]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn copied_images_are_staged_and_adopted_from_files_or_open_tabs() {
+        let dir = std::env::temp_dir().join(format!("linehush-test-adopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let staging = dir.join("clipboard");
+        let tab = |name: &str| Arc::new(Mutex::new(Store::create(dir.join(format!("{name}.hush"))).unwrap()));
+        let (source, target, other) = (tab("source"), tab("target"), tab("other"));
+        let import = |store: &Mutex<Store>, bytes: &[u8]| {
+            let (pic, thumbnail) = images::prepare(bytes).unwrap();
+            store.lock().unwrap().add_image(&pic.id, bytes, thumbnail).unwrap();
+            pic
+        };
+        let (a, b) = (png(1), png(2));
+        let staged = import(&source, &a);
+        let open = import(&source, &b);
+        // Staging writes the originals byte for byte, nothing else.
+        stage_pictures(&staging, &source, std::slice::from_ref(&staged)).unwrap();
+        assert_eq!(clipboard::staged(&staging, &staged.id), Some(a.clone()));
+        assert_eq!(clipboard::staged(&staging, &open.id), None);
+        assert!(stage_pictures(&staging, &target, std::slice::from_ref(&staged)).is_err());
+        // A staged image comes from its file, another one from the open tab
+        // holding it, an unknown one is reported (once).
+        let unknown = "0".repeat(64);
+        let missing = adopt_images(
+            &staging,
+            &target,
+            &[other.clone(), source.clone()],
+            [staged.id.clone(), open.id.clone(), unknown.clone(), unknown.clone()],
+        )
+        .unwrap();
+        assert_eq!(missing, vec![unknown.clone()]);
+        let held = target.lock().unwrap();
+        assert_eq!(held.image(&staged.id).unwrap(), a);
+        assert_eq!(held.image(&open.id).unwrap(), b);
+        drop(held);
+        // Without the source tab only the staged image is still found.
+        let late = tab("late");
+        let missing = adopt_images(&staging, &late, &[other], [staged.id.clone(), open.id.clone()]).unwrap();
+        assert_eq!(missing, vec![open.id.clone()]);
+        assert!(late.lock().unwrap().has_image(&staged.id).unwrap());
+        drop((source, target, late));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn main_window_state_is_adopted_by_win_1() {

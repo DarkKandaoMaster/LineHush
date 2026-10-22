@@ -1,5 +1,10 @@
 import { Node } from "@tiptap/core";
-import { Slice, type Node as PmNode, type ResolvedPos } from "@tiptap/pm/model";
+import {
+  Slice,
+  type Node as PmNode,
+  type ResolvedPos,
+  type Schema,
+} from "@tiptap/pm/model";
 import {
   NodeSelection,
   Plugin,
@@ -10,10 +15,16 @@ import {
   type EditorState,
   type Transaction,
 } from "@tiptap/pm/state";
+import { closeHistory } from "@tiptap/pm/history";
 import type { Mappable } from "@tiptap/pm/transform";
 import { dropPoint } from "@tiptap/pm/transform";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
-import type { Picture } from "../core/document";
+import {
+  fromEditor,
+  toEditor,
+  type Block,
+  type Picture,
+} from "../core/document.ts";
 
 /**
  * The side of a position between blocks a caret is on: -1 drawn after the
@@ -765,6 +776,211 @@ export function clipboardImages(
   };
 }
 
+/**
+ * The clipboard format of a copy holding images and text lines (see
+ * `mixedSlice`): `{v: 1, blocks}`, the document model's blocks (each row of
+ * images one `images` block). Only LineHush reads it, so other programs paste
+ * the plain text written with it.
+ */
+export const BLOCKS_MIME = "application/x-linehush-blocks";
+
+/** Whether a slice holds an image (images are top-level nodes). */
+function hasImage(slice: Slice) {
+  let images = false;
+  slice.content.forEach((node) => {
+    if (isImage(node)) images = true;
+  });
+  return images;
+}
+
+/**
+ * The selection's content when it holds images and something else (text
+ * lines, empty ones included); null for no images or only images, which are
+ * copied as before (see `selectedImages`).
+ */
+export function mixedSlice(state: EditorState): Slice | null {
+  const sel = state.selection;
+  if (sel.empty) return null;
+  const slice = sel.content();
+  return !isImageSlice(slice) && hasImage(slice) ? slice : null;
+}
+
+/** A slice of the document as blocks of the document model (partial lines cut). */
+export const sliceBlocks = (slice: Slice): Block[] =>
+  fromEditor({ type: "doc", content: slice.content.toJSON() ?? [] }).blocks;
+
+/** The pictures of `blocks`, each id once. */
+export function blockPictures(blocks: Block[]): Picture[] {
+  const seen = new Map<string, Picture>();
+  for (const block of blocks)
+    if (block.type === "images")
+      for (const pic of block.images)
+        if (!seen.has(pic.id)) seen.set(pic.id, pic);
+  return [...seen.values()];
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * The blocks of a LineHush copy of images and text (`BLOCKS_MIME`), or null
+ * unless the data is exactly that: version 1, lines of text without line
+ * breaks, rows of at least one picture with a SHA-256 id.
+ */
+export function clipboardBlocks(data: string): Block[] | null {
+  if (!data) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || parsed.v !== 1 || !Array.isArray(parsed.blocks))
+    return null;
+  const blocks: Block[] = [];
+  for (const block of parsed.blocks) {
+    if (!isRecord(block)) return null;
+    if (block.type === "line") {
+      if (typeof block.text !== "string" || /[\r\n]/.test(block.text))
+        return null;
+      blocks.push({ type: "line", text: block.text });
+    } else if (block.type === "images") {
+      if (!Array.isArray(block.images) || !block.images.length) return null;
+      const images: Picture[] = [];
+      for (const pic of block.images) {
+        if (
+          !isRecord(pic) ||
+          typeof pic.id !== "string" ||
+          !/^[0-9a-f]{64}$/.test(pic.id) ||
+          typeof pic.name !== "string" ||
+          typeof pic.width !== "number" ||
+          typeof pic.height !== "number" ||
+          !Number.isFinite(pic.width) ||
+          !Number.isFinite(pic.height)
+        )
+          return null;
+        images.push({
+          id: pic.id,
+          name: pic.name,
+          width: pic.width,
+          height: pic.height,
+        });
+      }
+      blocks.push({ type: "images", images });
+    } else return null;
+  }
+  return blocks.length ? blocks : null;
+}
+
+/** `blocks` without the pictures in `missing`; a row left empty goes too. */
+export function withoutPictures(
+  blocks: Block[],
+  missing: Iterable<string>,
+): Block[] {
+  const gone = new Set(missing);
+  if (!gone.size) return blocks;
+  return blocks.flatMap((block): Block[] => {
+    if (block.type === "line") return [block];
+    const images = block.images.filter((pic) => !gone.has(pic.id));
+    return images.length ? [{ type: "images", images }] : [];
+  });
+}
+
+/** Editor nodes for `blocks`: a paragraph per line, an image node per picture. */
+export const blockNodes = (schema: Schema, blocks: Block[]): PmNode[] =>
+  (toEditor({ blocks }).content ?? []).map((json) => schema.nodeFromJSON(json));
+
+/**
+ * Inserts pasted (or dropped) lines and images, `nodes` being top-level nodes
+ * as `blockNodes` makes them, at `tr`'s selection, which goes first (through
+ * `deleteBlocks`, as Backspace would take it). Returns where the new content
+ * is and leaves the caret at its end: in its last line (before the rest of the
+ * line it was pasted into), or between blocks after its last image.
+ *
+ * On a text line, as a paste of plain text: the first and last pasted lines
+ * join the text before / after the caret; pasted images at either end make a
+ * row of their own (an empty line the caret was on is replaced, a line is not
+ * split at its start or end; an image right after them starts a new row).
+ * At the caret between blocks: the content goes right there, its first / last
+ * images joining the row there as inserted images do (`joinAt`); lines stay
+ * lines of their own. Rows inside the content keep their line breaks.
+ */
+export function insertBlocks(
+  tr: Transaction,
+  nodes: PmNode[],
+): { from: number; to: number } {
+  if (!tr.selection.empty) {
+    const { from, to } = tr.selection;
+    const side: Side = rowBreak(tr.doc.resolve(from)) ? 1 : -1;
+    deleteBlocks(tr, from, to);
+    tr.setSelection(caretAt(tr.doc, from, 1, side));
+  }
+  const sel = tr.selection;
+  if (!nodes.length) return { from: sel.from, to: sel.from };
+  const sizeOf = (list: PmNode[]) =>
+    list.reduce((sum, node) => sum + node.nodeSize, 0);
+  const first = nodes[0];
+  const last = nodes[nodes.length - 1];
+  const caretAfter = (to: number) =>
+    tr.setSelection(
+      isImage(last)
+        ? new BlockRange(tr.doc.resolve(to), undefined, -1)
+        : TextSelection.create(tr.doc, to),
+    );
+  if (sel instanceof BlockRange) {
+    const pos = sel.head;
+    const $pos = tr.doc.resolve(pos);
+    const join = joinAt($pos, sel.side);
+    const before = isImage($pos.nodeBefore);
+    tr.insert(pos, nodes);
+    const end = pos + sizeOf(nodes);
+    if (isImage(first))
+      tr.setNodeAttribute(pos, "newline", !(join < 0 && before));
+    if (isImage(last) && isImage(tr.doc.resolve(end).nodeAfter) && join >= 0)
+      tr.setNodeAttribute(end, "newline", join === 0);
+    const to = isImage(last) ? end : end - 1;
+    caretAfter(to);
+    return { from: pos, to };
+  }
+  // A text caret: its line is rebuilt around the content.
+  const { schema } = tr.doc.type;
+  const line = (text: string) =>
+    schema.nodes.paragraph.create(null, text ? schema.text(text) : null);
+  const $caret = sel.$from;
+  const start = $caret.before();
+  const text = $caret.parent.textContent;
+  const head = text.slice(0, $caret.parentOffset);
+  const tail = text.slice($caret.parentOffset);
+  const out = nodes.slice();
+  let from = start;
+  if (!isImage(first)) {
+    out[0] = line(head + first.textContent);
+    from = start + 1 + head.length;
+  } else if (head) {
+    out.unshift(line(head));
+    from = start + out[0].nodeSize;
+  }
+  const lastIndex = out.length - 1;
+  const lastStart = start + sizeOf(out.slice(0, lastIndex));
+  let to: number;
+  if (!isImage(last)) {
+    const lastText = out[lastIndex].textContent;
+    out[lastIndex] = line(lastText + tail);
+    to = lastStart + 1 + lastText.length;
+  } else {
+    to = lastStart + last.nodeSize;
+    if (tail) out.push(line(tail));
+  }
+  tr.replaceWith(start, $caret.after(), out);
+  // Images at either end make a row of their own.
+  if (isImage(out[0])) tr.setNodeAttribute(start, "newline", true);
+  const end = start + sizeOf(out);
+  if (isImage(out[out.length - 1]) && isImage(tr.doc.resolve(end).nodeAfter))
+    tr.setNodeAttribute(end, "newline", true);
+  caretAfter(to);
+  return { from, to };
+}
+
 /** Removes the selected images, as Ctrl+X does. */
 function removeSelected(view: EditorView) {
   const { from, to } = view.state.selection;
@@ -792,15 +1008,19 @@ function copyKey(view: EditorView, copy: ImageOptions["copy"], cut: boolean) {
  * Copy / cut events (the context menu, or no desktop): the browser writes the
  * clipboard after this event, so it gets the images' HTML, enough to paste them
  * back in LineHush; Rust then replaces it with the full set of formats.
+ *
+ * Images with text lines (Ctrl+C / Ctrl+X come here too): see `copyMixed`.
  */
 function copyEvent(
   view: EditorView,
   event: ClipboardEvent,
   copy: ImageOptions["copy"],
+  stage: NonNullable<ImageOptions["stage"]>,
   cut: boolean,
 ) {
   const images = selectedImages(view.state);
-  if (!images || !event.clipboardData) return false;
+  if (!images) return copyMixed(view, event, stage, cut);
+  if (!event.clipboardData) return false;
   event.preventDefault();
   event.clipboardData.clearData();
   event.clipboardData.setData(
@@ -808,6 +1028,35 @@ function copyEvent(
     imagesHtml(images.pictures, images.rows),
   );
   copy(images.pictures, images.rows, true);
+  if (cut && view.editable) removeSelected(view);
+  return true;
+}
+
+/**
+ * Copies images with text lines: the browser writes the plain text (the
+ * editor's text serializer, images as placeholders) and the blocks
+ * (`BLOCKS_MIME`), no HTML, so other programs paste only the text. Rust keeps
+ * copies of the originals (`stage`) for a paste into another document. A cut
+ * then deletes the selection as Backspace does (`deleteBlocks`).
+ */
+function copyMixed(
+  view: EditorView,
+  event: ClipboardEvent,
+  stage: NonNullable<ImageOptions["stage"]>,
+  cut: boolean,
+) {
+  const slice = mixedSlice(view.state);
+  const data = event.clipboardData;
+  if (!slice || !data) return false;
+  event.preventDefault();
+  const blocks = sliceBlocks(slice);
+  const text =
+    view.someProp("clipboardTextSerializer", (f) => f(slice, view)) ??
+    slice.content.textBetween(0, slice.content.size, "\n");
+  data.clearData();
+  data.setData("text/plain", text);
+  data.setData(BLOCKS_MIME, JSON.stringify({ v: 1, blocks }));
+  stage(blockPictures(blocks));
   if (cut && view.editable) removeSelected(view);
   return true;
 }
@@ -857,7 +1106,8 @@ const rowSpacer = (event: MouseEvent) =>
  * Drop position for dragged images. Over an image the left or right half
  * decides (ProseMirror would use the upper or lower half); over the spacer of
  * a line break between rows, the upper half drops at the end of the upper row,
- * the lower half at the start of the lower row.
+ * the lower half at the start of the lower row. Images with text lines may
+ * also drop inside a text line, where the pointer is.
  */
 function dropAt(view: EditorView, event: DragEvent, slice: Slice): Spot | null {
   const hit = view.posAtCoords({ left: event.clientX, top: event.clientY });
@@ -871,7 +1121,7 @@ function dropAt(view: EditorView, event: DragEvent, slice: Slice): Spot | null {
       event.clientX,
       imageRect(view, hit.inside),
     );
-  const pos = dropPoint(doc, hit.pos, slice);
+  const pos = isImageSlice(slice) ? dropPoint(doc, hit.pos, slice) : hit.pos;
   if (pos === null) return null;
   const spacer = rowSpacer(event)?.getBoundingClientRect();
   return {
@@ -989,6 +1239,17 @@ function clickBesideImages(view: EditorView, event: MouseEvent) {
   return true;
 }
 
+/** Whether a pointer event is over the selection as drawn (where the browser starts dragging it). */
+function onSelection(view: EditorView, event: MouseEvent) {
+  const domSel = view.dom.ownerDocument.getSelection();
+  if (!domSel?.rangeCount || domSel.isCollapsed) return false;
+  const { clientX: x, clientY: y } = event;
+  return Array.from(domSel.getRangeAt(0).getClientRects()).some(
+    (rect) =>
+      x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom,
+  );
+}
+
 /** The pointer during a drag selection in the editor. */
 const pointers = new WeakMap<EditorView, { x: number; y: number }>();
 
@@ -1049,7 +1310,10 @@ function rowSpacerDOM() {
  * selection; places the caret on clicks and typing between blocks; moves
  * dragged images; copies selected images from copy / cut events.
  */
-export function imagePlugin(copy: ImageOptions["copy"]) {
+export function imagePlugin(
+  copy: ImageOptions["copy"],
+  stage: NonNullable<ImageOptions["stage"]> = () => {},
+) {
   const setDrop = (view: EditorView, spot: Spot | null) => {
     const drop = marks.getState(view.state);
     if (drop?.pos !== spot?.pos || drop?.side !== spot?.side)
@@ -1072,11 +1336,15 @@ export function imagePlugin(copy: ImageOptions["copy"]) {
       const down = (event: MouseEvent) => {
         const target = event.target as Element;
         if (
-          event.button === 0 &&
-          view.dom.contains(target) &&
-          !target.closest(".image-item")
+          event.button !== 0 ||
+          !view.dom.contains(target) ||
+          target.closest(".image-item")
         )
-          pointers.set(view, { x: event.clientX, y: event.clientY });
+          return;
+        // A press inside the selection drags it (images with text lines move
+        // as a whole, see dropMixed) instead of starting a new one.
+        if (!view.state.selection.empty && onSelection(view, event)) return;
+        pointers.set(view, { x: event.clientX, y: event.clientY });
       };
       // Bubbling to the window, this runs after ProseMirror's own mousemove
       // listener (on the document) has marked the drag as the browser's, so
@@ -1266,8 +1534,8 @@ export function imagePlugin(copy: ImageOptions["copy"]) {
       handleTextInput: (view, _from, _to, text) =>
         typeBetween(text)(view.state, view.dispatch),
       handleDOMEvents: {
-        copy: (view, event) => copyEvent(view, event, copy, false),
-        cut: (view, event) => copyEvent(view, event, copy, true),
+        copy: (view, event) => copyEvent(view, event, copy, stage, false),
+        cut: (view, event) => copyEvent(view, event, copy, stage, true),
         compositionstart(view) {
           lineForComposition(view);
           return false;
@@ -1292,10 +1560,11 @@ export function imagePlugin(copy: ImageOptions["copy"]) {
         },
         dragover(view, event) {
           const slice = view.dragging?.slice;
-          setDrop(
-            view,
-            slice && isImageSlice(slice) ? dropAt(view, event, slice) : null,
-          );
+          let spot = slice && hasImage(slice) ? dropAt(view, event, slice) : null;
+          // Inside a text line the browser draws where the drop goes.
+          if (spot && view.state.doc.resolve(spot.pos).parent.inlineContent)
+            spot = null;
+          setDrop(view, spot);
           return false;
         },
         dragleave(view, event) {
@@ -1307,9 +1576,9 @@ export function imagePlugin(copy: ImageOptions["copy"]) {
           setDrop(view, null);
           return false;
         },
-        // Runs before ProseMirror clears `view.dragging`. Only images move inside
-        // the document; dragged text stays put, and external drops (files) go on
-        // to the editor's handleDrop.
+        // Runs before ProseMirror clears `view.dragging`. Only images, alone or
+        // with text lines, move inside the document; dragged text stays put,
+        // and external drops (files) go on to the editor's handleDrop.
         drop(view, event) {
           const dragging = view.dragging as
             | (NonNullable<EditorView["dragging"]> & { node?: NodeSelection })
@@ -1317,11 +1586,13 @@ export function imagePlugin(copy: ImageOptions["copy"]) {
           if (!dragging) return false;
           setDrop(view, null);
           event.preventDefault();
+          // Done with, as ProseMirror's own drop leaves it (dragend may not follow).
+          view.dragging = null;
           const { slice } = dragging;
-          const target = isImageSlice(slice)
-            ? dropAt(view, event, slice)
-            : null;
+          const target = hasImage(slice) ? dropAt(view, event, slice) : null;
           if (target === null) return true;
+          if (!isImageSlice(slice))
+            return dropMixed(view, event.ctrlKey, slice, target);
           const tr = view.state.tr;
           // Ctrl copies, as in ProseMirror's own drop on Windows. Moved images
           // leave the rows around them as deleted ones do.
@@ -1347,6 +1618,39 @@ export function imagePlugin(copy: ImageOptions["copy"]) {
   });
 }
 
+/**
+ * Drops images with text lines (the selection being dragged) at `target`: a
+ * cut and a paste there (`insertBlocks`) in one undo step; with Ctrl, a copy.
+ * A drop inside the selection itself changes nothing. The dropped content ends
+ * up selected.
+ */
+function dropMixed(
+  view: EditorView,
+  copying: boolean,
+  slice: Slice,
+  target: Spot,
+) {
+  const { from, to } = view.state.selection;
+  if (target.pos >= from && target.pos <= to) return true;
+  // Its own undo step, not merged with typing just before.
+  const tr = closeHistory(view.state.tr);
+  if (!copying) deleteBlocks(tr, from, to);
+  const pos = tr.mapping.map(target.pos);
+  tr.setSelection(
+    tr.doc.resolve(pos).parent.inlineContent
+      ? TextSelection.create(tr.doc, pos)
+      : caretAt(tr.doc, pos, 1, target.side),
+  );
+  const range = insertBlocks(
+    tr,
+    blockNodes(view.state.schema, sliceBlocks(slice)),
+  );
+  tr.setSelection(rangeSelection(tr.doc, range.from, range.to));
+  view.focus();
+  view.dispatch(tr.setMeta("uiEvent", "drop"));
+  return true;
+}
+
 export interface ImageOptions {
   /** Opens the original (double click). */
   preview: (pic: Picture) => void;
@@ -1362,6 +1666,11 @@ export interface ImageOptions {
     rows: boolean[],
     afterBrowser: boolean,
   ) => boolean;
+  /**
+   * Keeps copies of the originals of images copied with text lines, for a
+   * paste into another document; the clipboard itself is the browser's.
+   */
+  stage?: (pictures: Picture[]) => void;
 }
 
 /**
@@ -1370,7 +1679,7 @@ export interface ImageOptions {
  * image before it (a line break between them, drawn as a spacer by the plugin).
  * The document model makes each row one `images` block.
  */
-export function image({ preview, source, copy }: ImageOptions) {
+export function image({ preview, source, copy, stage }: ImageOptions) {
   return Node.create({
     name: "image",
     group: "block",
@@ -1408,7 +1717,7 @@ export function image({ preview, source, copy }: ImageOptions) {
         "Mod-x": () => copyKey(this.editor.view, copy, true),
       };
     },
-    addProseMirrorPlugins: () => [imagePlugin(copy)],
+    addProseMirrorPlugins: () => [imagePlugin(copy, stage)],
     addNodeView() {
       return ({ node }) => {
         const pic = pictureOf(node);

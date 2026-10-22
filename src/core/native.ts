@@ -138,9 +138,18 @@ export const copiedImages = (tab: string) =>
   invoke<{ pictures: Picture[]; rows: boolean[] } | null>("copied_images", {
     tab,
   });
-/** Makes copied images (from any document) available to the tab's document before they are pasted. */
+/**
+ * Makes copied images (from any document) available to the tab's document
+ * before they are pasted; returns the ids of those no longer to be found.
+ */
 export const pasteImages = (tab: string, ids: string[]) =>
-  invoke<void>("paste_images", { tab, ids });
+  invoke<string[]>("paste_images", { tab, ids });
+/**
+ * Keeps copies of the originals of images copied with text lines (the browser
+ * writes that clipboard), so another document can paste them.
+ */
+export const stageImages = (tab: string, pictures: Picture[]) =>
+  invoke<void>("stage_images", { tab, pictures });
 /** 客户区物理像素中的矩形。 */
 export interface PhysicalRect {
   x: number;

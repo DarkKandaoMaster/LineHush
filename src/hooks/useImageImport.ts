@@ -1,11 +1,13 @@
 import { useCallback, useMemo, type RefObject } from "react";
-import type { Picture } from "../core/document";
+import type { Block, Picture } from "../core/document";
 import {
   copiedImages,
   copyImages,
   importImage,
   pasteImages,
+  stageImages,
 } from "../core/native";
+import { blockPictures, withoutPictures } from "../editor/image-view";
 import type { Session } from "../core/session";
 import type { DiaryEditorHandle } from "../editor/DiaryEditor";
 
@@ -18,7 +20,10 @@ const STAGED = /^([0-9a-f]{12})-(.+)$/;
  *   still LineHush's last copy are not imported but used as they are;
  * - `pasteCopied` pastes images copied in LineHush under the same ids and in
  *   the same rows, after Rust has made sure this document holds their originals;
- * - `copy` puts selected images on the system clipboard.
+ * - `pasteBlocks` pastes images with text lines copied in LineHush, also from
+ *   another document, once Rust has made those images available here;
+ * - `copy` puts selected images on the system clipboard, `stage` keeps copies
+ *   of images copied with text lines.
  * Imported and pasted images go where the selection was when the work started.
  */
 export function useImageImport(
@@ -99,16 +104,60 @@ export function useImageImport(
       insertAfter(
         pictures.length,
         async (images, rows) => {
-          await pasteImages(
+          const missing = await pasteImages(
             session.tab,
             pictures.map((pic) => pic.id),
           );
+          if (missing.length) throw "剪贴板中的图片已不可用，请重新复制";
           images.push(...pictures);
           rows.push(...copiedRows);
         },
         (e) => `无法粘贴图片：${e}`,
       ),
     [insertAfter, session],
+  );
+  const pasteBlocks = useCallback(
+    async (blocks: Block[]) => {
+      if (session.getSnapshot().importing) return;
+      if (!session.desktop) {
+        session.setError("请在桌面版导入图片。");
+        return;
+      }
+      const insertion = editor.current?.reserveInsertion();
+      if (!insertion) return;
+      session.setImporting(true);
+      let missing: string[] | null = null;
+      try {
+        missing = await pasteImages(
+          session.tab,
+          blockPictures(blocks).map((pic) => pic.id),
+        );
+      } catch (e) {
+        session.setError(`无法粘贴图片：${e}`);
+      } finally {
+        session.setImporting(false);
+        try {
+          if (missing === null) insertion.cancel();
+          else {
+            // Images that are gone are left out; the text goes in all the same.
+            insertion.insertBlocks(withoutPictures(blocks, missing));
+            if (missing.length) session.setError("剪贴板中的部分图片已不可用");
+          }
+        } catch (e) {
+          session.setError(String(e));
+        }
+      }
+    },
+    [session, editor],
+  );
+  const stage = useCallback(
+    (pictures: Picture[]) => {
+      if (!session.desktop || !pictures.length) return;
+      stageImages(session.tab, pictures).catch((e) =>
+        session.setError(`复制图片失败：${e}`),
+      );
+    },
+    [session],
   );
   const copy = useCallback(
     (pictures: Picture[], rows: boolean[], afterBrowser: boolean) => {
@@ -121,7 +170,7 @@ export function useImageImport(
     [session],
   );
   return useMemo(
-    () => ({ importFiles, pasteCopied, copy }),
-    [importFiles, pasteCopied, copy],
+    () => ({ importFiles, pasteCopied, pasteBlocks, copy, stage }),
+    [importFiles, pasteCopied, pasteBlocks, copy, stage],
   );
 }
