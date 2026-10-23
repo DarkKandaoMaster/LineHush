@@ -2,7 +2,9 @@ import { useEffect, useState, type KeyboardEvent, type Ref } from "react";
 import {
   MAX_FONT_SIZE,
   MIN_FONT_SIZE,
+  type CaretWidth,
   type OpenFile,
+  type SelectionCorners,
   type Settings,
   type Startup,
 } from "../core/settings";
@@ -34,6 +36,17 @@ const FONTS = [
 ];
 /** In pt; 10 is the default (same as Notepad). */
 const SIZES = [9, 10, 10.5, 11, 12, 14];
+/** “细”跟随 Windows 文本光标粗细（默认 1 屏幕像素），“中”为其 2 倍、“粗”为其 3 倍。 */
+const CARET_WIDTH: { value: CaretWidth; label: string }[] = [
+  { value: "thin", label: "细" },
+  { value: "medium", label: "中" },
+  { value: "thick", label: "粗" },
+];
+/** 选区形状相同，“圆角”半径 3 CSS px（VS Code），“方角”半径 0。 */
+const SELECTION_CORNERS: { value: SelectionCorners; label: string }[] = [
+  { value: "square", label: "方角" },
+  { value: "rounded", label: "圆角" },
+];
 /** 文案照 Win11 记事本。 */
 const OPEN_FILE: { value: OpenFile; label: string }[] = [
   { value: "tab", label: "在新标签页中打开" },
@@ -147,6 +160,44 @@ export default function SettingsDialog(props: Props) {
               >
                 {preset}
               </button>
+            ))}
+          </div>
+          <span id="settings-caret-width">光标粗细</span>
+          <div
+            className="settings-choices"
+            role="radiogroup"
+            aria-labelledby="settings-caret-width"
+          >
+            {CARET_WIDTH.map((choice) => (
+              <label key={choice.value}>
+                <input
+                  type="radio"
+                  name="settings-caret-width"
+                  value={choice.value}
+                  checked={settings.caretWidth === choice.value}
+                  onChange={() => onChange({ caretWidth: choice.value })}
+                />
+                {choice.label}
+              </label>
+            ))}
+          </div>
+          <span id="settings-selection-corners">选区边角</span>
+          <div
+            className="settings-choices"
+            role="radiogroup"
+            aria-labelledby="settings-selection-corners"
+          >
+            {SELECTION_CORNERS.map((choice) => (
+              <label key={choice.value}>
+                <input
+                  type="radio"
+                  name="settings-selection-corners"
+                  value={choice.value}
+                  checked={settings.selectionCorners === choice.value}
+                  onChange={() => onChange({ selectionCorners: choice.value })}
+                />
+                {choice.label}
+              </label>
             ))}
           </div>
           <span id="settings-open-file">打开文件</span>

@@ -3,6 +3,8 @@
  * Node tests can load it.
  */
 
+import type { CaretWidth } from "../core/settings.ts";
+
 /** Windows' text caret settings (Rust `caret_metrics`). */
 export interface CaretMetrics {
   /** Width in screen pixels ("Text cursor thickness"), not scaled with the display. */
@@ -19,6 +21,25 @@ export const DEFAULT_CARET_METRICS: CaretMetrics = {
   blinkMs: 530,
   timeoutMs: 5000,
 };
+
+/** The “中” caret setting: this many times the Windows caret width. */
+export const MEDIUM_CARET_FACTOR = 2;
+/** The “粗” caret setting: this many times the Windows caret width. */
+export const THICK_CARET_FACTOR = 3;
+
+/**
+ * The caret's width in screen pixels for the “光标粗细” setting: the Windows
+ * setting (`metrics.width`) for "thin", MEDIUM_CARET_FACTOR times it for
+ * "medium", THICK_CARET_FACTOR times it for "thick" (at the default 1 screen
+ * pixel: 1 / 2 / 3), with no upper limit. Blinking always follows Windows.
+ */
+export const caretWidth = (metrics: CaretMetrics, choice: CaretWidth) =>
+  metrics.width *
+  (choice === "thick"
+    ? THICK_CARET_FACTOR
+    : choice === "medium"
+      ? MEDIUM_CARET_FACTOR
+      : 1);
 
 /** Where to draw the caret, in client coordinates: its left edge, top and bottom. */
 export interface CaretSpot {

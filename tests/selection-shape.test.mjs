@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   SELECTION_RADIUS,
+  cornerRadius,
   outline,
   runs,
   selectionPath,
@@ -76,6 +77,33 @@ test("半径被短边截断：边长不到两倍半径时取边长的一半", ()
   // A row 4px high: no radius over 2.
   const thin = commands(selectionPath([row(0, 100, 0, 4)])).filter(([c]) => c === "A");
   assert.ok(thin.every((a) => a[1] === 2));
+});
+
+test("方角（半径 0）：没有圆弧，路径就是外轮廓的直角多边形；cornerRadius 对应设置", () => {
+  assert.equal(cornerRadius("rounded"), SELECTION_RADIUS);
+  assert.equal(cornerRadius("square"), 0);
+  // One row: a plain rectangle.
+  assert.equal(
+    selectionPath([row(0, 100, 0, 20)], cornerRadius("square")),
+    "M100 0L100 20L0 20L0 0L100 0Z",
+  );
+  // Three staggered rows: one shape, every corner of the outline a right angle.
+  const rows = [row(60, 200, 0, 20), row(0, 200, 20, 40), row(0, 120, 40, 60)];
+  const list = commands(selectionPath(rows, 0));
+  assert.ok(list.every(([c]) => c !== "A"));
+  assert.equal(list.filter(([c]) => c === "Z").length, 1);
+  const points = list.filter(([c]) => c === "M" || c === "L").map(([, x, y]) => [x, y]);
+  // Starts at the outline's first corner, visits each in order, and closes on it.
+  assert.deepEqual(points.slice(0, -1), outline(rows));
+  assert.deepEqual(points[points.length - 1], points[0]);
+  // Each edge axis-aligned (a right-angled polygon).
+  for (let i = 1; i < points.length; i++)
+    assert.ok(points[i][0] === points[i - 1][0] || points[i][1] === points[i - 1][1]);
+  // Rows that do not overlap across still make separate shapes.
+  assert.equal(
+    commands(selectionPath([row(30, 37, 0, 20), row(0, 7, 20, 40)], 0)).filter(([c]) => c === "Z").length,
+    2,
+  );
 });
 
 test("不相接的行分成几个形状；宽度为 0 的行不画", () => {

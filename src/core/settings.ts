@@ -19,7 +19,24 @@ export interface Settings {
    * 关闭时的全部窗口与标签页。为后者时关闭最后一个窗口不询问保存，修改留到下次。
    */
   startup: Startup;
+  /**
+   * 光标粗细：“细”跟随 Windows 的文本光标粗细设置（默认 1 屏幕像素），“中”为其
+   * 2 倍，“粗”为其 3 倍（默认设置下 3 屏幕像素，即 VS Code 在 150% 缩放下的样子），不设上限。
+   * 都以屏幕像素计，不随缩放放大；
+   * 见 src/editor/caret-math.ts 的 `caretWidth`。
+   */
+  caretWidth: CaretWidth;
+  /**
+   * 选区边角：“圆角”像 VS Code（半径 3 CSS px，外角与宽度变化处的内角都圆），
+   * “方角”为同一个形状、半径 0。都由编辑器自己画（src/editor/caret.ts），
+   * 不切回浏览器的原生选区。
+   */
+  selectionCorners: SelectionCorners;
 }
+export type CaretWidth = "thin" | "medium" | "thick";
+const CARET_WIDTH_VALUES: readonly CaretWidth[] = ["thin", "medium", "thick"];
+export type SelectionCorners = "square" | "rounded";
+const SELECTION_CORNERS_VALUES: readonly SelectionCorners[] = ["square", "rounded"];
 export type OpenFile = "tab" | "window";
 const OPEN_FILE_VALUES: readonly OpenFile[] = ["tab", "window"];
 export type Startup = "newWindow" | "lastSession";
@@ -35,6 +52,8 @@ export const DEFAULT_SETTINGS: Settings = {
   fontSizePt: 10,
   openFile: "tab",
   startup: "newWindow",
+  caretWidth: "thin",
+  selectionCorners: "rounded",
 };
 /** In pt. */
 export const MIN_FONT_SIZE = 6;
@@ -49,7 +68,8 @@ const FALLBACK_FONTS = [
 
 /**
  * Any stored or typed value made valid: size rounded to 0.1 and clamped, an
- * empty font is the default, an unknown `openFile` or `startup` is the default. A file
+ * empty font is the default, an unknown `openFile`, `startup`, `caretWidth` or
+ * `selectionCorners` is the default. A file
  * without `fontSizePt` but with the older `fontSize` (px) has it converted (× 0.75).
  */
 export function normalizeSettings(value: unknown): Settings {
@@ -59,6 +79,8 @@ export function normalizeSettings(value: unknown): Settings {
     fontSize?: unknown;
     openFile?: unknown;
     startup?: unknown;
+    caretWidth?: unknown;
+    selectionCorners?: unknown;
   };
   const family =
     typeof input.fontFamily === "string" ? input.fontFamily.trim() : "";
@@ -75,6 +97,11 @@ export function normalizeSettings(value: unknown): Settings {
       DEFAULT_SETTINGS.openFile,
     startup: STARTUP_VALUES.find((value) => value === input.startup) ??
       DEFAULT_SETTINGS.startup,
+    caretWidth: CARET_WIDTH_VALUES.find((value) => value === input.caretWidth) ??
+      DEFAULT_SETTINGS.caretWidth,
+    selectionCorners:
+      SELECTION_CORNERS_VALUES.find((value) => value === input.selectionCorners) ??
+      DEFAULT_SETTINGS.selectionCorners,
   };
 }
 

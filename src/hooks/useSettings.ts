@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { SETTINGS_CHANGED, readSettings, writeSettings } from "../core/native";
-import { LAYOUT_CHANGED } from "../editor/caret";
+import { LAYOUT_CHANGED, setCaretWidth, setSelectionCorners } from "../editor/caret";
 import {
   DEFAULT_SETTINGS,
   applySettings,
@@ -94,6 +94,10 @@ export function useSettings({
 
   useLayoutEffect(() => {
     applySettings(document.documentElement.style, settings);
+    // 光标粗细 and 选区边角 are not CSS: the drawn caret and selection read them
+    // (redrawn only when one changed).
+    setCaretWidth(settings.caretWidth);
+    setSelectionCorners(settings.selectionCorners);
     // The font can change where lines wrap without resizing the editor; the
     // drawn caret and selection are placed again (src/editor/caret.ts).
     window.dispatchEvent(new Event(LAYOUT_CHANGED));

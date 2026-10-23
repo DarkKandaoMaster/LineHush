@@ -1338,6 +1338,211 @@ test.describe("150% 缩放", () => {
     expect(cols.filter((c) => c.startsWith("other")), cols.join(" ")).toEqual([]);
     expect(errors).toEqual([]);
   });
+
+  test("光标粗细设为“粗”：自绘光标恰好 3 个屏幕像素宽、左右无灰列，块间光标同宽；在设置里改回“细”即时变 1 列；预写“中”为 2 列", async ({
+    page,
+  }) => {
+    // The browser preview reads its settings from localStorage (useSettings).
+    await page.addInitScript(() => {
+      if (sessionStorage.getItem("seeded")) return;
+      sessionStorage.setItem("seeded", "1");
+      localStorage.setItem("linehush-settings", JSON.stringify({ caretWidth: "thick" }));
+    });
+    const errors = await load(page);
+    await setDoc(page, ["文字", "", { id: "a" }, { id: "b" }, "下面"]);
+    await editorOf(page).evaluate((el: any) => {
+      el.editor.commands.focus();
+      el.editor.commands.setTextSelection(5);
+    });
+    let caret = await caretOf(page);
+    expect(caret.display).toBe("block");
+    expect(caret.color).toBe("rgb(21, 21, 21)");
+    expect(caret.width).toBeCloseTo(3 / 1.5, 1);
+    const clip = (c: typeof caret) => ({
+      x: Math.floor(c.x) - 2,
+      y: Math.ceil(c.y) + 2,
+      width: 6,
+      height: Math.floor(c.height) - 4,
+    });
+    /** Exactly `n` caret columns side by side, the rest background. */
+    const expectColumns = (cols: string[], n: number) => {
+      const first = cols.indexOf("caret");
+      expect(cols.filter((c) => c === "caret").length, cols.join(" ")).toBe(n);
+      expect(cols.slice(first, first + n).every((c) => c === "caret"), cols.join(" ")).toBe(true);
+      expect(cols.filter((c) => c.startsWith("other")), cols.join(" ")).toEqual([]);
+    };
+    expectColumns(
+      columns(await shoot(page, clip(caret), "test-results/caret-150-thick-text-2026-10-23.png")),
+      3,
+    );
+
+    // Between the two images: as tall as the image, still three columns, in the gap's middle.
+    await clickHalf(tile(page, 0), "right");
+    caret = await caretOf(page);
+    const image = (await tile(page, 0).boundingBox())!;
+    expect(caret.display).toBe("block");
+    expect(Math.abs(caret.height - image.height)).toBeLessThan(1);
+    expect(caret.width).toBeCloseTo(3 / 1.5, 1);
+    expect(Math.abs(caret.x + caret.width / 2 - (image.x + image.width + 4))).toBeLessThan(1);
+    expectColumns(
+      columns(await shoot(page, clip(caret), "test-results/caret-150-thick-gap-2026-10-23.png")),
+      3,
+    );
+
+    // Back to “细” in the settings dialog: applies at once, and is written.
+    await page.locator(".settings-button").click();
+    const dialog = page.locator("dialog.settings-dialog");
+    await expect(dialog).toBeVisible();
+    const group = dialog.getByRole("radiogroup", { name: "光标粗细" });
+    await expect(group.getByRole("radio", { name: "粗" })).toBeChecked();
+    await group.getByRole("radio", { name: "细" }).check();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await editorOf(page).evaluate((el: any) => {
+      el.editor.commands.focus();
+      el.editor.commands.setTextSelection(5);
+    });
+    caret = await caretOf(page);
+    expect(caret.width).toBeCloseTo(1 / 1.5, 1);
+    expectColumns(columns(await shoot(page, clip(caret))), 1);
+    await expect
+      .poll(() =>
+        page.evaluate(() => JSON.parse(localStorage.getItem("linehush-settings") ?? "{}").caretWidth),
+      )
+      .toBe("thin");
+
+    // “中” written beforehand: exactly two columns, in the empty line and between images.
+    await page.evaluate(() =>
+      localStorage.setItem("linehush-settings", JSON.stringify({ caretWidth: "medium" })),
+    );
+    // The init script seeds "thick" only on the first load of this tab.
+    await page.reload();
+    await expect(editorOf(page)).toBeVisible();
+    await setDoc(page, ["文字", "", { id: "a" }, { id: "b" }, "下面"]);
+    await editorOf(page).evaluate((el: any) => {
+      el.editor.commands.focus();
+      el.editor.commands.setTextSelection(5);
+    });
+    caret = await caretOf(page);
+    expect(caret.display).toBe("block");
+    expect(caret.width).toBeCloseTo(2 / 1.5, 1);
+    expectColumns(
+      columns(await shoot(page, clip(caret), "test-results/caret-150-medium-text-2026-10-23.png")),
+      2,
+    );
+    await clickHalf(tile(page, 0), "right");
+    caret = await caretOf(page);
+    const imageB = (await tile(page, 0).boundingBox())!;
+    expect(Math.abs(caret.height - imageB.height)).toBeLessThan(1);
+    expect(caret.width).toBeCloseTo(2 / 1.5, 1);
+    expect(Math.abs(caret.x + caret.width / 2 - (imageB.x + imageB.width + 4))).toBeLessThan(1);
+    expectColumns(
+      columns(await shoot(page, clip(caret), "test-results/caret-150-medium-gap-2026-10-23.png")),
+      2,
+    );
+    await page.locator(".settings-button").click();
+    await expect(
+      page
+        .locator("dialog.settings-dialog")
+        .getByRole("radiogroup", { name: "光标粗细" })
+        .getByRole("radio", { name: "中" }),
+    ).toBeChecked();
+    await page.keyboard.press("Escape");
+    expect(errors).toEqual([]);
+  });
+
+  test("选区边角设为“方角”：同一形状直角，外角最外像素为 #b7d9f8、无反向圆角；在设置里改为“圆角”即时变回背景色", async ({
+    page,
+  }) => {
+    // The browser preview reads its settings from localStorage (useSettings).
+    await page.addInitScript(() =>
+      localStorage.setItem("linehush-settings", JSON.stringify({ selectionCorners: "square" })),
+    );
+    const errors = await load(page);
+    await setDoc(page, [
+      "短短的一行文字",
+      "这一行比上一行和下一行都要长很多很多很多",
+      "中等长度的一行文字",
+      "后面",
+    ]);
+    // From after the second character of line 1 to after the fifth of line 3;
+    // the editor blurred so no caret is drawn (the selection still is).
+    const select = () =>
+      editorOf(page).evaluate((el: any) => {
+        el.editor.commands.setTextSelection({ from: 3, to: 37 });
+        el.blur();
+      });
+    await select();
+    expect(await selection(page)).toEqual({ type: "text", anchor: 3, head: 37 });
+    // The shape alone: the text made transparent.
+    await page.addStyleTag({ content: ".tiptap { color: transparent !important; }" });
+    const first = await editorOf(page).evaluate((el: any) => {
+      const p = el.querySelector(":scope > p")!;
+      const range = document.createRange();
+      range.setStart(p.firstChild!, 2);
+      range.setEnd(p.firstChild!, p.firstChild!.textContent!.length);
+      return range.getBoundingClientRect().toJSON() as DOMRect;
+    });
+    // From the page's corner, so screen pixel (i, j) is CSS (i, j) / 1.5.
+    const region = { x: 0, y: 0, width: 520, height: 200 };
+    const corners = async (path?: string) => {
+      const shot = await shoot(page, region, path);
+      // Line 1's part starts at screen pixel (left, top) (rows are rounded to screen pixels).
+      const left = Math.round(first.left * 1.5);
+      const top = Math.round(first.top * 1.5);
+      const bottom = Math.round(first.bottom * 1.5);
+      return {
+        // The outermost pixel of the top-left corner of line 1's part.
+        outer: pixel(shot, left, top),
+        // Just left of line 1's part and just above line 2: the inner corner.
+        inner: pixel(shot, left - 1, bottom - 1),
+        // The middle of line 1's part.
+        middle: pixel(shot, Math.round(((first.left + first.right) / 2) * 1.5), Math.round(((first.top + first.bottom) / 2) * 1.5)),
+        // The pixel above the outer one: outside the shape.
+        above: pixel(shot, left, top - 1),
+      };
+    };
+    let px = await corners("test-results/square-selection-shape-2026-10-23.png");
+    expect(near(px.outer, "#b7d9f8", 1), `outer corner ${px.outer}`).toBe(true);
+    expect(near(px.above, "#f9f9f9", 1), `above the corner ${px.above}`).toBe(true);
+    // No reverse rounding: the inner corner stays background.
+    expect(near(px.inner, "#f9f9f9", 1), `inner corner ${px.inner}`).toBe(true);
+    expect(near(px.middle, "#b7d9f8", 1), `middle ${px.middle}`).toBe(true);
+    expect(
+      await editorOf(page).evaluate(
+        (el: any) => el.parentElement.querySelector(".selection-layer path").getAttribute("d"),
+      ),
+    ).not.toMatch(/A/);
+
+    // “圆角” in the settings dialog: applies at once, and is written.
+    await page.locator(".settings-button").click();
+    const dialog = page.locator("dialog.settings-dialog");
+    await expect(dialog).toBeVisible();
+    const group = dialog.getByRole("radiogroup", { name: "选区边角" });
+    await expect(group.getByRole("radio", { name: "方角" })).toBeChecked();
+    await group.getByRole("radio", { name: "圆角" }).check();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    // The dialog gives the focus back to the editor; blur again so no caret is drawn.
+    await select();
+    expect(
+      await editorOf(page).evaluate(
+        (el: any) => el.parentElement.querySelector(".selection-layer path").getAttribute("d"),
+      ),
+    ).toMatch(/A/);
+    px = await corners("test-results/square-to-rounded-selection-shape-2026-10-23.png");
+    expect(near(px.outer, "#f9f9f9", 1), `outer corner ${px.outer}`).toBe(true);
+    expect(px.inner[0], `inner corner ${px.inner}`).toBeLessThan(215);
+    expect(near(px.middle, "#b7d9f8", 1), `middle ${px.middle}`).toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => JSON.parse(localStorage.getItem("linehush-settings") ?? "{}").selectionCorners,
+        ),
+      )
+      .toBe("rounded");
+    expect(errors).toEqual([]);
+  });
 });
 
 test("圆角选区：三行参差的文字连成一块，外角圆、内角反向圆，中部为 #b7d9f8；截图", async ({

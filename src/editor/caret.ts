@@ -5,6 +5,7 @@ import {
   DEFAULT_CARET_METRICS,
   blinkIterations,
   caretBox,
+  caretWidth,
   toDevicePixel,
   type CaretMetrics,
   type CaretSpot,
@@ -13,7 +14,8 @@ import { affinityPlugin, headSide, type Affinity } from "./affinity.ts";
 import { BlockRange, isImage, rowBreak } from "./image-view.ts";
 import { selectedNewlines } from "./newline-selection.ts";
 import { lineHeight, scroller } from "./reveal.ts";
-import { selectionPath, type Row } from "./selection-shape.ts";
+import { cornerRadius, selectionPath, type Row } from "./selection-shape.ts";
+import type { CaretWidth, SelectionCorners } from "../core/settings.ts";
 
 /**
  * The editor draws its own caret and text selection; the browser's are made
@@ -23,9 +25,11 @@ import { selectionPath, type Row } from "./selection-shape.ts";
  *
  * The caret is as wide as the Windows caret setting in screen pixels (one by
  * default, as Notepad's; the browser's is one CSS pixel, two screen pixels at
- * 150%), on whole screen pixels, blinking at the system's rate and standing
+ * 150%), or three screen pixels with the “光标粗细” setting at "粗"
+ * (`setCaretWidth`), on whole screen pixels, blinking at the system's rate and standing
  * still after the system's timeout. The selection is VS Code's rounded shape
- * (selection-shape.ts).
+ * (selection-shape.ts), or the same shape with square corners with the
+ * “选区边角” setting at "方角" (`setSelectionCorners`).
  *
  * Both are elements next to the editable root, in its parent (Tiptap's
  * EditorContent element, positioned in App.css), not inside it: ProseMirror
@@ -38,7 +42,25 @@ import { selectionPath, type Row } from "./selection-shape.ts";
 export const LAYOUT_CHANGED = "linehush-layout-changed";
 
 let metrics: CaretMetrics = DEFAULT_CARET_METRICS;
+/** The “光标粗细” setting: "thin" follows Windows, "medium" / "thick" are 2× / 3× it (`caretWidth`). */
+let widthChoice: CaretWidth = "thin";
+/** The “选区边角” setting: the selection's corner radius (`cornerRadius`). */
+let cornersChoice: SelectionCorners = "rounded";
 const redraws = new Set<() => void>();
+
+/** Applies the “光标粗细” setting (useSettings) to every editor in the window. */
+export function setCaretWidth(next: CaretWidth) {
+  if (next === widthChoice) return;
+  widthChoice = next;
+  for (const redraw of redraws) redraw();
+}
+
+/** Applies the “选区边角” setting (useSettings) to every editor in the window. */
+export function setSelectionCorners(next: SelectionCorners) {
+  if (next === cornersChoice) return;
+  cornersChoice = next;
+  for (const redraw of redraws) redraw();
+}
 
 /** Applies the system caret settings (read by Rust) to every editor in the window. */
 export function setCaretMetrics(next: CaretMetrics) {
@@ -344,7 +366,8 @@ class Drawing {
     const dpr = win.devicePixelRatio || 1;
     const rect = host.getBoundingClientRect();
     const origin = { left: rect.left + host.clientLeft, top: rect.top + host.clientTop };
-    const width = Math.max(1, Math.round(metrics.width)) / dpr;
+    const screenWidth = caretWidth(metrics, widthChoice);
+    const width = Math.max(1, Math.round(screenWidth)) / dpr;
 
     // The selection, its corners on screen pixels; measured a viewport's
     // height above and below the viewport.
@@ -359,13 +382,19 @@ class Drawing {
       clipped && band
         ? { top: band.top - origin.top, bottom: band.bottom - origin.top }
         : null;
+    // Chromium paints an SVG's content from its origin rounded to a whole
+    // screen pixel (the parent at 73 CSS px is 109.5 screen pixels at 150%,
+    // painted from 110); measured from the unrounded origin every horizontal
+    // edge would be half a pixel off and blended. (The caret, a div, has its
+    // own edges rounded instead, so caretBox uses `origin`.)
+    const layer = { left: px(origin.left), top: px(origin.top) };
     const rows = found.map((row) => ({
-      top: px(row.top) - origin.top,
-      bottom: px(row.bottom) - origin.top,
-      left: px(row.left) - origin.left,
-      right: px(row.right) - origin.left,
+      top: px(row.top) - layer.top,
+      bottom: px(row.bottom) - layer.top,
+      left: px(row.left) - layer.left,
+      right: px(row.right) - layer.left,
     }));
-    const d = selectionPath(rows);
+    const d = selectionPath(rows, cornerRadius(cornersChoice));
     if (this.path.getAttribute("d") !== d) {
       if (d) this.path.setAttribute("d", d);
       else this.path.removeAttribute("d");
@@ -379,7 +408,7 @@ class Drawing {
       this.blink = null;
       return;
     }
-    const box = caretBox(spot, origin, metrics.width, dpr);
+    const box = caretBox(spot, origin, screenWidth, dpr);
     style.visibility = "";
     style.left = `${box.left}px`;
     style.top = `${box.top}px`;

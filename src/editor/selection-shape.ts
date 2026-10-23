@@ -6,8 +6,18 @@
  * load it.
  */
 
+import type { SelectionCorners } from "../core/settings.ts";
+
 /** VS Code's corner radius in CSS pixels. */
 export const SELECTION_RADIUS = 3;
+
+/**
+ * The corner radius for the “选区边角” setting: "rounded" is VS Code's,
+ * "square" the same shape with no rounding (a right-angled polygon).
+ */
+export function cornerRadius(choice: SelectionCorners) {
+  return choice === "square" ? 0 : SELECTION_RADIUS;
+}
 
 /** One visual line of the selection. */
 export interface Row {

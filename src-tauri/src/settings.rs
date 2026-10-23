@@ -54,6 +54,48 @@ impl Startup {
     }
 }
 
+/// 光标粗细：“细”跟随 Windows 的文本光标粗细设置，“中”为 2、“粗”为 3 屏幕像素。只有前端用
+/// （src/editor/caret-math.ts 的 `caretWidth`）。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CaretWidth {
+    #[default]
+    Thin,
+    Medium,
+    Thick,
+}
+impl CaretWidth {
+    /// 不认识的值取默认。
+    fn parse(value: &serde_json::Value) -> Option<Self> {
+        match value.as_str()? {
+            "thin" => Some(Self::Thin),
+            "medium" => Some(Self::Medium),
+            "thick" => Some(Self::Thick),
+            _ => None,
+        }
+    }
+}
+
+/// 选区边角：“圆角”像 VS Code（半径 3 CSS px），“方角”为同一个形状、半径 0。只有前端用
+/// （src/editor/selection-shape.ts 的 `cornerRadius`）。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SelectionCorners {
+    Square,
+    #[default]
+    Rounded,
+}
+impl SelectionCorners {
+    /// 不认识的值取默认。
+    fn parse(value: &serde_json::Value) -> Option<Self> {
+        match value.as_str()? {
+            "square" => Some(Self::Square),
+            "rounded" => Some(Self::Rounded),
+            _ => None,
+        }
+    }
+}
+
 /// Missing fields (an older file) take their defaults; keep these in step with
 /// `DEFAULT_SETTINGS` in src/core/settings.ts. "微软雅黑" is Microsoft YaHei
 /// (not the UI variant); WebView2 finds fonts by their Chinese names. The size
@@ -66,6 +108,8 @@ pub struct Settings {
     pub font_size_pt: f64,
     pub open_file: OpenFile,
     pub startup: Startup,
+    pub caret_width: CaretWidth,
+    pub selection_corners: SelectionCorners,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -74,13 +118,16 @@ impl Default for Settings {
             font_size_pt: 10.0,
             open_file: OpenFile::Tab,
             startup: Startup::NewWindow,
+            caret_width: CaretWidth::Thin,
+            selection_corners: SelectionCorners::Rounded,
         }
     }
 }
 
 /// What a file may hold: older files stored `fontSize` in px instead of
-/// `fontSizePt`; an unknown `openFile` or `startup` takes the default without losing the
-/// other fields. Only read; writes use `Settings`.
+/// `fontSizePt`; an unknown `openFile`, `startup`, `caretWidth` or
+/// `selectionCorners` takes the default without losing the other fields. Only
+/// read; writes use `Settings`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Stored {
@@ -90,6 +137,8 @@ struct Stored {
     font_size: Option<f64>,
     open_file: Option<serde_json::Value>,
     startup: Option<serde_json::Value>,
+    caret_width: Option<serde_json::Value>,
+    selection_corners: Option<serde_json::Value>,
 }
 impl From<Stored> for Settings {
     fn from(stored: Stored) -> Self {
@@ -110,6 +159,16 @@ impl From<Stored> for Settings {
                 .as_ref()
                 .and_then(Startup::parse)
                 .unwrap_or(default.startup),
+            caret_width: stored
+                .caret_width
+                .as_ref()
+                .and_then(CaretWidth::parse)
+                .unwrap_or(default.caret_width),
+            selection_corners: stored
+                .selection_corners
+                .as_ref()
+                .and_then(SelectionCorners::parse)
+                .unwrap_or(default.selection_corners),
         }
     }
 }
@@ -155,7 +214,9 @@ pub fn write_settings(
 
 #[cfg(test)]
 mod tests {
-    use super::{read, write, OpenFile, Settings, Startup, SETTINGS_FILE};
+    use super::{
+        read, write, CaretWidth, OpenFile, SelectionCorners, Settings, Startup, SETTINGS_FILE,
+    };
     use std::fs;
 
     #[test]
@@ -212,17 +273,74 @@ mod tests {
             );
         }
 
+        // 光标粗细：同上；旧文件没有这一项取“细”。
+        assert_eq!(read(&path).caret_width, CaretWidth::Thin);
+        fs::write(&path, r#"{"fontSizePt": 12, "caretWidth": "thick"}"#).unwrap();
+        assert_eq!(read(&path).caret_width, CaretWidth::Thick);
+        fs::write(&path, r#"{"fontSizePt": 12, "caretWidth": "medium"}"#).unwrap();
+        assert_eq!(read(&path).caret_width, CaretWidth::Medium);
+        write(
+            &path,
+            &Settings {
+                caret_width: CaretWidth::Medium,
+                ..Settings::default()
+            },
+        )
+        .unwrap();
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("\"caretWidth\": \"medium\""));
+        assert_eq!(read(&path).caret_width, CaretWidth::Medium);
+        for bad in [r#""Thick""#, r#""Medium""#, r#""粗""#, r#""中""#, "2", "3", "null", "{}"] {
+            fs::write(
+                &path,
+                format!(r#"{{"fontSizePt": 12, "startup": "lastSession", "caretWidth": {bad}}}"#),
+            )
+            .unwrap();
+            let settings = read(&path);
+            assert_eq!(
+                (settings.font_size_pt, settings.startup, settings.caret_width),
+                (12.0, Startup::LastSession, CaretWidth::Thin)
+            );
+        }
+
+        // 选区边角：同上；旧文件没有这一项取“圆角”。
+        fs::write(&path, r#"{"fontSizePt": 12}"#).unwrap();
+        assert_eq!(read(&path).selection_corners, SelectionCorners::Rounded);
+        fs::write(&path, r#"{"fontSizePt": 12, "selectionCorners": "square"}"#).unwrap();
+        assert_eq!(read(&path).selection_corners, SelectionCorners::Square);
+        fs::write(&path, r#"{"fontSizePt": 12, "selectionCorners": "rounded"}"#).unwrap();
+        assert_eq!(read(&path).selection_corners, SelectionCorners::Rounded);
+        for bad in [r#""Square""#, r#""方角""#, "0", "null", "[]"] {
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"fontSizePt": 12, "caretWidth": "thick", "selectionCorners": {bad}}}"#
+                ),
+            )
+            .unwrap();
+            let settings = read(&path);
+            assert_eq!(
+                (settings.font_size_pt, settings.caret_width, settings.selection_corners),
+                (12.0, CaretWidth::Thick, SelectionCorners::Rounded)
+            );
+        }
+
         let custom = Settings {
             font_family: "Consolas".into(),
             font_size_pt: 13.5,
             open_file: OpenFile::Window,
             startup: Startup::LastSession,
+            caret_width: CaretWidth::Thick,
+            selection_corners: SelectionCorners::Square,
         };
         write(&path, &custom).unwrap();
         let written = fs::read_to_string(&path).unwrap();
         assert!(written.contains("\"fontSizePt\": 13.5") && !written.contains("\"fontSize\""));
         assert!(written.contains("\"openFile\": \"window\""));
         assert!(written.contains("\"startup\": \"lastSession\""));
+        assert!(written.contains("\"caretWidth\": \"thick\""));
+        assert!(written.contains("\"selectionCorners\": \"square\""));
         assert_eq!(read(&path), custom);
         fs::remove_dir_all(root).unwrap();
     }
