@@ -7,6 +7,8 @@ interface Props {
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
+  /** 有对话框开着时不可操作（鼠标落到下面的标题栏拖动区）。 */
+  inert?: boolean;
 }
 
 /** Pressing a tab or its buttons must not take the focus away from the editor. */
@@ -23,6 +25,7 @@ export default function TabBar(props: Props) {
       role="tablist"
       aria-label="标签页"
       data-tauri-drag-region
+      inert={props.inert}
     >
       {props.tabs.map((tab) => (
         <TabItem

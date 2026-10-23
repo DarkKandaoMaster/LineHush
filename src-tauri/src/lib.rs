@@ -1097,6 +1097,7 @@ pub fn run() {
             stage_images,
             pdf::export_pdf,
             caption::set_caption_buttons,
+            caption::reveal_rect,
             caret::caret_metrics,
             settings::read_settings,
             settings::write_settings

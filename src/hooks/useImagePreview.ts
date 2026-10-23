@@ -5,7 +5,7 @@ import { exportImage, imageUrl } from "../core/native";
 import type { Session } from "../core/session";
 
 /**
- * Original-image preview in a modal <dialog>, one per window; `show` names the
+ * Original-image preview in a <dialog> (non-modal, see useDialogs), one per window; `show` names the
  * tab (session) the image belongs to. Stale reads are dropped and every Blob URL
  * is revoked.
  */
@@ -30,7 +30,7 @@ export function useImagePreview() {
       const current = request.current;
       const version = ++current.version;
       setShown({ session, picture: pic });
-      dialog.current?.showModal();
+      dialog.current?.show();
       try {
         const url = await imageUrl(session.tab, pic, true);
         if (version !== current.version) URL.revokeObjectURL(url);

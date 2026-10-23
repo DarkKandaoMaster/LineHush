@@ -8,6 +8,8 @@ interface Props {
   canSave: boolean;
   onSave: () => void;
   onClose: () => void;
+  /** 原图载入后对话框变大，再看一次要不要把窗口挪进屏幕。 */
+  onLoad: () => void;
 }
 
 export default function ImagePreviewDialog(props: Props) {
@@ -30,7 +32,7 @@ export default function ImagePreviewDialog(props: Props) {
         </div>
       </header>
       {props.source ? (
-        <img src={props.source} alt={props.name} />
+        <img src={props.source} alt={props.name} onLoad={props.onLoad} />
       ) : (
         <p>正在读取原图…</p>
       )}

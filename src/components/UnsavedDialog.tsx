@@ -3,11 +3,11 @@ import type { Ref } from "react";
 interface Props {
   dialogRef: Ref<HTMLDialogElement>;
   name: string;
-  /** Receives the dialog's return value: a button's value, or "" after Esc. */
+  /** Receives the dialog's return value: a button's value, or "cancel" after Esc / the title bar ×. */
   onClose: (value: string) => void;
 }
 
-/** Buttons are in Notepad order; "保存" comes first, so the modal focuses it. */
+/** Buttons are in Notepad order; "保存" comes first, so opening the dialog focuses it. */
 export default function UnsavedDialog(props: Props) {
   return (
     <dialog

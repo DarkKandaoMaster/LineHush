@@ -164,6 +164,12 @@ export interface PhysicalRect {
 /** 上报最大化按钮的位置（客户区物理像素），Rust 在那里放贴靠布局用的覆盖窗口；宽或高为 0 时撤掉。 */
 export const setCaptionButtons = (maximize: PhysicalRect) =>
   invoke<void>("set_caption_buttons", { maximize });
+/**
+ * 应用内对话框打开后报上它的位置（客户区物理像素）：窗口有一部分在屏幕外、对话框露不全时，
+ * Rust 把窗口挪进屏幕（照 Win11 记事本），之后不挪回。浏览器里不做任何事。
+ */
+export const revealRect = (rect: PhysicalRect) =>
+  isTauri() ? invoke<void>("reveal_rect", { rect }) : Promise.resolve();
 /** The stored settings, or the defaults when the file is missing or damaged; normalize before use. */
 export const readSettings = () => invoke<Settings>("read_settings");
 export const writeSettings = (settings: Settings) =>

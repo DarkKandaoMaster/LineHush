@@ -44,6 +44,10 @@ input:focus-visible {
   display: flex;
   flex-direction: column;
 }
+/* 工具栏与各标签页：只为对话框开着时整体 inert 而包一层，不参与 .app 的 flex 布局。 */
+.app-body {
+  display: contents;
+}
 .toolbar {
   /* 内容高 32px 与记事本菜单栏相同（border-box，含 1px 分隔线共 33px）；窄窗口换行时 min-height 仍能撑开。 */
   min-height: 33px;
@@ -68,6 +72,7 @@ input:focus-visible {
  * 底部两侧有向外的圆角。窗口失焦时标签文字与按钮图标变淡。
  */
 .titlebar {
+  position: relative;
   display: flex;
   flex-shrink: 0;
   height: 40px;
@@ -122,6 +127,21 @@ input:focus-visible {
 .titlebar.inactive .tab.active,
 .titlebar.inactive .tab-new {
   color: #8f8f8f;
+}
+/*
+ * 有对话框开着（标签栏 inert）：标题栏上叠一层与遮罩（.dialog-mask，从 40px 往下）同色的
+ * 半透明层，整扇窗口一块均匀的灰。pointer-events: none，拖动区与标题按钮照常响应。
+ */
+.titlebar.dimmed::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #0003;
+  pointer-events: none;
+}
+.titlebar.dimmed.dark::after {
+  background: #0009;
 }
 /* 标签栏：× 悬停时才显示，末尾“+”新建。标签多到放不下时等宽缩窄，再多则横向滚动。 */
 .tabbar {
@@ -494,6 +514,40 @@ input:focus-visible {
   padding: 8px;
   color: #793414;
 }
+/*
+ * 对话框用非模态的 show() 打开（标题栏照常可用，见 useDialogs）：不在顶层、没有
+ * ::backdrop，所以自己在整个窗口视口里居中（与模态相同，不用 transform，免得 150%
+ * 缩放下发糊），盖在遮罩之上；遮罩从标题栏下缘盖到窗口底。保存询问可能出现在设置 /
+ * 预览之上，排最上面。
+ */
+.unsaved-dialog,
+.settings-dialog,
+.image-preview {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: fit-content;
+  height: fit-content;
+  max-width: calc(100% - 6px - 2em);
+  max-height: calc(100% - 6px - 2em);
+  overflow: auto;
+  z-index: 20;
+}
+.unsaved-dialog {
+  z-index: 21;
+}
+.dialog-mask {
+  position: fixed;
+  top: 40px;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 10;
+  background: #0003;
+}
+.dialog-mask.dark {
+  background: #0009;
+}
 .image-preview {
   border: 1px solid #ccc;
   border-radius: 6px;
@@ -501,9 +555,6 @@ input:focus-visible {
   max-width: 94vw;
   max-height: 94vh;
   background: #f9f9f9;
-}
-.image-preview::backdrop {
-  background: #0009;
 }
 .image-preview header {
   display: flex;
@@ -581,9 +632,6 @@ input:focus-visible {
   color: inherit;
   box-shadow: 0 8px 24px #0002;
 }
-.unsaved-dialog::backdrop {
-  background: #0003;
-}
 .unsaved-dialog p {
   margin: 0 0 20px;
   font-size: 14px;
@@ -617,9 +665,6 @@ input:focus-visible {
   background: #f9f9f9;
   color: inherit;
   box-shadow: 0 8px 24px #0002;
-}
-.settings-dialog::backdrop {
-  background: #0003;
 }
 .settings-dialog h2 {
   margin: 0 0 14px;

@@ -9,6 +9,7 @@ import {
 } from "./core/settings";
 import { createTabs, displayName, type Tab } from "./core/tabs";
 import { useCaretMetrics } from "./hooks/useCaretMetrics";
+import { useDialogs } from "./hooks/useDialogs";
 import { useImagePreview } from "./hooks/useImagePreview";
 import { useSettings } from "./hooks/useSettings";
 import { useUnsavedPrompt } from "./hooks/useUnsavedPrompt";
@@ -41,6 +42,22 @@ export default function App() {
   useEffect(() => {
     if (settings.loaded) startup.current = settings.settings.startup;
   }, [settings.loaded, settings.settings.startup]);
+  // 对话框非模态（标题栏照常可拖、可按），开着时其余部分 inert、盖上遮罩，见 useDialogs。
+  const dialogs = useDialogs({
+    dialogs: {
+      unsaved: unsaved.dialog,
+      settings: settingsDialog,
+      preview: preview.dialog,
+    },
+    dismiss: {
+      unsaved: () => unsaved.dialog.current?.close("cancel"),
+      // 与“关闭”按钮相同：close 事件里 flush 设置并把焦点还给编辑器。
+      settings: () => settingsDialog.current?.close(),
+      preview: preview.close,
+    },
+    focus: tabs.focus,
+  });
+  const dimmed = dialogs.top !== null;
 
   useWindowGuards(tabs);
   useCaretMetrics(tabs.desktop);
@@ -59,30 +76,41 @@ export default function App() {
         onActivate={tabs.activate}
         onClose={(id) => void tabs.closeTab(id)}
         onNew={() => void tabs.newTab()}
+        dimmed={dimmed && (dialogs.top === "preview" ? "dark" : "light")}
+        onCloseWindow={dialogs.closeWindow}
       />
-      <Toolbar
-        session={current?.session}
-        fileDisabled={fileDisabled}
-        openDisabled={!tabs.desktop}
-        onNew={() => void tabs.newTab()}
-        onOpen={() => void tabs.openFile()}
-        onSettings={() => settingsDialog.current?.showModal()}
-      />
-      {error && !list.length && (
-        <div className="error-banner" role="alert">
-          <p>{error}</p>
-        </div>
-      )}
-      {list.map((tab) => (
-        <TabPane
-          key={tab.id}
-          tab={tab}
-          hidden={tab.id !== active}
-          focus={focus}
-          onPreview={preview.show}
+      <div className="app-body" inert={dimmed}>
+        <Toolbar
+          session={current?.session}
+          fileDisabled={fileDisabled}
+          openDisabled={!tabs.desktop}
+          onNew={() => void tabs.newTab()}
+          onOpen={() => void tabs.openFile()}
+          onSettings={() => settingsDialog.current?.show()}
         />
-      ))}
-      {!ready && <div className="loading">正在打开…</div>}
+        {error && !list.length && (
+          <div className="error-banner" role="alert">
+            <p>{error}</p>
+          </div>
+        )}
+        {list.map((tab) => (
+          <TabPane
+            key={tab.id}
+            tab={tab}
+            hidden={tab.id !== active}
+            focus={focus}
+            onPreview={preview.show}
+          />
+        ))}
+        {!ready && <div className="loading">正在打开…</div>}
+      </div>
+      {dimmed && (
+        <div
+          className={`dialog-mask${dialogs.top === "preview" ? " dark" : ""}`}
+          aria-hidden="true"
+          onClick={dialogs.mask}
+        />
+      )}
       <ImagePreviewDialog
         dialogRef={preview.dialog}
         name={preview.name}
@@ -90,6 +118,7 @@ export default function App() {
         canSave={tabs.desktop}
         onSave={() => void preview.saveOriginal()}
         onClose={preview.close}
+        onLoad={() => dialogs.reveal("preview")}
       />
       <UnsavedDialog
         dialogRef={unsaved.dialog}

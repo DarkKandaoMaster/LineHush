@@ -19,6 +19,13 @@ interface Props {
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
+  /**
+   * 有对话框开着：标签栏 inert，整条盖上与遮罩同色的半透明层（原图预览为深色 "dark"），
+   * 标题按钮与拖动区照常可用。
+   */
+  dimmed: false | "light" | "dark";
+  /** 关闭按钮；由 App 决定对话框开着时怎么办（见 useDialogs.closeWindow）。 */
+  onCloseWindow: () => void;
 }
 
 /** 按下标题按钮不能把焦点从编辑器拿走。 */
@@ -34,7 +41,7 @@ export default function TitleBar(props: Props) {
   const caption = useCaption(desktop);
   return (
     <div
-      className={`titlebar${caption.focused ? "" : " inactive"}`}
+      className={`titlebar${caption.focused ? "" : " inactive"}${props.dimmed ? " dimmed" : ""}${props.dimmed === "dark" ? " dark" : ""}`}
       data-tauri-drag-region
     >
       <TabBar
@@ -43,6 +50,7 @@ export default function TitleBar(props: Props) {
         onActivate={props.onActivate}
         onClose={props.onClose}
         onNew={props.onNew}
+        inert={!!props.dimmed}
       />
       <div className="titlebar-drag" data-tauri-drag-region />
       {desktop && (
@@ -75,8 +83,7 @@ export default function TitleBar(props: Props) {
             aria-label="关闭"
             tabIndex={-1}
             onMouseDown={keepFocus}
-            // 走 onCloseRequested 的关窗流程（逐个询问未保存的标签页），不直接销毁。
-            onClick={() => void getCurrentWindow().close()}
+            onClick={props.onCloseWindow}
           >
             <CloseIcon />
           </button>

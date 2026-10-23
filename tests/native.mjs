@@ -6,7 +6,8 @@
 //   node tests/native.mjs                 整套（只在发布前跑）
 //   node tests/native.mjs --only <名称>    只跑一项（名称见文末 `cases`）
 //
-// 注意：会弹出 / 移动 / 最大化 LineHush 窗口，并改写系统剪贴板（“图片复制粘贴”）。
+// 注意：会弹出 / 移动 / 最大化 LineHush 窗口，并改写系统剪贴板（“图片复制粘贴”）；
+// “对话框挪进屏幕”会移动真实鼠标（按住标题栏拖动）并发送真实 Esc 键，运行时不要动鼠标键盘。
 import { chromium, expect } from "@playwright/test";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -536,6 +537,18 @@ public static class W {
   [DllImport("user32")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint f);
   [DllImport("user32")] public static extern bool GetMonitorInfoW(IntPtr m, ref MONITORINFO i);
   [DllImport("user32")] public static extern uint GetDpiForWindow(IntPtr h);
+  [DllImport("user32")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32")] public static extern IntPtr GetForegroundWindow();
+  [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
+  [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+  // x64 布局：type 之后按 8 字节对齐。
+  [StructLayout(LayoutKind.Explicit, Size = 40)] public struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public MOUSEINPUT mi; [FieldOffset(8)] public KEYBDINPUT ki; }
+  [DllImport("user32", SetLastError = true)] public static extern uint SendInput(uint n, INPUT[] inputs, int size);
+  /** 真实鼠标按键（MOUSEEVENTF_*），在光标当前位置。 */
+  public static uint Mouse(uint flags) { var i = new INPUT[1]; i[0].type = 0; i[0].mi.dwFlags = flags; return SendInput(1, i, Marshal.SizeOf(typeof(INPUT))); }
+  /** 真实键盘按键（发给前台窗口）。 */
+  public static uint Key(ushort vk, uint flags) { var i = new INPUT[1]; i[0].type = 1; i[0].ki.wVk = vk; i[0].ki.dwFlags = flags; return SendInput(1, i, Marshal.SizeOf(typeof(INPUT))); }
   /** The editor window of the process: the top-level window that holds the overlay. */
   public static IntPtr FindMain(uint pid) {
     IntPtr found = IntPtr.Zero;
@@ -566,7 +579,8 @@ switch ($env:LH_OP) {
       $p = New-Object W+POINT; $p.X = $r.L; $p.Y = $r.T; [void][W]::ScreenToClient($main, [ref]$p)
       $ov = @{ x = $p.X; y = $p.Y; w = $r.R - $r.L; h = $r.B - $r.T; visible = [W]::IsWindowVisible($overlay) }
     }
-    @{ client = @($o.X, $o.Y, $cr.R, $cr.B);
+    $wr = New-Object W+RECT; [void][W]::GetWindowRect($main, [ref]$wr)
+    @{ client = @($o.X, $o.Y, $cr.R, $cr.B); window = @($wr.L, $wr.T, $wr.R, $wr.B);
        work = @($mi.rcWork.L, $mi.rcWork.T, $mi.rcWork.R, $mi.rcWork.B);
        zoomed = [W]::IsZoomed($main); iconic = [W]::IsIconic($main); dpi = [W]::GetDpiForWindow($main); overlay = $ov } | ConvertTo-Json -Compress -Depth 4
   }
@@ -584,9 +598,32 @@ switch ($env:LH_OP) {
     Write-Output '{"ok":true}'
   }
   "restore" { [void][W]::ShowWindow($main, 9); Write-Output '{"ok":true}' }
+  "move" {
+    # 窗口外框左上角移到屏幕坐标 (LH_X, LH_Y)：SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE。
+    [void][W]::SetWindowPos($main, [IntPtr]::Zero, [int]$env:LH_X, [int]$env:LH_Y, 0, 0, 0x15)
+    Write-Output '{"ok":true}'
+  }
+  "drag" {
+    # 真实鼠标：在屏幕坐标 (LH_X, LH_Y) 按下左键，横向移动 LH_DX 后松开。
+    $x = [int]$env:LH_X; $y = [int]$env:LH_Y; $dx = [int]$env:LH_DX
+    [void][W]::SetCursorPos($x, $y); Start-Sleep -Milliseconds 150
+    $down = [W]::Mouse(0x2)
+    Start-Sleep -Milliseconds 500
+    for ($i = 1; $i -le 15; $i++) { [void][W]::SetCursorPos($x + [int]($dx * $i / 15), $y); Start-Sleep -Milliseconds 40 }
+    Start-Sleep -Milliseconds 300
+    $up = [W]::Mouse(0x4)
+    Start-Sleep -Milliseconds 300
+    @{ down = $down; up = $up } | ConvertTo-Json -Compress
+  }
+  "escape" {
+    # 真实键盘 Esc，发给前台窗口。
+    $fg = [W]::GetForegroundWindow() -eq $main
+    $a = [W]::Key(0x1B, 0); Start-Sleep -Milliseconds 50; $b = [W]::Key(0x1B, 2)
+    @{ sent = $a + $b; foreground = $fg } | ConvertTo-Json -Compress
+  }
 }
 `;
-const win32 = async (op, x = 0, y = 0) =>
+const win32 = async (op, x = 0, y = 0, dx = 0) =>
   JSON.parse(
     (
       await powershell(WIN32, {
@@ -594,6 +631,7 @@ const win32 = async (op, x = 0, y = 0) =>
         LH_OP: op,
         LH_X: String(x),
         LH_Y: String(y),
+        LH_DX: String(dx),
       })
     ).trim(),
   );
@@ -1187,6 +1225,95 @@ async function titleBarCase() {
   await answer(page, "无标题", "不保存");
   await exited();
   passed("关闭按钮走询问流程");
+}
+
+/**
+ * 窗口大半在屏幕外（只露出顶上 200 物理像素）时关窗：保存询问打开后窗口被挪上来，
+ * 询问框（外加 8 像素）整个露在工作区里；取消后不挪回。询问开着时标题栏仍可用真实
+ * 鼠标拖动，拖完真实键盘 Esc 等于取消。
+ */
+async function revealCase() {
+  const page = await start();
+  const start0 = await win32("info");
+  const work = start0.work;
+  const [left0, , right0, bottom0] = start0.window;
+  const height = bottom0 - start0.window[1];
+  const width = right0 - left0;
+  await win32("move", left0, work[3] - 200);
+  await expect.poll(async () => (await win32("info")).window[1]).toBe(work[3] - 200);
+  await editor(page).click();
+  await page.keyboard.insertText("未保存的文字");
+  await dirty(page, true);
+  await page.keyboard.press("Control+w");
+  const dialog = prompt(page, "无标题");
+  await expect(dialog).toBeVisible();
+  /** 询问框在屏幕上的位置（物理像素）与当时的窗口信息。 */
+  const onScreen = async () => {
+    const info = await win32("info");
+    const box = await page.evaluate(() => {
+      const b = document.querySelector("dialog.unsaved-dialog").getBoundingClientRect();
+      return [b.left, b.top, b.right, b.bottom].map((v) => Math.round(v * devicePixelRatio));
+    });
+    return {
+      info,
+      rect: [
+        info.client[0] + box[0],
+        info.client[1] + box[1],
+        info.client[0] + box[2],
+        info.client[1] + box[3],
+      ],
+    };
+  };
+  await expect
+    .poll(async () => {
+      const { rect, info } = await onScreen();
+      return rect[1] >= info.work[1] + 8 && rect[3] <= info.work[3] - 8;
+    })
+    .toBe(true);
+  const shown = await onScreen();
+  const moved = shown.info.window;
+  // 只挪最小距离：询问框下边恰好在工作区下边往上 8 像素处（取整误差 1）；左右与大小不变。
+  expect(Math.abs(shown.rect[3] - (work[3] - 8))).toBeLessThanOrEqual(1);
+  expect(moved[1]).toBeLessThan(work[3] - 200);
+  expect(moved[0]).toBe(left0);
+  expect([moved[2] - moved[0], moved[3] - moved[1]]).toEqual([width, height]);
+  passed("保存询问打开时窗口挪进屏幕（最小距离）");
+  await answer(page, "无标题", "取消");
+  await expect(dialog).toBeHidden();
+  await sleep(500);
+  expect((await win32("info")).window).toEqual(moved);
+  expect(processHandle.exitCode).toBeNull();
+  passed("取消后窗口不挪回");
+
+  // 询问开着时，真实鼠标按住标题栏空白处横向拖 150 像素。
+  await page.keyboard.press("Control+w");
+  await expect(dialog).toBeVisible();
+  await sleep(300);
+  const before = await win32("info");
+  expect(before.window).toEqual(moved);
+  const blank = await page.locator(".titlebar-drag").boundingBox();
+  const dpr = await page.evaluate(() => devicePixelRatio);
+  const sx = Math.round(before.client[0] + (blank.x + blank.width / 2) * dpr);
+  const sy = Math.round(before.client[1] + (blank.y + blank.height / 2) * dpr);
+  const dx = before.window[0] - 150 >= work[0] ? -150 : 150;
+  const drag = await win32("drag", sx, sy, dx);
+  expect([drag.down, drag.up]).toEqual([1, 1]);
+  // 系统的移动循环要等光标移过拖动阈值（SM_CXDRAG）才开始跟随，会少几个像素。
+  await expect
+    .poll(async () => Math.abs((await win32("info")).window[0] - before.window[0] - dx))
+    .toBeLessThanOrEqual(15);
+  expect(Math.abs((await win32("info")).window[1] - before.window[1])).toBeLessThanOrEqual(5);
+  await expect(dialog).toBeVisible();
+  passed("询问开着时可用真实鼠标拖动标题栏");
+  // 拖完（焦点可能已不在询问框里）真实键盘 Esc：等于取消。
+  const esc = await win32("escape");
+  expect(esc.foreground).toBe(true);
+  await expect(dialog).toBeHidden();
+  expect(processHandle.exitCode).toBeNull();
+  passed("拖动后真实键盘 Esc 取消询问");
+  await page.keyboard.press("Control+w");
+  await answer(page, "无标题", "不保存");
+  await exited();
 }
 
 /** 0.1.0 留下的 working.hush（有暂存）+ recovery.json：迁移成一个带 ● 的标签页，旧文件消失。 */
@@ -1872,6 +1999,7 @@ const cases = {
   设置同步: settingsSyncCase,
   上一会话: lastSessionCase,
   自绘标题栏: titleBarCase,
+  对话框挪进屏幕: revealCase,
   旧数据迁移: legacyCase,
   草稿与另存为: draftCase,
   图片与保存: imagesCase,

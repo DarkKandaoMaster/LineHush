@@ -15,6 +15,9 @@
 //!
 //! 覆盖窗口的位置由前端经 `set_caption_buttons` 上报（客户区物理像素），未上报前隐藏，
 //! 此时前端按钮照常响应点击。覆盖窗口是主窗口的子窗口，随主窗口一起销毁。
+//!
+//! 另有 `reveal_rect`：应用内对话框打开时，前端报上对话框的位置（客户区物理像素），
+//! 窗口有一部分在屏幕外、对话框露不全时把窗口挪进工作区（照 Win11 记事本）。
 use crate::model::Result;
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, WebviewWindow};
@@ -68,6 +71,55 @@ pub fn set_caption_buttons(window: WebviewWindow, maximize: Rect) -> Result<()> 
     Ok(())
 }
 
+/// 屏幕坐标中的矩形（物理像素），左上含、右下不含。纯函数用，不依赖 Win32 类型。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Edges {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+/// 对话框与工作区边缘之间至少留出的距离（物理像素）。
+const REVEAL_MARGIN: i32 = 8;
+
+/// 一个方向上要挪多少：`[lo, hi)` 放不进 `[work_lo, work_hi)` 时挪最小距离，
+/// 比工作区还长则让 `lo` 对齐 `work_lo`；放得下为 0。
+fn shift_into(lo: i32, hi: i32, work_lo: i32, work_hi: i32) -> i32 {
+    if hi - lo > work_hi - work_lo || lo < work_lo {
+        work_lo - lo
+    } else if hi > work_hi {
+        work_hi - hi
+    } else {
+        0
+    }
+}
+
+/// 让 `rect`（外加 `margin`）进入工作区 `work` 时窗口要挪的 (dx, dy)；不出界为 (0, 0)。
+fn reveal_shift(rect: Edges, work: Edges, margin: i32) -> (i32, i32) {
+    (
+        shift_into(rect.left - margin, rect.right + margin, work.left, work.right),
+        shift_into(rect.top - margin, rect.bottom + margin, work.top, work.bottom),
+    )
+}
+
+/// 应用内对话框打开时调用：`rect` 为对话框在客户区中的位置（物理像素）。它（外加 8 像素）
+/// 超出窗口所在显示器的工作区（不含任务栏）时，把窗口挪最小距离让它露全；窗口大小、
+/// Z 序与激活状态不变。最大化或最小化时不动。之后不挪回。
+#[tauri::command]
+pub fn reveal_rect(window: WebviewWindow, rect: Rect) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        window
+            .run_on_main_thread(move || win::reveal(hwnd, rect))
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(windows))]
+    let _ = (window, rect);
+    Ok(())
+}
+
 /// 为编辑器窗口建立（隐藏的）覆盖窗口。可在任意线程调用，实际在 UI 线程上创建。
 pub fn attach(window: &WebviewWindow) {
     #[cfg(windows)]
@@ -88,14 +140,17 @@ pub fn attach(window: &WebviewWindow) {
 
 #[cfg(windows)]
 mod win {
-    use super::{overlay_hit, CaptionHover, Rect, CAPTION_HOVER};
+    use super::{overlay_hit, reveal_shift, CaptionHover, Edges, Rect, CAPTION_HOVER, REVEAL_MARGIN};
     use std::{cell::Cell, sync::Once};
     use tauri::{AppHandle, Emitter};
     use windows::{
         core::{w, PCWSTR},
         Win32::{
             Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-            Graphics::Gdi::{GetStockObject, ValidateRect, HBRUSH, NULL_BRUSH},
+            Graphics::Gdi::{
+                ClientToScreen, GetMonitorInfoW, GetStockObject, MonitorFromWindow, ValidateRect,
+                HBRUSH, MONITORINFO, MONITOR_DEFAULTTONEAREST, NULL_BRUSH,
+            },
             System::LibraryLoader::GetModuleHandleW,
             UI::{
                 Input::KeyboardAndMouse::{
@@ -209,6 +264,60 @@ mod win {
                     set_state(overlay, data, false, false);
                 }
             }
+        }
+    }
+
+    /// 见 `reveal_rect`。
+    pub fn reveal(hwnd: isize, rect: Rect) {
+        let hwnd = HWND(hwnd as _);
+        unsafe {
+            if IsZoomed(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                return;
+            }
+            let mut frame = RECT::default();
+            if GetWindowRect(hwnd, &mut frame).is_err() {
+                return;
+            }
+            let mut origin = POINT::default();
+            if !ClientToScreen(hwnd, &mut origin).as_bool() {
+                return;
+            }
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return;
+            }
+            let work = info.rcWork;
+            let (dx, dy) = reveal_shift(
+                Edges {
+                    left: origin.x + rect.x,
+                    top: origin.y + rect.y,
+                    right: origin.x + rect.x + rect.w,
+                    bottom: origin.y + rect.y + rect.h,
+                },
+                Edges {
+                    left: work.left,
+                    top: work.top,
+                    right: work.right,
+                    bottom: work.bottom,
+                },
+                REVEAL_MARGIN,
+            );
+            if (dx, dy) == (0, 0) {
+                return;
+            }
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                frame.left + dx,
+                frame.top + dy,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
     }
 
@@ -334,7 +443,7 @@ mod win {
 
 #[cfg(test)]
 mod tests {
-    use super::{overlay_hit, HT_CLIENT, HT_MAXBUTTON, HT_TRANSPARENT};
+    use super::{overlay_hit, reveal_shift, Edges, HT_CLIENT, HT_MAXBUTTON, HT_TRANSPARENT};
 
     #[test]
     fn only_client_area_becomes_the_maximize_button() {
@@ -343,5 +452,66 @@ mod tests {
         for other in [0, 2, 10, 12, 13, 14, HT_TRANSPARENT] {
             assert_eq!(overlay_hit(other), HT_TRANSPARENT);
         }
+    }
+
+    /// 1920×1040 的工作区（下方 40 像素是任务栏）。
+    const WORK: Edges = Edges {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1040,
+    };
+    const fn at(left: i32, top: i32, w: i32, h: i32) -> Edges {
+        Edges {
+            left,
+            top,
+            right: left + w,
+            bottom: top + h,
+        }
+    }
+
+    #[test]
+    fn a_dialog_inside_the_work_area_does_not_move_the_window() {
+        assert_eq!(reveal_shift(at(500, 300, 480, 200), WORK, 8), (0, 0));
+        // 恰好留出 8 像素也不动。
+        assert_eq!(reveal_shift(at(8, 8, 1904, 1024), WORK, 8), (0, 0));
+    }
+
+    #[test]
+    fn a_dialog_below_the_work_area_moves_the_window_up_just_enough() {
+        // 下边在 1300：上移到 1040 - 8。
+        assert_eq!(reveal_shift(at(500, 1100, 480, 200), WORK, 8), (0, -268));
+        // 只露出一点点也一样，左右不动。
+        assert_eq!(reveal_shift(at(500, 1035, 480, 200), WORK, 8), (0, -203));
+    }
+
+    #[test]
+    fn a_dialog_above_the_work_area_moves_the_window_down() {
+        assert_eq!(reveal_shift(at(500, -150, 480, 200), WORK, 8), (0, 158));
+    }
+
+    #[test]
+    fn a_dialog_taller_or_wider_than_the_work_area_aligns_its_top_left() {
+        // 比工作区高：上边对齐（外加边距），不管下边。
+        assert_eq!(reveal_shift(at(500, 300, 480, 1200), WORK, 8), (0, -292));
+        assert_eq!(reveal_shift(at(500, -300, 480, 1200), WORK, 8), (0, 308));
+        // 比工作区宽：左边对齐。
+        assert_eq!(reveal_shift(at(200, 300, 2000, 200), WORK, 8), (-192, 0));
+    }
+
+    #[test]
+    fn a_dialog_left_or_right_of_the_work_area_moves_the_window_sideways() {
+        assert_eq!(reveal_shift(at(-300, 300, 480, 200), WORK, 8), (308, 0));
+        assert_eq!(reveal_shift(at(1700, 300, 480, 200), WORK, 8), (-268, 0));
+        // 两个方向都出界：各挪各的。
+        assert_eq!(reveal_shift(at(1700, 1000, 480, 200), WORK, 8), (-268, -168));
+        // 工作区不从 0 开始（第二台显示器在左边、任务栏在顶上）。
+        let work = Edges {
+            left: -1600,
+            top: 48,
+            right: 0,
+            bottom: 900,
+        };
+        assert_eq!(reveal_shift(at(-500, 20, 300, 100), work, 8), (0, 36));
     }
 }
