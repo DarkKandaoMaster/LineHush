@@ -10,7 +10,7 @@ import {
   fileName,
   exportFile,
   exportImages,
-} from "../src/core/document.ts";
+} from "../../src/core/document.ts";
 
 const idA = "a".repeat(12) + "0".repeat(52);
 const idB = "b".repeat(12) + "1".repeat(52);

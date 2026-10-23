@@ -2,12 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { getSchema } from "@tiptap/core";
 import { AllSelection, TextSelection } from "@tiptap/pm/state";
-import { extensions } from "../src/editor/schema.ts";
-import { selectedNewlines } from "../src/editor/newline-selection.ts";
+import { extensions } from "../../src/editor/schema.ts";
+import { selectedNewlines } from "../../src/editor/selection-shape.ts";
 
 // The editor's real schema (paragraphs of plain text, one node per image).
 const schema = getSchema(
-  extensions({ preview() {}, source: async () => "", copy: () => false }),
+  extensions({ preview() {}, source: async () => "", copy() {}, stage() {} }),
 );
 /** Strings are text lines (possibly empty). */
 const doc = (...lines) =>

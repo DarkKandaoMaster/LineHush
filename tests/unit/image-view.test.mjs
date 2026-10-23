@@ -9,17 +9,18 @@ import {
   TextSelection,
 } from "@tiptap/pm/state";
 import { closeHistory, history, undo } from "@tiptap/pm/history";
-import { extensions } from "../src/editor/schema.ts";
-import { fromEditor } from "../src/core/document.ts";
+import { extensions } from "../../src/editor/schema.ts";
+import { fromEditor } from "../../src/core/document.ts";
 import {
   BlockRange,
+  besideImage,
   caretAt,
   caretSpot,
   deleteBlocks,
   enterKey,
   extendByImage,
   imagePlugin,
-  imageSide,
+  spotBy,
   insertImages,
   joinAt,
   leaveImages,
@@ -30,7 +31,6 @@ import {
   removeRange,
   rowBreak,
   selectedImages,
-  selectedPictures,
   selectionBetween,
   typeBetween,
   BLOCKS_MIME,
@@ -41,11 +41,11 @@ import {
   mixedSlice,
   sliceBlocks,
   withoutPictures,
-} from "../src/editor/image-view.ts";
+} from "../../src/editor/image-view.ts";
 
 // The editor's real schema (paragraphs of plain text, one node per image).
 const schema = getSchema(
-  extensions({ preview() {}, source: async () => "", copy: () => false }),
+  extensions({ preview() {}, source: async () => "", copy() {}, stage() {} }),
 );
 const img = (id, newline = false) =>
   schema.nodes.image.create({ id, name: `${id}.png`, width: 40, height: 30, newline });
@@ -59,7 +59,10 @@ const doc = (...nodes) =>
         : node,
     ),
   );
-const plugin = imagePlugin(() => false);
+const plugin = imagePlugin(
+  () => {},
+  () => {},
+);
 const stateOf = (d, selection) =>
   EditorState.create({ doc: d, selection, plugins: [plugin] });
 const caret = (d, pos) => stateOf(d, new BlockRange(d.resolve(pos)));
@@ -169,10 +172,10 @@ test("左右键把图片当作一个字符：每经过图文边界多一个停�
 test("单击图片按左右半区把光标放到图片前 / 后，不产生节点选中", () => {
   const image = mixed.nodeAt(3);
   const rect = { left: 100, right: 200 };
-  assert.equal(imageSide(3, image, 120, rect), 3);
-  assert.equal(imageSide(3, image, 149, rect), 3);
-  assert.equal(imageSide(3, image, 150, rect), 4);
-  assert.equal(imageSide(3, image, 199, rect), 4);
+  assert.deepEqual(spotBy(3, image, 120, rect), { pos: 3, side: 1 });
+  assert.deepEqual(spotBy(3, image, 149, rect), { pos: 3, side: 1 });
+  assert.deepEqual(spotBy(3, image, 150, rect), { pos: 4, side: -1 });
+  assert.deepEqual(spotBy(3, image, 199, rect), { pos: 4, side: -1 });
   const click = (clientX, direct = true) => {
     const view = fakeView(text(mixed, 1), rect);
     const handled = plugin.props.handleClickOn.call(
@@ -350,7 +353,7 @@ test("Shift+左右从块间光标选中整张图，上下键离开整串图片",
   const extended = run(caret(mixed, 3), extendByImage(1)).state;
   assert.equal(where(extended), "BlockRange 3-4");
   assert.deepEqual(
-    selectedPictures(extended).map((p) => p.id),
+    selectedImages(extended.selection).pictures.map((p) => p.id),
     ["a"],
   );
   // Up / Down from the caret, or from selected images, leave the whole run.
@@ -362,12 +365,17 @@ test("Shift+左右从块间光标选中整张图，上下键离开整串图片",
   assert.equal(run(text(mixed, 1), leaveImages(1)).handled, false);
 });
 
-test("光标画在相邻图片上，范围选区内的图片加 image-selected", () => {
-  assert.deepEqual(decorations(caret(mixed, 3)), ["3-4 gap-before"]); // line | image
-  assert.deepEqual(decorations(caret(mixed, 4)), ["3-4 gap-after"]); // image | image
-  assert.deepEqual(decorations(caret(mixed, 5)), ["4-5 gap-after"]); // image | line
-  assert.deepEqual(decorations(caret(doc(img("a"), "A"), 0)), ["0-1 gap-before"]);
-  assert.deepEqual(decorations(caret(doc("A", img("a")), 4)), ["3-4 gap-after"]);
+test("光标画在相邻图片旁（besideImage），范围选区内的图片加 image-selected", () => {
+  const beside = (d, pos, side = -1) => besideImage(d.resolve(pos), side);
+  assert.deepEqual(beside(mixed, 3), { pos: 3, after: false }); // line | image
+  assert.deepEqual(beside(mixed, 4), { pos: 3, after: true }); // image | image
+  assert.deepEqual(beside(mixed, 4, 1), { pos: 3, after: true }); // the same row
+  assert.deepEqual(beside(mixed, 5), { pos: 4, after: true }); // image | line
+  assert.deepEqual(beside(doc(img("a"), "A"), 0), { pos: 0, after: false });
+  assert.deepEqual(beside(doc("A", img("a")), 4), { pos: 3, after: true });
+  assert.equal(beside(mixed, 8), null); // line | line
+  // The caret is the editor's own (caret.ts); the plugin draws nothing for it.
+  assert.deepEqual(decorations(caret(mixed, 4)), []);
   assert.deepEqual(decorations(text(mixed, 2)), []);
   const range = stateOf(mixed, new BlockRange(mixed.resolve(3), mixed.resolve(5)));
   assert.deepEqual(decorations(range), ["3-4 image-selected", "4-5 image-selected"]);
@@ -376,7 +384,7 @@ test("光标画在相邻图片上，范围选区内的图片加 image-selected",
 });
 
 test("选中图片的样式是与文字选区同色的半透明蒙层，没有蓝框", () => {
-  const css = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../../src/App.css", import.meta.url), "utf8");
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({
     selector: selector.replace(/\/\*[\s\S]*?\*\//g, "").trim(),
     body,
@@ -689,18 +697,12 @@ test("左右键在两行图片之间的换行处走两步：上一行行末、�
 
 test("换行处的光标按 side 画在上一行末图片右侧或下一行首图片左侧；换行画成 spacer", () => {
   const rows = doc(img("a"), row("b"));
-  assert.deepEqual(decorationsWithSpacers(caretOn(rows, 1, -1)), [
-    "0-1 gap-after",
-    "1-1 image-row-break",
-  ]);
-  assert.deepEqual(decorationsWithSpacers(caretOn(rows, 1, 1)), [
-    "1-1 image-row-break",
-    "1-2 gap-before",
-  ]);
+  assert.deepEqual(besideImage(rows.resolve(1), -1), { pos: 0, after: true });
+  assert.deepEqual(besideImage(rows.resolve(1), 1), { pos: 1, after: false });
+  assert.deepEqual(decorationsWithSpacers(caretOn(rows, 1, -1)), ["1-1 image-row-break"]);
   // Inside a row the side does not show: drawn after the image before it.
-  assert.deepEqual(decorationsWithSpacers(caretOn(doc(img("a"), img("b")), 1, 1)), [
-    "0-1 gap-after",
-  ]);
+  assert.deepEqual(besideImage(doc(img("a"), img("b")).resolve(1), 1), { pos: 0, after: true });
+  assert.deepEqual(decorationsWithSpacers(caretOn(doc(img("a"), img("b")), 1, 1)), []);
   // No spacer after a text line or at the document's start, whatever newline says.
   assert.deepEqual(decorationsWithSpacers(stateOf(doc(row("a"), "x", row("b")))), []);
 });
@@ -788,14 +790,46 @@ test("状态栏行号：每行图片算一行（折行不算），文字行各�
 
 test("复制选中的图片：rows 标出另起一行的图片（第一张恒为 false）", () => {
   const d = doc(img("a"), row("b"), img("c"));
-  const all = selectedImages(stateOf(d, new BlockRange(d.resolve(0), d.resolve(3))));
+  const all = selectedImages(new BlockRange(d.resolve(0), d.resolve(3)));
   assert.deepEqual(all.pictures.map((p) => p.id), ["a", "b", "c"]);
   assert.deepEqual(all.rows, [false, true, false]);
   // The pictures never carry the row flag (Rust's Picture rejects unknown fields).
   assert.deepEqual(Object.keys(all.pictures[1]), ["id", "name", "width", "height"]);
-  const tail = selectedImages(stateOf(d, new BlockRange(d.resolve(1), d.resolve(3))));
+  const tail = selectedImages(new BlockRange(d.resolve(1), d.resolve(3)));
   assert.deepEqual(tail.rows, [false, false]);
-  assert.equal(selectedImages(caret(d, 1)), null);
+  assert.equal(selectedImages(caret(d, 1).selection), null);
+  assert.equal(selectedImages(NodeSelection.create(d, 1)).pictures[0].id, "b");
+});
+
+test("复制 / 剪切纯图片：取消事件、不写剪贴板，交给 Rust（copy）；剪切按 Backspace 的落点删除", () => {
+  const copied = [];
+  const imagesPlugin = imagePlugin(
+    (pictures, rows) => copied.push([pictures.map((p) => p.id), rows]),
+    () => assert.fail("not staged"),
+  );
+  // a 0-1, b 1-2 (a new row), c 2-3: copy b and c, then cut them.
+  const d = doc(img("a"), row("b"), img("c"));
+  const view = fakeView(stateOf(d, new BlockRange(d.resolve(1), d.resolve(3))));
+  let prevented = 0;
+  const event = {
+    clipboardData: {
+      clearData: () => assert.fail("clipboard cleared"),
+      setData: () => assert.fail("clipboard written"),
+    },
+    preventDefault() {
+      prevented++;
+    },
+  };
+  const { copy, cut } = imagesPlugin.props.handleDOMEvents;
+  assert.equal(copy.call(imagesPlugin, view, event), true);
+  assert.equal(prevented, 1);
+  assert.deepEqual(copied, [[["b", "c"], [false, false]]]);
+  assert.deepEqual(layout(view.state), ["[a]", "[b c]"]);
+  assert.equal(cut.call(imagesPlugin, view, event), true);
+  assert.equal(prevented, 2);
+  assert.equal(copied.length, 2);
+  assert.deepEqual(layout(view.state), ["[a]"]);
+  assert.equal(where(view.state), "caret 1");
 });
 
 /** Pastes lines (strings) and images (nodes) at the selection, as a paste of a mixed copy does. */
@@ -909,10 +943,10 @@ test("混合选区：sliceBlocks / blockNodes 保留换行，mixedSlice 只认�
   assert.notEqual(mixedSlice(stateOf(d, new BlockRange(d.resolve(5), d.resolve(8)))), null);
 });
 
-test("clipboardBlocks：只认版本 1、64 位十六进制 id、字段类型正确的数据", () => {
+test("clipboardBlocks：只认版本 1、由文字行与非空图片行组成的数据", () => {
   const id = "ab".repeat(32);
   const pic = { id, name: "a.png", width: 3, height: 2 };
-  const good = { v: 1, blocks: [{ type: "line", text: "甲" }, { type: "images", images: [{ ...pic, extra: 1 }] }] };
+  const good = { v: 1, blocks: [{ type: "line", text: "甲" }, { type: "images", images: [pic] }] };
   assert.deepEqual(clipboardBlocks(JSON.stringify(good)), [
     { type: "line", text: "甲" },
     { type: "images", images: [pic] },
@@ -920,15 +954,13 @@ test("clipboardBlocks：只认版本 1、64 位十六进制 id、字段类型正
   const bad = [
     "",
     "不是 JSON",
+    "null",
     JSON.stringify({ ...good, v: 2 }),
     JSON.stringify({ v: 1, blocks: [] }),
-    JSON.stringify({ v: 1, blocks: [{ type: "line", text: "a\nb" }] }),
+    JSON.stringify({ v: 1, blocks: [null] }),
     JSON.stringify({ v: 1, blocks: [{ type: "line" }] }),
     JSON.stringify({ v: 1, blocks: [{ type: "images", images: [] }] }),
-    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [{ ...pic, id: "a".repeat(63) }] }] }),
-    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [{ ...pic, id: id.toUpperCase() }] }] }),
-    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [{ ...pic, width: "3" }] }] }),
-    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [{ ...pic, name: 1 }] }] }),
+    JSON.stringify({ v: 1, blocks: [{ type: "images", images: [{ ...pic, id: 1 }] }] }),
     JSON.stringify({ v: 1, blocks: [{ type: "heading", text: "x" }] }),
     JSON.stringify([good]),
   ];
@@ -948,7 +980,10 @@ test("clipboardBlocks：只认版本 1、64 位十六进制 id、字段类型正
 
 test("复制 / 剪切混合选区：写纯文字与 blocks、不写 HTML，暂存原图；剪切按 deleteBlocks 保持行结构", () => {
   const staged = [];
-  const mixedPlugin = imagePlugin(() => false, (pictures) => staged.push(...pictures.map((p) => p.id)));
+  const mixedPlugin = imagePlugin(
+    () => assert.fail("not copied by Rust"),
+    (pictures) => staged.push(...pictures.map((p) => p.id)),
+  );
   // a 0-1, "t" 1-4, b 4-5, c 5-6: cut "t" and b.
   const d = doc(img("a"), "t", img("b"), img("c"));
   const view = fakeView(stateOf(d, new BlockRange(d.resolve(1), d.resolve(5))));

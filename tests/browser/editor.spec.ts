@@ -1,10 +1,9 @@
 import { test, expect } from "@playwright/test";
+import { editorOf, load } from "./helpers";
+
 test("真实编辑区保留连续末尾换行，撤销重做正常", async ({ page }) => {
-  const errors: string[] = [];
-  page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto("/");
-  const editor = page.getByRole("textbox", { name: "日记正文" });
-  await editor.click();
+  const errors = await load(page);
+  const editor = editorOf(page);
   await page.keyboard.insertText("今天记录");
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
@@ -30,9 +29,8 @@ test("真实编辑区保留连续末尾换行，撤销重做正常", async ({ pa
   expect(errors).toEqual([]);
 });
 test("粘贴只接收纯文本且保留全部空行，不解析 Markdown", async ({ page }) => {
-  await page.goto("/");
-  const editor = page.getByRole("textbox", { name: "日记正文" });
-  await editor.click();
+  const errors = await load(page);
+  const editor = editorOf(page);
   await editor.evaluate((el) => {
     const data = new DataTransfer();
     data.setData("text/plain", "# 标题\n\n**普通文字**\n\n");
@@ -53,5 +51,6 @@ test("粘贴只接收纯文本且保留全部空行，不解析 Markdown", async
     "",
   ]);
   await expect(editor.locator("h1,strong,b")).toHaveCount(0);
-  await page.screenshot({ path: "test-results/playwright/editor.png" });
+  await page.screenshot({ path: test.info().outputPath("editor.png") });
+  expect(errors).toEqual([]);
 });

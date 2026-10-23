@@ -3,8 +3,7 @@
 // 文件对话框、检查自绘标题栏。每项用例互相独立：各用 `test-results/native-<时间>/<用例名>/`
 // 下自己的测试数据目录（LINEHUSH_TEST_DATA_DIR）与测试文件。
 //
-//   node tests/native.mjs                 整套（只在发布前跑）
-//   node tests/native.mjs --only <名称>    只跑一项（名称见文末 `cases`）
+//   node tests/native/native.mjs [--only 名称] [--release]   整套只在发布前跑；--only 只跑一项（名称见文末 `cases`）
 //
 // 注意：会弹出 / 移动 / 最大化 LineHush 窗口，并改写系统剪贴板（“图片复制粘贴”）；
 // “对话框挪进屏幕”会移动真实鼠标（按住标题栏拖动）并发送真实 Esc 键，运行时不要动鼠标键盘。
@@ -345,6 +344,22 @@ const imageGroups = (ed) =>
   });
 const expectGroups = (ed, count) =>
   expect.poll(() => imageGroups(ed)).toBe(count);
+/** The caret right after the first / last image: a collapsed block range there, on the image's side. */
+const expectCaretAfterImage = (ed, which) =>
+  expect
+    .poll(() =>
+      ed.evaluate((el, which) => {
+        const { doc, selection } = el.editor.state;
+        const ends = [];
+        doc.forEach((node, offset) => {
+          if (node.type.name === "image") ends.push(offset + node.nodeSize);
+        });
+        const end = which === "first" ? ends[0] : ends.at(-1);
+        const json = selection.toJSON();
+        return json.type === "blockRange" && selection.empty && selection.head === end && json.side === -1;
+      }, which),
+    )
+    .toBe(true);
 const imageNames = (ed) =>
   ed.locator(".image-tile img").evaluateAll((images) => images.map((img) => img.alt));
 /** A click on an image's left / right half puts the caret before / after it (no image gets selected). */
@@ -1316,51 +1331,6 @@ async function revealCase() {
   await exited();
 }
 
-/** 0.1.0 留下的 working.hush（有暂存）+ recovery.json：迁移成一个带 ● 的标签页，旧文件消失。 */
-async function legacyCase() {
-  const file = writeHush(path.join(dir, "旧.hush"), linesDoc(["保存过的"]));
-  writeHush(
-    path.join(appData, "working.hush"),
-    linesDoc(["保存过的", "旧版未保存"]),
-  );
-  await writeFile(
-    path.join(appData, "recovery.json"),
-    JSON.stringify({ path: file }),
-  );
-  const saved = await fingerprint(file);
-  let page = await start();
-  await expect.poll(() => tabNames(page)).toEqual(["● 旧.hush"]);
-  await expect(editor(page).locator("p")).toHaveText(["保存过的", "旧版未保存"]);
-  await expect(pane(page).getByText("已恢复未保存的修改。")).toBeVisible();
-  for (const legacy of ["working.hush", "recovery.json"])
-    expect(existsSync(path.join(appData, legacy))).toBe(false);
-  expect(await tabFiles()).toEqual([`${activeId()}.hush`]);
-  expect(path.basename(windowEntry().tabs[0].path)).toBe("旧.hush");
-  expect(await fingerprint(file)).toEqual(saved);
-  // Still paired with its file: Ctrl+S writes there.
-  await editor(page).click();
-  await page.keyboard.press("Control+s");
-  await dirty(page, false);
-  expect(lines(body(file))).toEqual(["保存过的", "旧版未保存"]);
-  await stop(page);
-  passed("旧版工作副本迁移为带 ● 的标签页");
-  // A legacy working copy without a stash is simply removed.
-  appData = path.join(dir, "app-无暂存");
-  await mkdir(appData, { recursive: true });
-  writeHush(path.join(appData, "working.hush"), null);
-  await writeFile(
-    path.join(appData, "recovery.json"),
-    JSON.stringify({ path: null }),
-  );
-  page = await start();
-  await expect.poll(() => tabNames(page)).toEqual(["无标题"]);
-  await expect(pane(page).getByRole("status")).toHaveCount(0);
-  for (const legacy of ["working.hush", "recovery.json"])
-    expect(existsSync(path.join(appData, legacy))).toBe(false);
-  await stop(page);
-  passed("旧版无暂存的工作副本直接删除");
-}
-
 /** 无标题草稿：暂存、崩溃后恢复，Ctrl+S 走另存为；中文与连续空行原样保存。 */
 async function draftCase() {
   let page = await start();
@@ -1437,12 +1407,12 @@ async function imagesCase() {
   await expect(ed.locator(".image-tile img")).toHaveCount(2);
   // Nothing ends up selected: the caret is after the last new image.
   await expect(ed.locator(".ProseMirror-selectednode, .image-selected")).toHaveCount(0);
-  await expect(ed.locator(".image-item").last()).toHaveClass(/gap-after/);
+  await expectCaretAfterImage(ed, "last");
   // A click on an image's right half puts the caret after it (no image is
   // selected); an import goes in right there, inside the group.
   await clickImageSide(ed.locator(".image-tile").first(), "after");
   await expect(ed.locator(".ProseMirror-selectednode, .image-selected")).toHaveCount(0);
-  await expect(ed.locator(".image-item").first()).toHaveClass(/gap-after/);
+  await expectCaretAfterImage(ed, "first");
   await input(page).setInputFiles(source["追加.jpg"].file);
   await expect(ed.locator(".image-tile img")).toHaveCount(3);
   expect(await imageNames(ed)).toEqual(["第一张.png", "追加.jpg", "第二张.png"]);
@@ -2000,7 +1970,6 @@ const cases = {
   上一会话: lastSessionCase,
   自绘标题栏: titleBarCase,
   对话框挪进屏幕: revealCase,
-  旧数据迁移: legacyCase,
   草稿与另存为: draftCase,
   图片与保存: imagesCase,
   关闭保存与崩溃恢复: saveAndCrashCase,

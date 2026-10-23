@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mockIPC, mockWindows, clearMocks } from "@tauri-apps/api/mocks";
-import { createSession } from "../src/core/session.ts";
-import { fromText } from "../src/core/document.ts";
+import { createSession } from "../../src/core/session.ts";
+import { fromText } from "../../src/core/document.ts";
+import { DEFAULT_SETTINGS } from "../../src/core/settings.ts";
 
 /**
  * One tab's session over a fake Rust boundary, loaded with a document as
@@ -17,7 +18,6 @@ function setup({
   name = "测试.hush",
 } = {}) {
   globalThis.window = {};
-  globalThis.isTauri = true;
   const fake = {
     calls: [],
     /** Arguments of each Rust command, in order. */
@@ -60,7 +60,6 @@ async function teardown(session) {
   await session.flush().catch(() => {});
   clearMocks();
   delete globalThis.window;
-  delete globalThis.isTauri;
 }
 const fileCommands = (fake) =>
   fake.calls.filter((cmd) => !cmd.startsWith("plugin:"));
@@ -72,7 +71,7 @@ test("载入文档后快照稳定，暂存不清除未保存标记", async () =>
     assert.equal(state(), initial);
     assert.equal(state().generation, 1);
     assert.equal(state().dirty, false);
-    assert.equal(state().status, "已保存");
+    assert.equal(state().saveFailed, false);
     assert.equal(state().notice, "");
     assert.equal(session.tab, "t1");
     let notifications = 0;
@@ -82,7 +81,7 @@ test("载入文档后快照稳定，暂存不清除未保存标记", async () =>
     await session.flush();
     assert.deepEqual(fileCommands(fake), ["stash_document"]);
     assert.equal(state().dirty, true);
-    assert.equal(state().status, "尚未保存");
+    assert.equal(state().saveFailed, false);
     assert.notEqual(state(), initial);
     assert.ok(notifications > 0);
   } finally {
@@ -98,7 +97,7 @@ test("每个命令都带上本标签页的 id", async () => {
     fake.savePath = "D:/另存.hush";
     await session.saveDocumentAs();
     fake.savePath = "D:/导出.txt";
-    await session.exportDocument("txt");
+    await session.exportDocument("txt", DEFAULT_SETTINGS);
     session.update(fromText("再改"));
     await session.closeTab();
     const rust = fake.args.filter(([cmd]) => !cmd.startsWith("plugin:"));
@@ -124,10 +123,10 @@ test("改回已保存的内容时清除未保存标记，暂存照常进行", as
   try {
     session.update(fromText("改过"));
     assert.equal(state().dirty, true);
-    assert.equal(state().status, "尚未保存");
+    assert.equal(state().saveFailed, false);
     session.update(fromText("旧日记\n\n"));
     assert.equal(state().dirty, false);
-    assert.equal(state().status, "已保存");
+    assert.equal(state().saveFailed, false);
     await session.flush();
     assert.deepEqual(fileCommands(fake), ["stash_document"]);
 
@@ -138,13 +137,13 @@ test("改回已保存的内容时清除未保存标记，暂存照常进行", as
     assert.equal(state().dirty, true);
     session.update(fromText("保存的内容"));
     assert.equal(state().dirty, false);
-    assert.equal(state().status, "已保存");
+    assert.equal(state().saveFailed, false);
   } finally {
     await teardown(session);
   }
 });
 
-test("未命名新文档改回空文档时显示准备就绪，恢复的修改改回也仍为未保存", async () => {
+test("未命名新文档改回空文档时清除未保存标记，恢复的修改改回也仍为未保存", async () => {
   {
     const { session, state } = setup({ path: null });
     try {
@@ -159,7 +158,7 @@ test("未命名新文档改回空文档时显示准备就绪，恢复的修改�
       assert.equal(state().dirty, true);
       session.update(fromText(""));
       assert.equal(state().dirty, false);
-      assert.equal(state().status, "准备就绪");
+      assert.equal(state().saveFailed, false);
     } finally {
       await teardown(session);
     }
@@ -171,26 +170,26 @@ test("未命名新文档改回空文档时显示准备就绪，恢复的修改�
       session.update(fromText("改过"));
       session.update(fromText("旧日记\n\n"));
       assert.equal(state().dirty, true);
-      assert.equal(state().status, "尚未保存");
+      assert.equal(state().saveFailed, false);
     } finally {
       await teardown(session);
     }
   }
 });
 
-test("保存写入当前文件并清除未保存标记，失败时保留标记", async () => {
+test("保存写入当前文件并清除未保存标记，失败时保留标记并可重试", async () => {
   const { session, fake, state } = setup();
   try {
     session.update(fromText("新日记"));
     fake.failSave = true;
     await session.saveDocument();
     assert.equal(state().dirty, true);
-    assert.equal(state().status, "保存失败");
+    assert.equal(state().saveFailed, true);
     assert.match(state().error, /^保存失败：.*测试写入失败/);
     fake.failSave = false;
     await session.saveDocument();
     assert.equal(state().dirty, false);
-    assert.equal(state().status, "已保存");
+    assert.equal(state().saveFailed, false);
     assert.equal(state().error, "");
     // The pending stash lands before each save, never after it.
     assert.deepEqual(fileCommands(fake), [
@@ -206,7 +205,7 @@ test("保存写入当前文件并清除未保存标记，失败时保留标记",
 test("未命名文档保存走另存为（默认文件名为日期），取消对话框则保持未保存", async () => {
   const { session, fake, state } = setup({ path: null, name: "无标题 2" });
   try {
-    assert.equal(state().status, "准备就绪");
+    assert.equal(state().saveFailed, false);
     session.update(fromText("草稿"));
     await session.saveDocument(); // dialog cancelled
     assert.match(fake.dialog.defaultPath, /^\d{4}-\d{2}-\d{2}\.hush$/);
@@ -227,7 +226,7 @@ test("恢复了未保存的修改时标记为未保存并提示", async () => {
   const { session, fake, state } = setup({ recovered: true, answers: ["cancel"] });
   try {
     assert.equal(state().dirty, true);
-    assert.equal(state().status, "尚未保存");
+    assert.equal(state().saveFailed, false);
     assert.equal(state().notice, "已恢复未保存的修改。");
     assert.equal(await session.closeTab(), false);
     assert.deepEqual(fake.asked, ["测试.hush"]);
@@ -243,7 +242,7 @@ test("恢复提示在保存成功后清除，保存失败时保留，其他提�
     assert.equal(state().notice, "已恢复未保存的修改。");
     fake.failSave = true;
     await session.saveDocument();
-    assert.equal(state().status, "保存失败");
+    assert.equal(state().saveFailed, true);
     assert.equal(state().notice, "已恢复未保存的修改。");
     fake.failSave = false;
     await session.saveDocument();
@@ -319,7 +318,7 @@ test("关闭标签页前询问：取消保留，保存失败保留并说明，�
     const failure = (e) => `${e}，标签页未关闭。`;
     assert.equal(await session.closeTab(failure), false);
     assert.match(state().error, /^保存失败：.*测试写入失败，标签页未关闭。$/);
-    assert.equal(state().status, "保存失败");
+    assert.equal(state().saveFailed, true);
     assert.equal(state().busy, false);
     assert.ok(!fake.calls.includes("close_tab"));
 
@@ -401,7 +400,7 @@ test("切换文档时 Rust 的提示显示在横幅上，保存后仍保留", as
     assert.equal(state().error, "");
     assert.equal(state().notice, warning);
     assert.equal(state().dirty, false);
-    assert.equal(state().status, "已保存");
+    assert.equal(state().saveFailed, false);
     session.update(fromText("新内容"));
     fake.savePath = "D:/新.hush";
     await session.saveDocument();
@@ -411,20 +410,20 @@ test("切换文档时 Rust 的提示显示在横幅上，保存后仍保留", as
   }
 });
 
-test("导出 PDF：默认文件名与标题用显示名，打印页用默认字体，失败显示导出失败", async () => {
+test("导出 PDF：默认文件名与标题用显示名，打印页用传入设置的字体，失败显示导出失败", async () => {
   const { session, fake, state } = setup({
     path: "D:/日记/十月.hush",
     name: "十月.hush",
   });
   try {
     fake.savePath = "D:/导出/十月.pdf";
-    await session.exportDocument("pdf");
+    await session.exportDocument("pdf", DEFAULT_SETTINGS);
     assert.equal(fake.dialog.defaultPath, "十月.pdf");
     assert.equal(fake.pdf.tab, "t1");
     assert.equal(fake.pdf.path, "D:/导出/十月.pdf");
     assert.ok(fake.pdf.html.includes("<title>十月</title>"));
     assert.ok(fake.pdf.html.includes('<div class="line">旧日记</div>'));
-    // Node 里没有 DOM：用默认设置（微软雅黑 10 pt）。
+    // 传入的设置：默认的微软雅黑 10 pt。
     assert.ok(fake.pdf.html.includes('font-family:"微软雅黑", "Microsoft YaHei UI"'));
     assert.ok(fake.pdf.html.includes("font-size:10pt"));
     assert.equal(state().error, "");
@@ -432,11 +431,11 @@ test("导出 PDF：默认文件名与标题用显示名，打印页用默认字�
     // 取消对话框不调用 Rust。
     fake.pdf = undefined;
     fake.savePath = null;
-    await session.exportDocument("pdf");
+    await session.exportDocument("pdf", DEFAULT_SETTINGS);
     assert.equal(fake.pdf, undefined);
     fake.savePath = "D:/导出/十月.pdf";
     fake.failPdf = true;
-    await session.exportDocument("pdf");
+    await session.exportDocument("pdf", DEFAULT_SETTINGS);
     assert.equal(state().error, "导出失败：无法写入 PDF 文件");
     assert.equal(state().busy, false);
   } finally {
@@ -448,7 +447,7 @@ test("未命名文档导出的默认文件名为“无标题”", async () => {
   const { session, fake } = setup({ path: null, name: "无标题" });
   try {
     fake.savePath = null;
-    await session.exportDocument("txt");
+    await session.exportDocument("txt", DEFAULT_SETTINGS);
     assert.equal(fake.dialog.defaultPath, "无标题.txt");
   } finally {
     await teardown(session);

@@ -5,7 +5,7 @@ import {
   pageLines,
   revealScrollTop,
   safeZone,
-} from "../src/editor/reveal.ts";
+} from "../../src/editor/reveal.ts";
 
 // A 600px viewport over content, a 20px line, the safe zone 5 lines (100px).
 const reveal = (scrollTop, boxTop, boxBottom, padding = 100) =>

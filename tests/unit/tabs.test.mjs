@@ -7,8 +7,8 @@ import {
   displayName,
   neighbourAfterClose,
   nextUntitled,
-} from "../src/core/tabs.ts";
-import { fromText } from "../src/core/document.ts";
+} from "../../src/core/tabs.ts";
+import { fromText } from "../../src/core/document.ts";
 
 const blank = () => ({
   document: fromText(""),
@@ -37,7 +37,6 @@ function setup({
 } = {}) {
   // crypto: the event mock registers listeners as callbacks with random ids.
   globalThis.window = { crypto: globalThis.crypto };
-  globalThis.isTauri = true;
   const fake = {
     calls: [],
     args: [],
@@ -108,7 +107,6 @@ async function teardown(tabs) {
     await tab.session.flush().catch(() => {});
   clearMocks();
   delete globalThis.window;
-  delete globalThis.isTauri;
 }
 const rustCalls = (fake) =>
   fake.calls.filter((cmd) => !cmd.startsWith("plugin:"));
@@ -151,7 +149,6 @@ test("恢复窗口只调用一次，按 Rust 给出的顺序与当前标签页�
   }
   {
     globalThis.window = {};
-    globalThis.isTauri = true;
     mockIPC(async (cmd) => {
       if (cmd === "restore_window")
         return {

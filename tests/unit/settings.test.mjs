@@ -5,12 +5,12 @@ import {
   applySettings,
   cssFontFamily,
   normalizeSettings,
-} from "../src/core/settings.ts";
+} from "../../src/core/settings.ts";
 import {
   MEDIUM_CARET_FACTOR,
   THICK_CARET_FACTOR,
   caretWidth,
-} from "../src/editor/caret-math.ts";
+} from "../../src/editor/caret-math.ts";
 
 test("设置规范化：字号（pt）保留一位小数并限制在 6–30，字体去空白、空则默认", () => {
   assert.deepEqual(DEFAULT_SETTINGS, {
@@ -39,21 +39,6 @@ test("设置规范化：字号（pt）保留一位小数并限制在 6–30，�
   assert.equal(normalizeSettings({ fontSizePt: 2 }).fontSizePt, 6);
   assert.equal(normalizeSettings({ fontSizePt: 99 }).fontSizePt, 30);
   assert.equal(normalizeSettings({ fontFamily: "   " }).fontFamily, "微软雅黑");
-});
-
-test("旧设置文件的 fontSize（px）按 0.75 换算成 pt，有 fontSizePt 时以它为准", () => {
-  assert.deepEqual(normalizeSettings({ fontFamily: "宋体", fontSize: 13 }), {
-    fontFamily: "宋体",
-    fontSizePt: 9.8,
-    openFile: "tab",
-    startup: "newWindow",
-    caretWidth: "thin",
-    selectionCorners: "rounded",
-  });
-  assert.equal(normalizeSettings({ fontSize: 14 }).fontSizePt, 10.5);
-  assert.equal(normalizeSettings({ fontSizePt: 10, fontSize: 14 }).fontSizePt, 10);
-  assert.equal(normalizeSettings({ fontSize: 99 }).fontSizePt, 30);
-  assert.equal("fontSize" in normalizeSettings({ fontSize: 14 }), false);
 });
 
 test("打开文件：只认 tab / window，其他值取默认 tab，不影响其他字段", () => {
@@ -87,8 +72,8 @@ test("启动时：只认 newWindow / lastSession，其他值取默认 newWindow�
     normalizeSettings({ fontSizePt: 12, openFile: "window", startup: "恢复" }),
     { fontFamily: "微软雅黑", fontSizePt: 12, openFile: "window", startup: "newWindow", caretWidth: "thin", selectionCorners: "rounded" },
   );
-  // 旧设置文件没有 startup：取默认，其余照旧换算。
-  assert.deepEqual(normalizeSettings({ fontFamily: "宋体", fontSize: 16 }), {
+  // 没有 startup：取默认。
+  assert.deepEqual(normalizeSettings({ fontFamily: "宋体", fontSizePt: 12 }), {
     fontFamily: "宋体",
     fontSizePt: 12,
     openFile: "tab",
@@ -166,8 +151,8 @@ test("选区边角：只认 square / rounded，缺省或其他值取默认 round
     normalizeSettings({ fontSizePt: "abc", openFile: "侧边栏", selectionCorners: "square" }),
     { ...DEFAULT_SETTINGS, selectionCorners: "square" },
   );
-  // 旧设置文件（只有 px 字号）：取默认圆角。
-  assert.equal(normalizeSettings({ fontFamily: "宋体", fontSize: 16 }).selectionCorners, "rounded");
+  // 没有这一项：取默认圆角。
+  assert.equal(normalizeSettings({ fontFamily: "宋体", fontSizePt: 12 }).selectionCorners, "rounded");
 });
 
 test("设置写成 CSS 变量：单个字体名加引号与回退字体，字体列表原样使用", () => {

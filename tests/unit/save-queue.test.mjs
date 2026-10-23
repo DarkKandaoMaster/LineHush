@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SaveQueue } from "../src/core/save-queue.ts";
+import { SaveQueue } from "../../src/core/save-queue.ts";
 test("保存期间的新修改随后保存，永不并发写入", async () => {
   let release;
   const seen = [];
