@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Session } from "./core/session";
-import { readSettings } from "./core/native";
-import {
-  DEFAULT_SETTINGS,
-  normalizeSettings,
-  type Startup,
-} from "./core/settings";
 import { createTabs, displayName, type Tab } from "./core/tabs";
 import { useCaretMetrics } from "./hooks/useCaretMetrics";
 import { useDialogs } from "./hooks/useDialogs";
@@ -24,11 +18,14 @@ import "./App.css";
 
 export default function App() {
   const unsaved = useUnsavedPrompt();
+  const settings = useSettings((error) => tabs.report(error));
   // 关窗时按当时的“启动时”设置决定是否询问（见 tabs.closeWindow）；设置还没读完
-  // 就关窗时直接读一次，不按默认值处理。
-  const startup = useRef<Startup | null>(null);
+  // 就关窗时等它读完，不按默认值处理。
   const [tabs] = useState(() =>
-    createTabs(unsaved.ask, () => startup.current ?? readStartup()),
+    createTabs(unsaved.ask, async () => {
+      await settings.loaded;
+      return settings.current.current.startup;
+    }),
   );
   const { tabs: list, active, ready, error, focus } = useSyncExternalStore(
     tabs.subscribe,
@@ -37,11 +34,7 @@ export default function App() {
   const current = list.find((tab) => tab.id === active);
   const currentState = useSessionState(current?.session);
   const preview = useImagePreview();
-  const settings = useSettings(tabs);
   const settingsDialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    if (settings.loaded) startup.current = settings.settings.startup;
-  }, [settings.loaded, settings.settings.startup]);
   // 对话框非模态（标题栏照常可拖、可按），开着时其余部分 inert、盖上遮罩，见 useDialogs。
   const dialogs = useDialogs({
     dialogs: {
@@ -49,28 +42,18 @@ export default function App() {
       settings: settingsDialog,
       preview: preview.dialog,
     },
-    dismiss: {
-      unsaved: () => unsaved.dialog.current?.close("cancel"),
-      // 与“关闭”按钮相同：close 事件里 flush 设置并把焦点还给编辑器。
-      settings: () => settingsDialog.current?.close(),
-      preview: preview.close,
-    },
     focus: tabs.focus,
   });
   const dimmed = dialogs.top !== null;
 
   useWindowGuards(tabs);
-  useCaretMetrics(tabs.desktop);
-  useWindowTitle(tabs.desktop, current, currentState?.dirty ?? false);
+  useCaretMetrics();
+  useWindowTitle(current, currentState?.dirty ?? false);
   const fileDisabled =
-    !tabs.desktop ||
-    !currentState ||
-    currentState.busy ||
-    currentState.importing;
+    !currentState || currentState.busy || currentState.importing;
   return (
     <main className="app">
       <TitleBar
-        desktop={tabs.desktop}
         tabs={list}
         active={active}
         onActivate={tabs.activate}
@@ -83,7 +66,7 @@ export default function App() {
         <Toolbar
           session={current?.session}
           fileDisabled={fileDisabled}
-          openDisabled={!tabs.desktop}
+          settings={settings.settings}
           onNew={() => void tabs.newTab()}
           onOpen={() => void tabs.openFile()}
           onSettings={() => settingsDialog.current?.show()}
@@ -115,9 +98,9 @@ export default function App() {
         dialogRef={preview.dialog}
         name={preview.name}
         source={preview.source}
-        canSave={tabs.desktop}
         onSave={() => void preview.saveOriginal()}
         onClose={preview.close}
+        onClosed={preview.closed}
         onLoad={() => dialogs.reveal("preview")}
       />
       <UnsavedDialog
@@ -139,14 +122,6 @@ export default function App() {
   );
 }
 
-/** 设置文件里的“启动时”；读不出时为默认值。 */
-function readStartup(): Promise<Startup> {
-  return readSettings().then(
-    (value) => normalizeSettings(value).startup,
-    () => DEFAULT_SETTINGS.startup,
-  );
-}
-
 const noSubscription = () => () => {};
 const noSnapshot = () => undefined;
 /** The snapshot of a session that may not exist yet (before the tabs load). */
@@ -161,10 +136,9 @@ function useSessionState(session: Session | undefined) {
  * Window title: the current tab's name; "● " marks unsaved changes. The title bar
  * is drawn by the page (TitleBar) without it; the taskbar still shows it.
  */
-function useWindowTitle(desktop: boolean, tab: Tab | undefined, dirty: boolean) {
+function useWindowTitle(tab: Tab | undefined, dirty: boolean) {
   const title = tab ? `${dirty ? "● " : ""}${displayName(tab)}` : "LineHush";
   useEffect(() => {
-    if (desktop)
-      void getCurrentWindow().setTitle(title).catch(console.error);
-  }, [desktop, title]);
+    void getCurrentWindow().setTitle(title).catch(console.error);
+  }, [title]);
 }

@@ -6,7 +6,31 @@
  * load it.
  */
 
+import type { Node as PmNode } from "@tiptap/pm/model";
+import type { Selection } from "@tiptap/pm/state";
 import type { SelectionCorners } from "../core/settings.ts";
+
+/**
+ * Positions of the top-level paragraphs whose line break is inside the
+ * selection: the paragraph at p of size n ends with a line break between
+ * p + n - 1 and p + n, which is selected when from <= p + n - 1 and to >= p + n.
+ * The last block of the document has no line break after it. Like Notepad /
+ * VS Code, the drawn selection (caret.ts) shows each as half a character after
+ * the line's text; the browser draws nothing for "我|" to the next line's start.
+ */
+export function selectedNewlines(doc: PmNode, selection: Selection): number[] {
+  const { from, to, empty } = selection;
+  if (empty) return [];
+  const out: number[] = [];
+  const last = doc.childCount - 1;
+  doc.nodesBetween(from, to, (node, pos, _parent, index) => {
+    const end = pos + node.nodeSize;
+    if (node.type.name === "paragraph" && index < last && from <= end - 1 && to >= end)
+      out.push(pos);
+    return false;
+  });
+  return out;
+}
 
 /** VS Code's corner radius in CSS pixels. */
 export const SELECTION_RADIUS = 3;

@@ -6,7 +6,7 @@ export interface Settings {
   fontFamily: string;
   /**
    * Editor text size in pt (1 pt = 4/3 CSS px), at most one decimal, in
-   * MIN_FONT_SIZE..MAX_FONT_SIZE. Older files stored `fontSize` in px.
+   * MIN_FONT_SIZE..MAX_FONT_SIZE.
    */
   fontSizePt: number;
   /**
@@ -43,9 +43,10 @@ export type Startup = "newWindow" | "lastSession";
 const STARTUP_VALUES: readonly Startup[] = ["newWindow", "lastSession"];
 
 /**
- * Keep in step with `Settings::default` in src-tauri/src/settings.rs. "微软雅黑"
- * is Microsoft YaHei (not the UI variant); WebView2 finds fonts by their
- * Chinese names itself.
+ * Rust stores settings.json as it is and only reads `openFile` and `startup`,
+ * taking "tab" and "newWindow" for anything else (src-tauri/src/settings.rs);
+ * every other check happens here. "微软雅黑" is Microsoft YaHei (not the UI
+ * variant); WebView2 finds fonts by their Chinese names itself.
  */
 export const DEFAULT_SETTINGS: Settings = {
   fontFamily: "微软雅黑",
@@ -69,14 +70,12 @@ const FALLBACK_FONTS = [
 /**
  * Any stored or typed value made valid: size rounded to 0.1 and clamped, an
  * empty font is the default, an unknown `openFile`, `startup`, `caretWidth` or
- * `selectionCorners` is the default. A file
- * without `fontSizePt` but with the older `fontSize` (px) has it converted (× 0.75).
+ * `selectionCorners` is the default.
  */
 export function normalizeSettings(value: unknown): Settings {
   const input = (typeof value === "object" && value !== null ? value : {}) as {
     fontFamily?: unknown;
     fontSizePt?: unknown;
-    fontSize?: unknown;
     openFile?: unknown;
     startup?: unknown;
     caretWidth?: unknown;
@@ -84,10 +83,7 @@ export function normalizeSettings(value: unknown): Settings {
   };
   const family =
     typeof input.fontFamily === "string" ? input.fontFamily.trim() : "";
-  const size =
-    input.fontSizePt === undefined && typeof input.fontSize === "number"
-      ? input.fontSize * 0.75
-      : Number(input.fontSizePt);
+  const size = Number(input.fontSizePt);
   return {
     fontFamily: family || DEFAULT_SETTINGS.fontFamily,
     fontSizePt: Number.isFinite(size)

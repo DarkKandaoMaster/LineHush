@@ -17,7 +17,6 @@ import {
   blockNodes,
   blockPictures,
   clipboardBlocks,
-  clipboardImages,
   insertBlocks,
   insertImages,
   lineOf,
@@ -30,12 +29,13 @@ import {
   type Diary,
   type Picture,
 } from "../core/document";
+import { letterOf } from "../core/keys";
 import { imageUrl } from "../core/native";
 export interface DiaryEditorHandle {
   reserveInsertion: () => {
     cancel: () => void;
     /** `rows`: which pictures start a new row (a paste of copied rows). */
-    insert: (pictures: Picture[], rows?: boolean[]) => void;
+    insert: (pictures: Picture[], rows: boolean[]) => void;
     /** Pasted lines and images (see `insertBlocks`). */
     insertBlocks: (blocks: Block[]) => void;
   };
@@ -50,24 +50,22 @@ interface Props {
   ref: Ref<DiaryEditorHandle>;
   onChange: (doc: Diary) => void;
   onSelection: (position: { line: number; column: number }) => void;
-  /** `fromClipboard`: pasted, possibly the files of a LineHush copy. */
-  onFiles: (files: File[], fromClipboard?: boolean) => void;
-  /** Images copied in LineHush, pasted under the same ids and in the same rows. */
-  onImages: (pictures: Picture[], rows: boolean[]) => void;
+  images: EditorImages;
+  onPreview: (pic: Picture) => void;
+}
+/** What the editor hands to the tab for images (useImageImport). */
+export interface EditorImages {
+  /** Dropped or pasted files; `fromClipboard`: pasted, possibly the files of a LineHush copy. */
+  importFiles: (files: File[], fromClipboard?: boolean) => void;
   /**
    * Images with text lines copied in LineHush, some of whose images this
    * document may not hold yet (copied from another one).
    */
-  onBlocks: (blocks: Block[]) => void;
-  /** See ImageOptions.stage. */
-  onStage: (pictures: Picture[]) => void;
+  pasteBlocks: (blocks: Block[]) => void;
   /** See ImageOptions.copy. */
-  onCopy: (
-    pictures: Picture[],
-    rows: boolean[],
-    afterBrowser: boolean,
-  ) => boolean;
-  onPreview: (pic: Picture) => void;
+  copy: (pictures: Picture[], rows: boolean[]) => void;
+  /** See ImageOptions.stage. */
+  stage: (pictures: Picture[]) => void;
 }
 // Files without a MIME type still go to Rust, which rejects anything that is not an image.
 const imageFiles = (files: FileList | undefined) =>
@@ -96,9 +94,8 @@ function DiaryEditor(props: Props) {
     extensions: extensions({
       preview: (pic) => latest.current.onPreview(pic),
       source: (pic) => imageUrl(latest.current.tab, pic),
-      copy: (pictures, rows, afterBrowser) =>
-        latest.current.onCopy(pictures, rows, afterBrowser),
-      stage: (pictures) => latest.current.onStage(pictures),
+      copy: (pictures, rows) => latest.current.images.copy(pictures, rows),
+      stage: (pictures) => latest.current.images.stage(pictures),
     }),
     content: toEditor(props.initial),
     editorProps: {
@@ -129,17 +126,9 @@ function DiaryEditor(props: Props) {
         // own undo reaches the history as a beforeinput event) but Ctrl+Y did
         // not, as the browser never had anything to redo.
         keydown(view, event) {
-          if (
-            !event.ctrlKey ||
-            event.altKey ||
-            event.metaKey ||
-            event.isComposing ||
-            !view.editable
-          )
+          if (!event.ctrlKey || event.altKey || event.isComposing || !view.editable)
             return false;
-          const letter = /^[a-z]$/i.test(event.key)
-            ? event.key.toLowerCase()
-            : ({ KeyZ: "z", KeyY: "y" } as Record<string, string>)[event.code];
+          const letter = letterOf(event);
           const command =
             (letter === "y" && !event.shiftKey) ||
             (letter === "z" && event.shiftKey)
@@ -163,20 +152,14 @@ function DiaryEditor(props: Props) {
           remember(view.state.doc);
           if (blockPictures(blocks).every((pic) => known.has(pic.id)))
             view.dispatch(pasteBlocks(view.state.tr, blocks));
-          else latest.current.onBlocks(blocks);
+          else latest.current.images.pasteBlocks(blocks);
           return true;
         }
-        // Copied in LineHush: the same images, not imported again. WebView2 hides
-        // the HTML when there are files too (a copy from Rust), so those are
-        // recognised in onFiles; this covers HTML without files.
-        const copied = clipboardImages(data.getData("text/html"));
-        if (copied) {
-          latest.current.onImages(copied.pictures, copied.rows);
-          return true;
-        }
+        // Images alone, also those copied in LineHush (Rust writes them as
+        // files; importFiles recognises its own copy and keeps the same images).
         const files = imageFiles(data.files);
         if (files.length) {
-          latest.current.onFiles(files, true);
+          latest.current.images.importFiles(files, true);
           return true;
         }
         const nodes = fromText(data.getData("text/plain")).blocks.map((block) =>
@@ -197,7 +180,7 @@ function DiaryEditor(props: Props) {
       handleDrop(_view, event) {
         // Always consume drops: dropped HTML or text must not enter the document.
         const files = imageFiles(event.dataTransfer?.files);
-        if (files.length) latest.current.onFiles(files);
+        if (files.length) latest.current.images.importFiles(files);
         return true;
       },
     },
@@ -251,7 +234,7 @@ function DiaryEditor(props: Props) {
         editor.view.dispatch(pasteBlocks(editor.state.tr, blocks));
         editor.view.focus();
       },
-      insert: (pictures: Picture[], rows: boolean[] = []) => {
+      insert: (pictures: Picture[], rows: boolean[]) => {
         restore();
         const { state, view } = editor;
         // One undo step for the whole batch.
@@ -300,10 +283,6 @@ export default memo(
     prev.ref === next.ref &&
     prev.onChange === next.onChange &&
     prev.onSelection === next.onSelection &&
-    prev.onFiles === next.onFiles &&
-    prev.onImages === next.onImages &&
-    prev.onBlocks === next.onBlocks &&
-    prev.onStage === next.onStage &&
-    prev.onCopy === next.onCopy &&
+    prev.images === next.images &&
     prev.onPreview === next.onPreview,
 );

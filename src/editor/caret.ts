@@ -1,5 +1,5 @@
 import { Extension } from "@tiptap/core";
-import { NodeSelection, Plugin, PluginKey } from "@tiptap/pm/state";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import {
   DEFAULT_CARET_METRICS,
@@ -10,11 +10,15 @@ import {
   type CaretMetrics,
   type CaretSpot,
 } from "./caret-math.ts";
-import { affinityPlugin, headSide, type Affinity } from "./affinity.ts";
-import { BlockRange, isImage, rowBreak } from "./image-view.ts";
-import { selectedNewlines } from "./newline-selection.ts";
+import { drawnCaret, textCaret } from "./caret-geometry.ts";
+import { headSide } from "./input.ts";
 import { lineHeight, scroller } from "./reveal.ts";
-import { cornerRadius, selectionPath, type Row } from "./selection-shape.ts";
+import {
+  cornerRadius,
+  selectedNewlines,
+  selectionPath,
+  type Row,
+} from "./selection-shape.ts";
 import type { CaretWidth, SelectionCorners } from "../core/settings.ts";
 
 /**
@@ -25,11 +29,11 @@ import type { CaretWidth, SelectionCorners } from "../core/settings.ts";
  *
  * The caret is as wide as the Windows caret setting in screen pixels (one by
  * default, as Notepad's; the browser's is one CSS pixel, two screen pixels at
- * 150%), or three screen pixels with the “光标粗细” setting at "粗"
- * (`setCaretWidth`), on whole screen pixels, blinking at the system's rate and standing
- * still after the system's timeout. The selection is VS Code's rounded shape
+ * 150%), or two / three times that with the “光标粗细” setting at "中" / "粗",
+ * on whole screen pixels, blinking at the system's rate and standing still
+ * after the system's timeout. The selection is VS Code's rounded shape
  * (selection-shape.ts), or the same shape with square corners with the
- * “选区边角” setting at "方角" (`setSelectionCorners`).
+ * “选区边角” setting at "方角" (see `configureCaret`).
  *
  * Both are elements next to the editable root, in its parent (Tiptap's
  * EditorContent element, positioned in App.css), not inside it: ProseMirror
@@ -41,85 +45,35 @@ import type { CaretWidth, SelectionCorners } from "../core/settings.ts";
 /** Fired on the window when something changes the layout without resizing the editor (settings). */
 export const LAYOUT_CHANGED = "linehush-layout-changed";
 
-let metrics: CaretMetrics = DEFAULT_CARET_METRICS;
-/** The “光标粗细” setting: "thin" follows Windows, "medium" / "thick" are 2× / 3× it (`caretWidth`). */
-let widthChoice: CaretWidth = "thin";
-/** The “选区边角” setting: the selection's corner radius (`cornerRadius`). */
-let cornersChoice: SelectionCorners = "rounded";
+interface CaretConfig {
+  /** The system caret settings, read by Rust. */
+  metrics: CaretMetrics;
+  /** The “光标粗细” setting (`caretWidth`). */
+  width: CaretWidth;
+  /** The “选区边角” setting (`cornerRadius`). */
+  corners: SelectionCorners;
+}
+let config: CaretConfig = {
+  metrics: DEFAULT_CARET_METRICS,
+  width: "thin",
+  corners: "rounded",
+};
 const redraws = new Set<() => void>();
 
-/** Applies the “光标粗细” setting (useSettings) to every editor in the window. */
-export function setCaretWidth(next: CaretWidth) {
-  if (next === widthChoice) return;
-  widthChoice = next;
-  for (const redraw of redraws) redraw();
-}
-
-/** Applies the “选区边角” setting (useSettings) to every editor in the window. */
-export function setSelectionCorners(next: SelectionCorners) {
-  if (next === cornersChoice) return;
-  cornersChoice = next;
-  for (const redraw of redraws) redraw();
-}
-
-/** Applies the system caret settings (read by Rust) to every editor in the window. */
-export function setCaretMetrics(next: CaretMetrics) {
+/** Applies caret settings (useSettings, useCaretMetrics) to every editor in the window. */
+export function configureCaret(partial: Partial<CaretConfig>) {
+  const next = { ...config, ...partial };
+  const { metrics } = next;
   if (
-    next.width === metrics.width &&
-    next.blinkMs === metrics.blinkMs &&
-    next.timeoutMs === metrics.timeoutMs
+    next.width === config.width &&
+    next.corners === config.corners &&
+    metrics.width === config.metrics.width &&
+    metrics.blinkMs === config.metrics.blinkMs &&
+    metrics.timeoutMs === config.metrics.timeoutMs
   )
     return;
-  metrics = next;
+  config = next;
   for (const redraw of redraws) redraw();
-}
-
-/**
- * The caret at text position `pos`: the character box after it, or before it
- * (`side` -1) where the line wraps and the browser would draw it at the end of
- * the upper line (see affinity.ts).
- */
-function textSpot(view: EditorView, pos: number, side: Affinity = 1): CaretSpot | null {
-  const $pos = view.state.doc.resolve(pos);
-  if (!$pos.parent.content.size && $pos.depth) {
-    // An empty line: its line box.
-    const rect = (view.nodeDOM($pos.before()) as HTMLElement | null)?.getBoundingClientRect();
-    if (rect?.height) return { x: rect.left, top: rect.top, bottom: rect.bottom };
-  }
-  const c = view.coordsAtPos(pos, side);
-  return { x: c.left, top: c.top, bottom: c.bottom };
-}
-
-/**
- * Where the caret goes: at the selection's head (also for a range, as in
- * Notepad and VS Code). Between blocks it is drawn on the image the plugin's
- * decorations mark (`.gap-after` / `.gap-before`, see image-view.ts): as tall
- * as the image, its middle in the middle of the gap beside it (the image's
- * right margin). A range ending between two text lines: at the end of the one
- * before. A selected image (NodeSelection) has no caret.
- */
-function caretSpot(view: EditorView, width: number): CaretSpot | null {
-  const sel = view.state.selection;
-  if (sel instanceof NodeSelection) return null;
-  const $head = sel.$head;
-  if ($head.parent.inlineContent) return textSpot(view, sel.head, headSide(view));
-  const before = $head.nodeBefore;
-  const after = $head.nodeAfter;
-  const side = sel instanceof BlockRange && sel.empty ? sel.side : -1;
-  const beside = (pos: number, right: boolean): CaretSpot | null => {
-    const item = view.nodeDOM(pos) as HTMLElement | null;
-    const rect = item?.getBoundingClientRect();
-    if (!item || !rect?.height) return null;
-    const gap = parseFloat(getComputedStyle(item).marginRight) || 0;
-    const middle = right ? rect.right + gap / 2 : rect.left - gap / 2;
-    return { x: middle - width / 2, top: rect.top, bottom: rect.bottom };
-  };
-  if (before && isImage(before) && !(rowBreak($head) && side > 0))
-    return beside(sel.head - before.nodeSize, true);
-  if (after && isImage(after)) return beside(sel.head, false);
-  if (before?.isTextblock) return textSpot(view, sel.head - 1);
-  if (after?.isTextblock) return textSpot(view, sel.head + 1);
-  return null;
 }
 
 /**
@@ -127,7 +81,7 @@ function caretSpot(view: EditorView, width: number): CaretSpot | null {
  * text lines in the selection (images show their own layer, `.image-selected`).
  * Each line's part is one DOM Range (its rects, by line); an empty line is its
  * line box with no width. A selected line break adds half a character after the
- * line's text (as Notepad draws it; see newline-selection.ts). Rows of the
+ * line's text (as Notepad draws it; see `selectedNewlines`). Rows of the
  * same or neighbouring lines are stretched to meet, so they make one shape.
  *
  * Only lines inside `band` (client coordinates) are measured, so a long
@@ -192,14 +146,13 @@ function selectionRows(
     if (newlines.has(pos)) {
       if (!lines.length) {
         // Nothing of the line's text is selected, only its line break.
-        let spot: CaretSpot | null = null;
-        if (!node.content.size) spot = textSpot(view, start);
+        let spot: CaretSpot;
+        if (!node.content.size) spot = textCaret(view, start);
         else {
           const c = view.coordsAtPos(end, -1);
           spot = { x: c.right, top: c.top, bottom: c.bottom };
         }
-        if (spot)
-          lines.push({ top: spot.top, bottom: spot.bottom, left: spot.x, right: spot.x });
+        lines.push({ top: spot.top, bottom: spot.bottom, left: spot.x, right: spot.x });
       }
       const last = lines[lines.length - 1];
       if (last) last.right += em / 2;
@@ -232,7 +185,7 @@ class Drawing {
   private layer: SVGSVGElement;
   private path: SVGPathElement;
   private blink: Animation | null = null;
-  private resize: ResizeObserver | null = null;
+  private resize: ResizeObserver;
   private media: MediaQueryList | null = null;
   private frame = 0;
   private composingEnd: ReturnType<typeof setTimeout> | undefined;
@@ -274,6 +227,7 @@ class Drawing {
   constructor(view: EditorView) {
     this.view = view;
     const doc = view.dom.ownerDocument;
+    const win = doc.defaultView!;
     this.scroller = scroller(view);
     this.scroller?.addEventListener("scroll", this.onScroll, { passive: true });
     this.caret = doc.createElement("div");
@@ -284,21 +238,18 @@ class Drawing {
     this.path = doc.createElementNS(SVG, "path");
     this.layer.append(this.path);
     this.attach();
-    const win = doc.defaultView;
-    if (win && "ResizeObserver" in win) {
-      // The editor's size changes when the window does (lines wrap anew) and
-      // as content is added; the callback comes after layout, before paint.
-      this.resize = new win.ResizeObserver(() => this.draw(false));
-      this.resize.observe(view.dom);
-    }
-    win?.addEventListener(LAYOUT_CHANGED, this.onLayout);
+    // The editor's size changes when the window does (lines wrap anew) and
+    // as content is added; the callback comes after layout, before paint.
+    this.resize = new win.ResizeObserver(() => this.draw(false));
+    this.resize.observe(view.dom);
+    win.addEventListener(LAYOUT_CHANGED, this.onLayout);
     view.dom.addEventListener("focus", this.onFocus);
     view.dom.addEventListener("blur", this.onFocus);
     view.dom.addEventListener("compositionstart", this.onCompositionStart);
     view.dom.addEventListener("compositionend", this.onCompositionEnd);
     // A click on the caret's own position changes no state but may change the
-    // line it is drawn on at a wrap (affinity.ts).
-    win?.addEventListener("mouseup", this.onLayout);
+    // line it is drawn on at a wrap (input.ts, `headSide`).
+    win.addEventListener("mouseup", this.onLayout);
     this.watchScale();
     redraws.add(this.onMedia);
   }
@@ -325,10 +276,10 @@ class Drawing {
 
   /** Redraws when the window moves to a display with another scale. */
   private watchScale() {
-    const win = this.view.dom.ownerDocument.defaultView;
+    const win = this.view.dom.ownerDocument.defaultView!;
     this.media?.removeEventListener("change", this.onMedia);
-    this.media = win?.matchMedia?.(`(resolution: ${win.devicePixelRatio}dppx)`) ?? null;
-    this.media?.addEventListener("change", this.onMedia);
+    this.media = win.matchMedia(`(resolution: ${win.devicePixelRatio}dppx)`);
+    this.media.addEventListener("change", this.onMedia);
   }
 
   private endComposition() {
@@ -366,8 +317,6 @@ class Drawing {
     const dpr = win.devicePixelRatio || 1;
     const rect = host.getBoundingClientRect();
     const origin = { left: rect.left + host.clientLeft, top: rect.top + host.clientTop };
-    const screenWidth = caretWidth(metrics, widthChoice);
-    const width = Math.max(1, Math.round(screenWidth)) / dpr;
 
     // The selection, its corners on screen pixels; measured a viewport's
     // height above and below the viewport.
@@ -394,13 +343,13 @@ class Drawing {
       left: px(row.left) - layer.left,
       right: px(row.right) - layer.left,
     }));
-    const d = selectionPath(rows, cornerRadius(cornersChoice));
+    const d = selectionPath(rows, cornerRadius(config.corners));
     if (this.path.getAttribute("d") !== d) {
       if (d) this.path.setAttribute("d", d);
       else this.path.removeAttribute("d");
     }
 
-    const spot = caretSpot(this.view, width);
+    const spot = drawnCaret(this.view, headSide(this.view));
     const style = this.caret.style;
     if (!spot) {
       style.visibility = "hidden";
@@ -408,7 +357,7 @@ class Drawing {
       this.blink = null;
       return;
     }
-    const box = caretBox(spot, origin, screenWidth, dpr);
+    const box = caretBox(spot, origin, caretWidth(config.metrics, config.width), dpr);
     style.visibility = "";
     style.left = `${box.left}px`;
     style.top = `${box.top}px`;
@@ -424,8 +373,9 @@ class Drawing {
   private startBlink() {
     this.blink?.cancel();
     this.blink = null;
+    const { metrics } = config;
     const iterations = blinkIterations(metrics);
-    if (!iterations || typeof this.caret.animate !== "function") return;
+    if (!iterations) return;
     this.blink = this.caret.animate(
       [
         { opacity: 1, offset: 0 },
@@ -441,7 +391,7 @@ class Drawing {
     const win = this.view.dom.ownerDocument.defaultView;
     if (this.frame) win?.cancelAnimationFrame(this.frame);
     clearTimeout(this.composingEnd);
-    this.resize?.disconnect();
+    this.resize.disconnect();
     this.scroller?.removeEventListener("scroll", this.onScroll);
     this.media?.removeEventListener("change", this.onMedia);
     win?.removeEventListener(LAYOUT_CHANGED, this.onLayout);
@@ -458,16 +408,12 @@ class Drawing {
   }
 }
 
-const caretKey = new PluginKey("drawnCaret");
-
 /** The editor's own caret and selection (see `Drawing`). */
 export const DrawnCaret = Extension.create({
   name: "drawnCaret",
   addProseMirrorPlugins: () => [
-    // Which line the caret is drawn on where a line wraps.
-    affinityPlugin(),
     new Plugin({
-      key: caretKey,
+      key: new PluginKey("drawnCaret"),
       view(view) {
         const drawing = new Drawing(view);
         drawing.draw(true);

@@ -17,13 +17,14 @@ export function useImagePreview() {
     picture: Picture;
   } | null>(null);
   const request = useRef({ version: 0, url: "" });
-  const close = useCallback(() => {
+  const close = useCallback(() => dialog.current?.close("cancel"), []);
+  /** After the dialog closed, whichever way (its button, Esc, the mask, the title bar ×). */
+  const closed = useCallback(() => {
     const current = request.current;
     current.version++;
     if (current.url) URL.revokeObjectURL(current.url);
     current.url = "";
     setSource("");
-    dialog.current?.close();
   }, []);
   const show = useCallback(
     async (session: Session, pic: Picture) => {
@@ -67,6 +68,7 @@ export function useImagePreview() {
     name: shown?.picture.name ?? "",
     show,
     close,
+    closed,
     saveOriginal,
   };
 }

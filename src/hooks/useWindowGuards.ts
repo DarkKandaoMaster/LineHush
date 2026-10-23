@@ -1,12 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { letterOf } from "../core/keys";
 import type { Tabs } from "../core/tabs";
-
-/** The letter of Ctrl+<letter>, also when an input method reports the key as "Process". */
-function letterOf(event: KeyboardEvent) {
-  if (/^[a-z]$/i.test(event.key)) return event.key.toLowerCase();
-  return /^Key([A-Z])$/.exec(event.code)?.[1].toLowerCase();
-}
 
 /**
  * Loads the window's tabs, then registers the shortcuts (Ctrl+N new tab,
@@ -17,7 +12,6 @@ function letterOf(event: KeyboardEvent) {
  * mount → unmount → mount cycle register each listener exactly once.
  */
 export function useWindowGuards(tabs: Tabs) {
-  const { desktop } = tabs;
   useEffect(() => {
     let active = true;
     const removers: (() => void)[] = [];
@@ -28,7 +22,7 @@ export function useWindowGuards(tabs: Tabs) {
     function keydown(event: KeyboardEvent) {
       if (
         event.isComposing ||
-        !(event.ctrlKey || event.metaKey) ||
+        !event.ctrlKey ||
         event.altKey ||
         // An open dialog (preview, settings, "save changes?") keeps the keys.
         document.querySelector("dialog[open]")
@@ -68,7 +62,6 @@ export function useWindowGuards(tabs: Tabs) {
       if (!active) return;
       window.addEventListener("keydown", keydown);
       removers.push(() => window.removeEventListener("keydown", keydown));
-      if (!desktop) return;
       const current = getCurrentWindow();
       try {
         keep(
@@ -97,5 +90,5 @@ export function useWindowGuards(tabs: Tabs) {
       active = false;
       removers.splice(0).forEach((remove) => remove());
     };
-  }, [desktop, tabs]);
+  }, [tabs]);
 }

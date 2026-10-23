@@ -27,7 +27,7 @@ interface Props {
 /** One tab: its banners, editor and status bar. */
 export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
   const { session } = tab;
-  const { document, generation, busy, error, notice, status } =
+  const { document, generation, busy, error, notice, saveFailed } =
     useSyncExternalStore(session.subscribe, session.getSnapshot);
   const editor = useRef<DiaryEditorHandle>(null);
   const [position, setPosition] = useState({ line: 1, column: 1 });
@@ -52,7 +52,7 @@ export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
         session={session}
         error={error}
         notice={notice}
-        status={status}
+        saveFailed={saveFailed}
       />
       <DiaryEditor
         key={generation}
@@ -61,11 +61,7 @@ export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
         initial={document}
         disabled={busy}
         onChange={session.update}
-        onFiles={images.importFiles}
-        onImages={images.pasteCopied}
-        onBlocks={images.pasteBlocks}
-        onCopy={images.copy}
-        onStage={images.stage}
+        images={images}
         onPreview={preview}
         onSelection={setPosition}
       />
@@ -75,7 +71,7 @@ export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
         characters={counts.characters}
         images={counts.images}
       />
-      {/* 工具栏已无“插入图片”按钮，界面上无法打开此选择框；保留它只因 tests/native.mjs 经它导入图片。 */}
+      {/* 工具栏已无“插入图片”按钮，界面上无法打开此选择框；保留它只因 tests/native/native.mjs 经它导入图片。 */}
       <input
         className="visually-hidden"
         type="file"

@@ -11,7 +11,7 @@ import {
   type ImageOptions,
 } from "./image-view.ts";
 import { DrawnCaret } from "./caret.ts";
-import { NewlineSelection } from "./newline-selection.ts";
+import { InputSource } from "./input.ts";
 import { Reveal } from "./reveal.ts";
 
 const PlainKeys = Extension.create({
@@ -46,7 +46,8 @@ export function extensions(images: ImageOptions) {
     // caret between blocks is image-view's collapsed BlockRange.
     image(images),
     PlainKeys,
-    NewlineSelection,
+    // Where selection changes come from (input.ts), read by the two below.
+    InputSource,
     // Scrolling to the caret (safe zone) and PageUp / PageDown.
     Reveal,
     // The caret and the text selection, drawn by the editor (caret.ts).

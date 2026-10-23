@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { ExportFormat, Session } from "../core/session";
+import type { Settings } from "../core/settings";
 
 interface Props {
   /** The current tab's document; 保存、另存为、导出 act on it. */
   session: Session | undefined;
-  /** Save and export need the desktop backend and no running operation or import in the current tab. */
+  /** Save and export wait for a running operation or import in the current tab. */
   fileDisabled: boolean;
-  /** Opening needs the desktop backend. */
-  openDisabled: boolean;
+  /** The font and size a PDF export is printed in. */
+  settings: Settings;
   onNew: () => void;
   onOpen: () => void;
   onSettings: () => void;
@@ -33,7 +34,7 @@ function GearIcon() {
 }
 
 export default function Toolbar(props: Props) {
-  const { session, fileDisabled, openDisabled, onSettings } = props;
+  const { session, fileDisabled, onSettings } = props;
   const exportMenu = useRef<HTMLDetailsElement>(null);
   const [exportOpen, setExportOpen] = useState(false);
   // An open export menu closes on a press outside it or on Esc.
@@ -57,18 +58,14 @@ export default function Toolbar(props: Props) {
   }, [exportOpen]);
   const exportAs = (format: ExportFormat) => {
     if (exportMenu.current) exportMenu.current.open = false;
-    void session?.exportDocument(format);
+    void session?.exportDocument(format, props.settings);
   };
   return (
     <header className="toolbar" aria-label="文件操作">
       <button title="新建标签页 (Ctrl+N)" onClick={props.onNew}>
         新建
       </button>
-      <button
-        disabled={openDisabled}
-        title="打开 (Ctrl+O)"
-        onClick={props.onOpen}
-      >
+      <button title="打开 (Ctrl+O)" onClick={props.onOpen}>
         打开
       </button>
       <button

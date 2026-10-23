@@ -4,16 +4,16 @@ interface Props {
   session: Session;
   error: string;
   notice: string;
-  status: string;
+  saveFailed: boolean;
 }
 
-export default function Banners({ session, error, notice, status }: Props) {
+export default function Banners({ session, error, notice, saveFailed }: Props) {
   return (
     <>
       {error && (
         <div className="error-banner" role="alert">
           <p>{error}</p>
-          {status === "保存失败" && (
+          {saveFailed && (
             <button onClick={() => void session.saveDocument()}>
               重试保存
             </button>

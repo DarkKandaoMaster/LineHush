@@ -320,13 +320,6 @@ input:focus-visible {
   tab-size: 4;
   /* The editor draws the caret and the selection itself (src/editor/caret.ts). */
   caret-color: transparent;
-  /*
-   * Space between rows of images: a row that wraps 8px (the images' 4px
-   * margins), rows a line break apart 8px more (the spacer), rows a text line
-   * apart a whole line more (an empty line: 1lh + 8px).
-   */
-  --image-wrap-margin: 4px;
-  --image-row-gap: 8px;
 }
 .tiptap p {
   margin: 0;
@@ -364,9 +357,9 @@ input:focus-visible {
   fill: #b7d9f8;
 }
 /*
- * The caret, in the text and between blocks (on an image, see image-view's
- * .gap-before / .gap-after). Placed, sized and blinked by caret.ts; shown
- * while the editor has the focus, which comes before it in the DOM.
+ * The caret, in the text and between blocks (beside an image, in the middle
+ * of the gap). Placed, sized and blinked by caret.ts; shown while the editor
+ * has the focus, which comes before it in the DOM.
  */
 .editor-caret {
   position: absolute;
@@ -436,26 +429,26 @@ input:focus-visible {
  * One node per image. Neighbouring images flow in rows and wrap like words;
  * a line break between two images is a block spacer (.image-row-break), and
  * paragraphs are blocks too, so text lines (blank ones too) separate rows
- * further.
+ * further. Space between rows of images: a row that wraps 8px (the images' 4px
+ * margins), rows a line break apart 8px more (the spacer), rows a text line
+ * apart a whole line more (an empty line: 1lh + 8px).
  */
 .image-item {
   display: inline-block;
   vertical-align: top;
   position: relative;
-  margin: var(--image-wrap-margin, 4px) 8px var(--image-wrap-margin, 4px) 0;
+  margin: 4px 8px 4px 0;
   max-width: 100%;
   cursor: default;
 }
 /* A line break between two images: the next one starts a new row, a little further down. */
 .image-row-break {
   display: block;
-  height: var(--image-row-gap, 8px);
-  pointer-events: auto;
+  height: 8px;
 }
 /*
  * Drop positions between images, as tall as the image. (The caret between
- * blocks, .gap-before / .gap-after, is drawn by caret.ts in the middle of the
- * 8px gap.)
+ * blocks is drawn by caret.ts in the middle of the 8px gap.)
  */
 .image-item.drop-before::before,
 .image-item.drop-after::after {
@@ -535,6 +528,17 @@ input:focus-visible {
 }
 .unsaved-dialog {
   z-index: 21;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 20px 20px 16px;
+  min-width: 320px;
+  background: #f9f9f9;
+  color: inherit;
+  box-shadow: 0 8px 24px #0002;
+}
+.unsaved-dialog p {
+  margin: 0 0 20px;
+  font-size: 14px;
 }
 .dialog-mask {
   position: fixed;
@@ -623,19 +627,6 @@ input:focus-visible {
     padding: 4px 8px;
   }
 }
-.unsaved-dialog {
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  padding: 20px 20px 16px;
-  min-width: 320px;
-  background: #f9f9f9;
-  color: inherit;
-  box-shadow: 0 8px 24px #0002;
-}
-.unsaved-dialog p {
-  margin: 0 0 20px;
-  font-size: 14px;
-}
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -707,8 +698,13 @@ input:focus-visible {
   padding: 3px 6px;
   border-color: #e0e0e0;
 }
-/* 打开文件：单选，一项一行。 */
-#settings-open-file {
+.settings-size button.selected {
+  border-color: #0067c0;
+  background: #e5f0fa;
+  color: #0059a8;
+}
+/* 单选组（Choices）的标签与第一项对齐；单选一项一行。 */
+.settings-grid > span {
   align-self: start;
   padding-top: 2px;
 }
@@ -728,9 +724,4 @@ input:focus-visible {
   padding: 0;
   border: none;
   accent-color: #0067c0;
-}
-.settings-size button.selected {
-  border-color: #0067c0;
-  background: #e5f0fa;
-  color: #0059a8;
 }

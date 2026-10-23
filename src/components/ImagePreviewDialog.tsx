@@ -4,10 +4,11 @@ interface Props {
   dialogRef: Ref<HTMLDialogElement>;
   name: string;
   source: string;
-  /** Saving the original needs the desktop backend. */
-  canSave: boolean;
   onSave: () => void;
+  /** The 关闭 button. */
   onClose: () => void;
+  /** After the dialog closed, whichever way. */
+  onClosed: () => void;
   /** 原图载入后对话框变大，再看一次要不要把窗口挪进屏幕。 */
   onLoad: () => void;
 }
@@ -17,15 +18,12 @@ export default function ImagePreviewDialog(props: Props) {
     <dialog
       ref={props.dialogRef}
       className="image-preview"
-      onCancel={(event) => {
-        event.preventDefault();
-        props.onClose();
-      }}
+      onClose={props.onClosed}
     >
       <header>
         <span>{props.name}</span>
         <div className="image-preview-actions">
-          {props.canSave && <button onClick={props.onSave}>保存原图</button>}
+          <button onClick={props.onSave}>保存原图</button>
           <button autoFocus aria-label="关闭原图" onClick={props.onClose}>
             关闭
           </button>

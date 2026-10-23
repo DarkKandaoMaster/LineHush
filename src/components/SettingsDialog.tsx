@@ -34,6 +34,39 @@ const FONTS = [
   "LXGW WenKai",
   "Noto Sans CJK SC",
 ];
+/** One setting as radio buttons, one per line; `name` is also the label's id. */
+function Choices<T extends string>(props: {
+  name: string;
+  label: string;
+  choices: { value: T; label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <>
+      <span id={props.name}>{props.label}</span>
+      <div
+        className="settings-choices"
+        role="radiogroup"
+        aria-labelledby={props.name}
+      >
+        {props.choices.map((choice) => (
+          <label key={choice.value}>
+            <input
+              type="radio"
+              name={props.name}
+              value={choice.value}
+              checked={props.value === choice.value}
+              onChange={() => props.onChange(choice.value)}
+            />
+            {choice.label}
+          </label>
+        ))}
+      </div>
+    </>
+  );
+}
+
 /** In pt; 10 is the default (same as Notepad). */
 const SIZES = [9, 10, 10.5, 11, 12, 14];
 /** “细”跟随 Windows 文本光标粗细（默认 1 屏幕像素），“中”为其 2 倍、“粗”为其 3 倍。 */
@@ -162,82 +195,34 @@ export default function SettingsDialog(props: Props) {
               </button>
             ))}
           </div>
-          <span id="settings-caret-width">光标粗细</span>
-          <div
-            className="settings-choices"
-            role="radiogroup"
-            aria-labelledby="settings-caret-width"
-          >
-            {CARET_WIDTH.map((choice) => (
-              <label key={choice.value}>
-                <input
-                  type="radio"
-                  name="settings-caret-width"
-                  value={choice.value}
-                  checked={settings.caretWidth === choice.value}
-                  onChange={() => onChange({ caretWidth: choice.value })}
-                />
-                {choice.label}
-              </label>
-            ))}
-          </div>
-          <span id="settings-selection-corners">选区边角</span>
-          <div
-            className="settings-choices"
-            role="radiogroup"
-            aria-labelledby="settings-selection-corners"
-          >
-            {SELECTION_CORNERS.map((choice) => (
-              <label key={choice.value}>
-                <input
-                  type="radio"
-                  name="settings-selection-corners"
-                  value={choice.value}
-                  checked={settings.selectionCorners === choice.value}
-                  onChange={() => onChange({ selectionCorners: choice.value })}
-                />
-                {choice.label}
-              </label>
-            ))}
-          </div>
-          <span id="settings-open-file">打开文件</span>
-          <div
-            className="settings-choices"
-            role="radiogroup"
-            aria-labelledby="settings-open-file"
-          >
-            {OPEN_FILE.map((choice) => (
-              <label key={choice.value}>
-                <input
-                  type="radio"
-                  name="settings-open-file"
-                  value={choice.value}
-                  checked={settings.openFile === choice.value}
-                  onChange={() => onChange({ openFile: choice.value })}
-                />
-                {choice.label}
-              </label>
-            ))}
-          </div>
-          <span id="settings-startup">启动时</span>
-          <div
-            className="settings-choices"
-            role="radiogroup"
-            aria-labelledby="settings-startup"
-          >
-            {STARTUP.map((choice) => (
-              <label key={choice.value}>
-                <input
-                  type="radio"
-                  name="settings-startup"
-                  value={choice.value}
-                  checked={settings.startup === choice.value}
-                  onChange={() => onChange({ startup: choice.value })}
-                />
-                {choice.label}
-              </label>
-            ))}
-          </div>
+          <Choices
+            name="settings-caret-width"
+            label="光标粗细"
+            choices={CARET_WIDTH}
+            value={settings.caretWidth}
+            onChange={(caretWidth) => onChange({ caretWidth })}
+          />
+          <Choices
+            name="settings-selection-corners"
+            label="选区边角"
+            choices={SELECTION_CORNERS}
+            value={settings.selectionCorners}
+            onChange={(selectionCorners) => onChange({ selectionCorners })}
+          />
+          <Choices
+            name="settings-open-file"
+            label="打开文件"
+            choices={OPEN_FILE}
+            value={settings.openFile}
+            onChange={(openFile) => onChange({ openFile })}
+          />
+          <Choices
+            name="settings-startup"
+            label="启动时"
+            choices={STARTUP}
+            value={settings.startup}
+            onChange={(startup) => onChange({ startup })}
+          />
         </div>
         <div className="dialog-actions">
           <button type="button" onClick={props.onReset}>

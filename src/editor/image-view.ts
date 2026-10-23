@@ -32,7 +32,7 @@ import {
  * between two rows of images (see `rowBreak`): -1 is the end of the upper row,
  * 1 the start of the lower one.
  */
-export type Side = -1 | 1;
+type Side = -1 | 1;
 
 /**
  * A range whose ends may sit between blocks, so a run of images can be selected
@@ -40,7 +40,7 @@ export type Side = -1 | 1;
  *
  * Collapsed, it is the caret between blocks, which only stops next to an image
  * (see `caretSpot`): an image behaves like one big character. That caret is
- * drawn on the image at its full height (the plugin's decorations), so the
+ * drawn beside the image at its full height (caret.ts, `besideImage`), so the
  * browser's own caret is hidden (`visible`). At a line break between two rows
  * of images it has two places, the end of the upper row and the start of the
  * lower one, told apart by `side` (meaningless for a range).
@@ -115,7 +115,7 @@ class RangeBookmark {
   }
 }
 
-export const isImage = (node: PmNode | null | undefined) =>
+const isImage = (node: PmNode | null | undefined) =>
   node?.type.name === "image";
 const imageAt = (state: EditorState) =>
   state.selection instanceof NodeSelection && isImage(state.selection.node);
@@ -138,6 +138,22 @@ export const rowBreak = ($pos: ResolvedPos) =>
   isImage($pos.nodeBefore) &&
   isImage($pos.nodeAfter) &&
   !!$pos.nodeAfter!.attrs.newline;
+
+/**
+ * The image a caret between blocks at `$pos` on `side` is drawn beside (also
+ * the drop position of dragged images): after the image before it (`after`),
+ * except at the start of a row after a line break (side 1) or with no image
+ * before it, where it is before the image after it. Null next to no image.
+ */
+export function besideImage(
+  $pos: ResolvedPos,
+  side: Side,
+): { pos: number; after: boolean } | null {
+  const before = $pos.nodeBefore;
+  if (before && isImage(before) && !(rowBreak($pos) && side > 0))
+    return { pos: $pos.pos - before.nodeSize, after: true };
+  return isImage($pos.nodeAfter) ? { pos: $pos.pos, after: false } : null;
+}
 
 /** The position of a caret between blocks, or null for any other selection. */
 const caretBetween = (state: EditorState) => {
@@ -277,7 +293,7 @@ export function typeBetween(text: string): Command {
  * empty line goes after it with the caret in it. Elsewhere (next to a text
  * line, at the document's edges) an empty line with the caret in it.
  */
-export function breakAt(tr: Transaction, pos: number, side: Side) {
+function breakAt(tr: Transaction, pos: number, side: Side) {
   const $pos = tr.doc.resolve(pos);
   const after = $pos.nodeAfter;
   if (isImage($pos.nodeBefore) && isImage(after) && !after!.attrs.newline) {
@@ -486,7 +502,7 @@ export function extendByImage(dir: -1 | 1): Command {
 export function leaveImages(dir: -1 | 1): Command {
   return (state, dispatch) => {
     const sel = state.selection;
-    if (caretBetween(state) === null && !selectedPictures(state)) return false;
+    if (caretBetween(state) === null && !selectedImages(sel)) return false;
     const doc = state.doc;
     let pos = dir < 0 ? sel.from : sel.to;
     for (;;) {
@@ -589,32 +605,21 @@ const pictureOf = (node: PmNode): Picture => ({
   height: node.attrs.height,
 });
 
-/** The image nodes of a selection made only of whole images, else null. */
-function imagesIn(sel: Selection): PmNode[] | null {
+/**
+ * The images of a selection made only of whole images (one, or a range of
+ * them), else null: the pictures and, for each, whether it starts a new row
+ * after the one before it (`rows[0]` is false: where the first goes is up to
+ * the paste).
+ */
+export function selectedImages(
+  sel: Selection,
+): { pictures: Picture[]; rows: boolean[] } | null {
   if (!(sel instanceof NodeSelection || sel instanceof BlockRange) || sel.empty)
     return null;
   const slice = sel.content();
   if (!isImageSlice(slice)) return null;
   const nodes: PmNode[] = [];
   slice.content.forEach((node) => nodes.push(node));
-  return nodes;
-}
-const picturesIn = (sel: Selection) => imagesIn(sel)?.map(pictureOf) ?? null;
-
-/** The pictures of a selection made only of whole images (one, or a range of them); else null. */
-export const selectedPictures = (state: EditorState) =>
-  picturesIn(state.selection);
-
-/**
- * Images to copy: the pictures and, for each, whether it starts a new row
- * after the one before it (`rows[0]` is false: where the first goes is up to
- * the paste). Null unless the selection is made only of whole images.
- */
-export function selectedImages(
-  state: EditorState,
-): { pictures: Picture[]; rows: boolean[] } | null {
-  const nodes = imagesIn(state.selection);
-  if (!nodes) return null;
   return {
     pictures: nodes.map(pictureOf),
     rows: nodes.map((node, i) => i > 0 && !!node.attrs.newline),
@@ -626,7 +631,7 @@ export function selectedImages(
  * before it (after its last image), 1 into the row after it (before its first
  * image), 0 into a row of their own.
  */
-export type Join = -1 | 0 | 1;
+type Join = -1 | 0 | 1;
 
 /**
  * The row images inserted at `$pos` join. Inside a row, that row; at a line
@@ -642,9 +647,10 @@ export function joinAt($pos: ResolvedPos, side: Side): Join {
 }
 
 /**
- * Sets the rows of images just inserted at `from`..`to` (see `Join`): whether
- * the first starts a new row, and whether the image after them does. The
- * others keep their own line breaks (a copied or dragged range of rows).
+ * Sets the rows of content just inserted at `from`..`to` (see `Join`): whether
+ * its first image starts a new row, and whether the image after its last image
+ * does. The others keep their own line breaks (a copied or dragged range of
+ * rows); content that starts or ends with a text line leaves that end alone.
  */
 export function placeRows(
   tr: Transaction,
@@ -659,8 +665,8 @@ export function placeRows(
       "newline",
       !(join < 0 && isImage($from.nodeBefore)),
     );
-  const after = tr.doc.resolve(to).nodeAfter;
-  if (isImage(after) && join >= 0)
+  const $to = tr.doc.resolve(to);
+  if (isImage($to.nodeBefore) && isImage($to.nodeAfter) && join >= 0)
     tr.setNodeAttribute(to, "newline", join === 0);
   return tr;
 }
@@ -690,7 +696,7 @@ export function insertImages(
   if (!nodes.length) return { from, to: from };
   const size = nodes.reduce((sum, node) => sum + node.nodeSize, 0);
   let join: Join = 0;
-  if (picturesIn(sel)) {
+  if (selectedImages(sel)) {
     join = -1;
     tr.insert(from, nodes);
   } else if (sel instanceof BlockRange && sel.empty) {
@@ -724,56 +730,6 @@ export function lineOf(doc: PmNode, index: number) {
       line++;
   }
   return Math.max(line, 1);
-}
-
-/**
- * HTML for copied images, as Rust's clipboard.rs writes it (there also with a
- * `file:` URL as `src`): what `clipboardImages` reads back. `rows` marks the
- * images that start a new row (see `selectedImages`).
- */
-export function imagesHtml(pictures: Picture[], rows: boolean[] = []): string {
-  return pictures
-    .map((pic, i) => {
-      const img = document.createElement("img");
-      img.alt = pic.name;
-      img.dataset.linehushId = pic.id;
-      img.dataset.linehushName = pic.name;
-      img.dataset.linehushWidth = String(pic.width);
-      img.dataset.linehushHeight = String(pic.height);
-      if (rows[i]) img.dataset.linehushNewline = "true";
-      return img.outerHTML;
-    })
-    .join("");
-}
-
-/**
- * Images copied in LineHush, from the clipboard's HTML: pasted under the same
- * ids instead of being imported again, in the same rows. Null unless the HTML
- * holds only such images.
- */
-export function clipboardImages(
-  html: string,
-): { pictures: Picture[]; rows: boolean[] } | null {
-  if (!html.includes("data-linehush-id")) return null;
-  const body = new DOMParser().parseFromString(html, "text/html").body;
-  const images = Array.from(body.querySelectorAll("img"));
-  if (
-    !images.length ||
-    body.textContent?.trim() ||
-    images.some((img) => !/^[0-9a-f]{64}$/.test(img.dataset.linehushId ?? ""))
-  )
-    return null;
-  return {
-    pictures: images.map((img) => ({
-      id: img.dataset.linehushId!,
-      name: img.dataset.linehushName ?? "",
-      width: Number(img.dataset.linehushWidth) || 0,
-      height: Number(img.dataset.linehushHeight) || 0,
-    })),
-    rows: images.map(
-      (img, i) => i > 0 && img.dataset.linehushNewline === "true",
-    ),
-  };
 }
 
 /**
@@ -819,57 +775,29 @@ export function blockPictures(blocks: Block[]): Picture[] {
   return [...seen.values()];
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 /**
- * The blocks of a LineHush copy of images and text (`BLOCKS_MIME`), or null
- * unless the data is exactly that: version 1, lines of text without line
- * breaks, rows of at least one picture with a SHA-256 id.
+ * The blocks of a LineHush copy of images and text (`BLOCKS_MIME`, written by
+ * `copyMixed`), or null unless it looks like one: version 1, blocks that are
+ * lines of text or non-empty rows of images.
  */
 export function clipboardBlocks(data: string): Block[] | null {
-  if (!data) return null;
-  let parsed: unknown;
+  let parsed: { v?: unknown; blocks?: unknown } | null;
   try {
     parsed = JSON.parse(data);
   } catch {
     return null;
   }
-  if (!isRecord(parsed) || parsed.v !== 1 || !Array.isArray(parsed.blocks))
-    return null;
-  const blocks: Block[] = [];
-  for (const block of parsed.blocks) {
-    if (!isRecord(block)) return null;
-    if (block.type === "line") {
-      if (typeof block.text !== "string" || /[\r\n]/.test(block.text))
-        return null;
-      blocks.push({ type: "line", text: block.text });
-    } else if (block.type === "images") {
-      if (!Array.isArray(block.images) || !block.images.length) return null;
-      const images: Picture[] = [];
-      for (const pic of block.images) {
-        if (
-          !isRecord(pic) ||
-          typeof pic.id !== "string" ||
-          !/^[0-9a-f]{64}$/.test(pic.id) ||
-          typeof pic.name !== "string" ||
-          typeof pic.width !== "number" ||
-          typeof pic.height !== "number" ||
-          !Number.isFinite(pic.width) ||
-          !Number.isFinite(pic.height)
-        )
-          return null;
-        images.push({
-          id: pic.id,
-          name: pic.name,
-          width: pic.width,
-          height: pic.height,
-        });
-      }
-      blocks.push({ type: "images", images });
-    } else return null;
-  }
-  return blocks.length ? blocks : null;
+  const blocks = parsed?.v === 1 ? parsed.blocks : null;
+  if (!Array.isArray(blocks) || !blocks.length) return null;
+  const valid = blocks.every((block) =>
+    block?.type === "line"
+      ? typeof block.text === "string"
+      : block?.type === "images" &&
+        Array.isArray(block.images) &&
+        block.images.length > 0 &&
+        block.images.every((pic: Picture | null) => typeof pic?.id === "string"),
+  );
+  return valid ? (blocks as Block[]) : null;
 }
 
 /** `blocks` without the pictures in `missing`; a row left empty goes too. */
@@ -919,7 +847,6 @@ export function insertBlocks(
   if (!nodes.length) return { from: sel.from, to: sel.from };
   const sizeOf = (list: PmNode[]) =>
     list.reduce((sum, node) => sum + node.nodeSize, 0);
-  const first = nodes[0];
   const last = nodes[nodes.length - 1];
   const caretAfter = (to: number) =>
     tr.setSelection(
@@ -929,15 +856,10 @@ export function insertBlocks(
     );
   if (sel instanceof BlockRange) {
     const pos = sel.head;
-    const $pos = tr.doc.resolve(pos);
-    const join = joinAt($pos, sel.side);
-    const before = isImage($pos.nodeBefore);
+    const join = joinAt(sel.$head, sel.side);
     tr.insert(pos, nodes);
     const end = pos + sizeOf(nodes);
-    if (isImage(first))
-      tr.setNodeAttribute(pos, "newline", !(join < 0 && before));
-    if (isImage(last) && isImage(tr.doc.resolve(end).nodeAfter) && join >= 0)
-      tr.setNodeAttribute(end, "newline", join === 0);
+    placeRows(tr, pos, end, join);
     const to = isImage(last) ? end : end - 1;
     caretAfter(to);
     return { from: pos, to };
@@ -952,6 +874,7 @@ export function insertBlocks(
   const head = text.slice(0, $caret.parentOffset);
   const tail = text.slice($caret.parentOffset);
   const out = nodes.slice();
+  const first = nodes[0];
   let from = start;
   if (!isImage(first)) {
     out[0] = line(head + first.textContent);
@@ -992,42 +915,23 @@ function removeSelected(view: EditorView) {
 }
 
 /**
- * Ctrl+C / Ctrl+X on images: they go to the system clipboard through Rust
- * (see ImageOptions.copy) and the browser writes nothing. False when the
- * selection is not just images or copying is unavailable (no desktop), so the
- * browser's copy event follows.
- */
-function copyKey(view: EditorView, copy: ImageOptions["copy"], cut: boolean) {
-  const images = selectedImages(view.state);
-  if (!images || !copy(images.pictures, images.rows, false)) return false;
-  if (cut && view.editable) removeSelected(view);
-  return true;
-}
-
-/**
- * Copy / cut events (the context menu, or no desktop): the browser writes the
- * clipboard after this event, so it gets the images' HTML, enough to paste them
- * back in LineHush; Rust then replaces it with the full set of formats.
- *
- * Images with text lines (Ctrl+C / Ctrl+X come here too): see `copyMixed`.
+ * Copy / cut events (Ctrl+C / Ctrl+X, the context menu). Images alone go to
+ * the system clipboard through Rust (see ImageOptions.copy): the event is
+ * cancelled with nothing set, so the browser leaves the clipboard alone. Images
+ * with text lines: see `copyMixed`. A cut then deletes the selection as
+ * Backspace does.
  */
 function copyEvent(
   view: EditorView,
   event: ClipboardEvent,
   copy: ImageOptions["copy"],
-  stage: NonNullable<ImageOptions["stage"]>,
+  stage: ImageOptions["stage"],
   cut: boolean,
 ) {
-  const images = selectedImages(view.state);
+  const images = selectedImages(view.state.selection);
   if (!images) return copyMixed(view, event, stage, cut);
-  if (!event.clipboardData) return false;
   event.preventDefault();
-  event.clipboardData.clearData();
-  event.clipboardData.setData(
-    "text/html",
-    imagesHtml(images.pictures, images.rows),
-  );
-  copy(images.pictures, images.rows, true);
+  copy(images.pictures, images.rows);
   if (cut && view.editable) removeSelected(view);
   return true;
 }
@@ -1042,7 +946,7 @@ function copyEvent(
 function copyMixed(
   view: EditorView,
   event: ClipboardEvent,
-  stage: NonNullable<ImageOptions["stage"]>,
+  stage: ImageOptions["stage"],
   cut: boolean,
 ) {
   const slice = mixedSlice(view.state);
@@ -1061,39 +965,27 @@ function copyMixed(
   return true;
 }
 
-/**
- * The side of an image a point falls on: the position before it over its left
- * half, after it over its right half. Images flow in rows, so this decides both
- * where a click puts the caret and where dragged images drop.
- */
-export function imageSide(
-  pos: number,
-  node: PmNode,
-  clientX: number,
-  rect: { left: number; right: number },
-) {
-  return clientX < (rect.left + rect.right) / 2 ? pos : pos + node.nodeSize;
-}
-
 /** A position next to an image and the side of it the caret is on there. */
-export interface Spot {
+interface Spot {
   pos: number;
   side: Side;
 }
 
 /**
- * `imageSide` with the caret's side: before the image it is at the start of the
- * image's row (1), after it at the end (-1).
+ * The side of the image at `pos` a point falls on: before it over its left
+ * half (the start of the image's row, side 1), after it over its right half
+ * (the end, side -1). Images flow in rows, so this decides both where a click
+ * puts the caret and where dragged images drop.
  */
 export const spotBy = (
   pos: number,
   node: PmNode,
   clientX: number,
   rect: { left: number; right: number },
-): Spot => {
-  const at = imageSide(pos, node, clientX, rect);
-  return { pos: at, side: at === pos ? 1 : -1 };
-};
+): Spot =>
+  clientX < (rect.left + rect.right) / 2
+    ? { pos, side: 1 }
+    : { pos: pos + node.nodeSize, side: -1 };
 
 const imageRect = (view: EditorView, pos: number) =>
   (view.nodeDOM(pos) as HTMLElement).getBoundingClientRect();
@@ -1146,6 +1038,18 @@ function dropAt(view: EditorView, event: DragEvent, slice: Slice): Spot | null {
   };
 }
 
+/** Puts the caret between blocks at `spot`, as a click does. */
+function setCaretSpot(view: EditorView, spot: Spot) {
+  view.dispatch(
+    view.state.tr
+      .setSelection(
+        new BlockRange(view.state.doc.resolve(spot.pos), undefined, spot.side),
+      )
+      .setMeta("pointer", true),
+  );
+  return true;
+}
+
 /**
  * A click on an image puts the caret before or after it (by the half clicked)
  * instead of selecting it. The node stays selectable, which ProseMirror needs
@@ -1159,15 +1063,10 @@ function clickImage(
   direct: boolean,
 ) {
   if (!direct || !isImage(node)) return false;
-  const spot = spotBy(pos, node, event.clientX, imageRect(view, pos));
-  view.dispatch(
-    view.state.tr
-      .setSelection(
-        new BlockRange(view.state.doc.resolve(spot.pos), undefined, spot.side),
-      )
-      .setMeta("pointer", true),
+  return setCaretSpot(
+    view,
+    spotBy(pos, node, event.clientX, imageRect(view, pos)),
   );
-  return true;
 }
 
 /** How far above / below rows of images a click beside them still goes to the nearest image. */
@@ -1191,24 +1090,15 @@ function clickBesideImages(view: EditorView, event: MouseEvent) {
     event.clientY,
     event.target as Element | null,
   );
-  if (spot === null) return false;
-  view.dispatch(
-    view.state.tr
-      .setSelection(
-        new BlockRange(view.state.doc.resolve(spot.pos), undefined, spot.side),
-      )
-      .setMeta("pointer", true),
-  );
-  return true;
+  return spot !== null && setCaretSpot(view, spot);
 }
 
 /**
  * Where a point beside images (not on one) puts the caret, `target` being the
  * element there: see `clickBesideImages`. Null when it is on a text line or
- * level with one, which the browser / `posAtCoords` places. Also used for
- * PageUp / PageDown (see reveal.ts).
+ * level with one, which the browser / `posAtCoords` places.
  */
-export function spotBeside(
+function spotBeside(
   view: EditorView,
   x: number,
   y: number,
@@ -1290,25 +1180,35 @@ function onSelection(view: EditorView, event: MouseEvent) {
   );
 }
 
-/** The pointer during a drag selection in the editor. */
-const pointers = new WeakMap<EditorView, { x: number; y: number }>();
 /**
- * The anchor of a drag selection pressed beside images (see `spotBeside`), as
- * for a click there. The browser's own anchor is its canonical position, which
- * skips over a non-editable image: pressed before a row's first image it is
- * after that image.
+ * A drag selection: the primary button pressed in the editor but not on an
+ * image (that drags the image) or on the selection (that drags it, see
+ * dropMixed). The input plugin (input.ts) hands over the press, the moves (on
+ * the window, so outside the editor too) and the release.
  */
-const anchors = new WeakMap<EditorView, number>();
+interface DragSelection {
+  /** The pointer while the drag lasts; null between drags. */
+  pointer: { x: number; y: number } | null;
+  /**
+   * Pressed beside images (see `spotBeside`): the anchor, as for a click
+   * there. The browser's own anchor is its canonical position, which skips
+   * over a non-editable image: pressed before a row's first image it is after
+   * that image.
+   */
+  anchor?: number;
+  /** The animation frame that draws the DOM selection (`drawDragSelection`). */
+  frame: number;
+  /** The DOM selection is the one drawn here, not the browser's. */
+  drawn: boolean;
+}
+const drags = new WeakMap<EditorView, DragSelection>();
 
-/** During a drag selection over an image, the side of it under the pointer. */
-function dragOverImage(
-  view: EditorView,
-  pointer: { x: number; y: number },
-): Spot | null {
-  const hit = view.posAtCoords({ left: pointer.x, top: pointer.y });
+/** Over an image, the side of it under the point. */
+function overImage(view: EditorView, x: number, y: number): Spot | null {
+  const hit = view.posAtCoords({ left: x, top: y });
   const node = hit && hit.inside >= 0 ? view.state.doc.nodeAt(hit.inside) : null;
   if (!hit || !node || !isImage(node)) return null;
-  return spotBy(hit.inside, node, pointer.x, imageRect(view, hit.inside));
+  return spotBy(hit.inside, node, x, imageRect(view, hit.inside));
 }
 
 /**
@@ -1332,13 +1232,18 @@ function dragBeside(view: EditorView, x: number, y: number): Spot | null {
   return spotBeside(view, at, y, target && dom.contains(target) ? target : null);
 }
 
+/**
+ * The caret a point on or beside images gives: on an image the half it is
+ * over, beside images as a click there (`dragBeside`); null on or level with a
+ * text line. The ends of a drag selection and PageUp / PageDown (reveal.ts).
+ */
+export const pointSpot = (view: EditorView, x: number, y: number) =>
+  overImage(view, x, y) ?? dragBeside(view, x, y);
+
 /** During a drag selection, the end set by the pointer on or beside images, if it is there. */
 function dragHead(view: EditorView): Spot | null {
-  const pointer = pointers.get(view);
-  if (!pointer) return null;
-  return (
-    dragOverImage(view, pointer) ?? dragBeside(view, pointer.x, pointer.y)
-  );
+  const pointer = drags.get(view)?.pointer;
+  return pointer ? pointSpot(view, pointer.x, pointer.y) : null;
 }
 
 /**
@@ -1369,12 +1274,94 @@ function drawDragSelection(view: EditorView) {
   domSel.setBaseAndExtent(a.node, a.offset, h.node, h.offset);
 }
 
+/** A primary-button press in the editor (input.ts): starts a drag selection, see `DragSelection`. */
+export function dragPress(view: EditorView, event: MouseEvent) {
+  if (event.button !== 0 || (event.target as Element).closest(".image-item"))
+    return;
+  // A press inside the selection drags it (images with text lines move as a
+  // whole, see dropMixed) instead of starting a new one.
+  if (!view.state.selection.empty && onSelection(view, event)) return;
+  let drag = drags.get(view);
+  if (!drag) drags.set(view, (drag = { pointer: null, frame: 0, drawn: false }));
+  drag.pointer = { x: event.clientX, y: event.clientY };
+  // Shift extends the selection from its anchor; a double click selects words.
+  drag.anchor =
+    event.shiftKey || event.detail > 1
+      ? undefined
+      : dragBeside(view, event.clientX, event.clientY)?.pos;
+}
+
+const endDrag = (drag: DragSelection) => {
+  drag.pointer = null;
+  drag.anchor = undefined;
+  drag.drawn = false;
+};
+
+/**
+ * The pointer moved (input.ts). This runs bubbling to the window, after
+ * ProseMirror's own mousemove listener (on the document) has marked the drag
+ * as the browser's, so ProseMirror syncs the DOM selection only on mouseup.
+ * Over an image the DOM selection is drawn in the next animation frame instead
+ * (see drawDragSelection).
+ */
+export function dragMove(view: EditorView, event: MouseEvent) {
+  const drag = drags.get(view);
+  if (!drag) return;
+  if (!(event.buttons & 1)) return endDrag(drag);
+  if (!drag.pointer) return;
+  drag.pointer = { x: event.clientX, y: event.clientY };
+  // Over an image the browser's end stays in the nearest text line, often
+  // without a selection change to read, and beside images (also out of the
+  // window) it goes to the wrong side of one, so the range is set here.
+  const head = dragHead(view);
+  if (head === null) {
+    // Off the image again, the browser's end takes over. It is moved after
+    // this listener, but not if the browser deems the new end the same as the
+    // drawn one (both ends of a final image are, so below it the range would
+    // stay before it): the selection is first collapsed to its anchor, which
+    // the browser then extends to the pointer.
+    if (drag.drawn) {
+      drag.drawn = false;
+      const domSel = view.dom.ownerDocument.getSelection();
+      const a = view.domAtPos(view.state.selection.anchor);
+      domSel?.collapse(a.node, a.offset);
+    }
+    return;
+  }
+  const { doc, selection } = view.state;
+  const anchor = drag.anchor ?? selection.anchor;
+  if (head.pos !== selection.head || anchor !== selection.anchor)
+    view.dispatch(
+      view.state.tr
+        .setSelection(rangeSelection(doc, anchor, head.pos, 1, head.side))
+        .setMeta("pointer", true),
+    );
+  if (!drag.frame)
+    drag.frame = view.dom.ownerDocument.defaultView!.requestAnimationFrame(() => {
+      drag.frame = 0;
+      if (!view.isDestroyed && dragHead(view) !== null) {
+        drawDragSelection(view);
+        drag.drawn = true;
+      }
+    });
+}
+
+/** The button released (input.ts); with `destroyed`, the editor is gone. */
+export function dragRelease(view: EditorView, destroyed = false) {
+  const drag = drags.get(view);
+  if (!drag) return;
+  endDrag(drag);
+  if (!destroyed) return;
+  view.dom.ownerDocument.defaultView?.cancelAnimationFrame(drag.frame);
+  drags.delete(view);
+}
+
 /** The drop position of dragged images while they are over the editor. */
 const marks = new PluginKey<Spot | null>("imageMarks");
 
 /**
  * The spacer drawn for a line break between rows of images: a block that ends
- * the row before it, as tall as `--image-row-gap`, so rows a line break apart
+ * the row before it, 8px tall (App.css), so rows a line break apart
  * are further apart than a row that wraps and closer than rows a text line apart.
  */
 function rowSpacerDOM() {
@@ -1383,14 +1370,21 @@ function rowSpacerDOM() {
   return spacer;
 }
 
+/** The drop position of dragged images between blocks: a line that takes no space. */
+function dropLineDOM() {
+  const line = document.createElement("div");
+  line.className = "drop-line";
+  return line;
+}
+
 /**
- * Draws the caret between blocks, the drop position and images inside a range
- * selection; places the caret on clicks and typing between blocks; moves
+ * Draws the drop position, the line breaks between rows and images inside a
+ * range selection; places the caret on clicks and typing between blocks; moves
  * dragged images; copies selected images from copy / cut events.
  */
 export function imagePlugin(
   copy: ImageOptions["copy"],
-  stage: NonNullable<ImageOptions["stage"]> = () => {},
+  stage: ImageOptions["stage"],
 ) {
   const setDrop = (view: EditorView, spot: Spot | null) => {
     const drop = marks.getState(view.state);
@@ -1406,102 +1400,6 @@ export function imagePlugin(
   };
   return new Plugin<Spot | null>({
     key: marks,
-    // Follows the pointer through a drag selection: the primary button pressed
-    // in the editor but not on an image (that drags the image). Listened to on
-    // the window, so the drag is followed outside the editor too.
-    view(view) {
-      const win = view.dom.ownerDocument.defaultView!;
-      const down = (event: MouseEvent) => {
-        const target = event.target as Element;
-        if (
-          event.button !== 0 ||
-          !view.dom.contains(target) ||
-          target.closest(".image-item")
-        )
-          return;
-        // A press inside the selection drags it (images with text lines move
-        // as a whole, see dropMixed) instead of starting a new one.
-        if (!view.state.selection.empty && onSelection(view, event)) return;
-        pointers.set(view, { x: event.clientX, y: event.clientY });
-        // Shift extends the selection from its anchor; a double click selects
-        // words.
-        const spot =
-          event.shiftKey || event.detail > 1
-            ? null
-            : dragBeside(view, event.clientX, event.clientY);
-        if (spot) anchors.set(view, spot.pos);
-        else anchors.delete(view);
-      };
-      // Bubbling to the window, this runs after ProseMirror's own mousemove
-      // listener (on the document) has marked the drag as the browser's, so
-      // ProseMirror syncs the DOM selection only on mouseup. Over an image the
-      // DOM selection is drawn in the next animation frame instead (see
-      // drawDragSelection).
-      let frame = 0;
-      let drawn = false;
-      const move = (event: MouseEvent) => {
-        if (!(event.buttons & 1)) {
-          pointers.delete(view);
-          anchors.delete(view);
-          drawn = false;
-          return;
-        }
-        if (!pointers.has(view)) return;
-        pointers.set(view, { x: event.clientX, y: event.clientY });
-        // Over an image the browser's end stays in the nearest text line, often
-        // without a selection change to read, and beside images (also out of
-        // the window) it goes to the wrong side of one, so the range is set here.
-        const head = dragHead(view);
-        if (head === null) {
-          // Off the image again, the browser's end takes over. It is moved
-          // after this listener, but not if the browser deems the new end the
-          // same as the drawn one (both ends of a final image are, so below it
-          // the range would stay before it): the selection is first collapsed
-          // to its anchor, which the browser then extends to the pointer.
-          if (drawn) {
-            drawn = false;
-            const domSel = view.dom.ownerDocument.getSelection();
-            const a = view.domAtPos(view.state.selection.anchor);
-            domSel?.collapse(a.node, a.offset);
-          }
-          return;
-        }
-        const { doc, selection } = view.state;
-        const anchor = anchors.get(view) ?? selection.anchor;
-        if (head.pos !== selection.head || anchor !== selection.anchor)
-          view.dispatch(
-            view.state.tr
-              .setSelection(rangeSelection(doc, anchor, head.pos, 1, head.side))
-              .setMeta("pointer", true),
-          );
-        if (!frame)
-          frame = win.requestAnimationFrame(() => {
-            frame = 0;
-            if (!view.isDestroyed && dragHead(view) !== null) {
-              drawDragSelection(view);
-              drawn = true;
-            }
-          });
-      };
-      const up = () => {
-        pointers.delete(view);
-        anchors.delete(view);
-        drawn = false;
-      };
-      win.addEventListener("mousedown", down, true);
-      win.addEventListener("mousemove", move);
-      win.addEventListener("mouseup", up, true);
-      return {
-        destroy() {
-          win.cancelAnimationFrame(frame);
-          win.removeEventListener("mousedown", down, true);
-          win.removeEventListener("mousemove", move);
-          win.removeEventListener("mouseup", up, true);
-          pointers.delete(view);
-          anchors.delete(view);
-        },
-      };
-    },
     state: {
       init: () => null,
       apply(tr, drop) {
@@ -1514,42 +1412,21 @@ export function imagePlugin(
       decorations(state) {
         const { doc, selection } = state;
         const decorations: Decoration[] = [];
-        // A caret between blocks is drawn on the image next to it at its full
-        // height: the one before it if both are, except at the start of a row
-        // after a line break.
-        const caret = ({ pos, side }: Spot, kind: "gap" | "drop") => {
-          const $pos = doc.resolve(pos);
-          const before = $pos.nodeBefore;
-          const after = $pos.nodeAfter;
-          if (before && isImage(before) && !(rowBreak($pos) && side > 0))
-            decorations.push(
-              Decoration.node(pos - before.nodeSize, pos, {
-                class: `${kind}-after`,
-              }),
-            );
-          else if (after && isImage(after))
-            decorations.push(
-              Decoration.node(pos, pos + after.nodeSize, {
-                class: `${kind}-before`,
-              }),
-            );
-          else if (kind === "drop")
-            decorations.push(
-              Decoration.widget(
-                pos,
-                () => {
-                  const line = document.createElement("div");
-                  line.className = "drop-line";
-                  return line;
-                },
-                { key: "drop-line" },
-              ),
-            );
-        };
-        if (selection instanceof BlockRange && selection.empty)
-          caret({ pos: selection.head, side: selection.side }, "gap");
+        // Dropped images go where a caret there is drawn: beside the image
+        // there, at its full height, or as a line between two text lines.
         const drop = marks.getState(state);
-        if (drop) caret(drop, "drop");
+        const beside = drop && besideImage(doc.resolve(drop.pos), drop.side);
+        if (beside) {
+          const end = beside.pos + doc.nodeAt(beside.pos)!.nodeSize;
+          decorations.push(
+            Decoration.node(beside.pos, end, {
+              class: beside.after ? "drop-after" : "drop-before",
+            }),
+          );
+        } else if (drop)
+          decorations.push(
+            Decoration.widget(drop.pos, dropLineDOM, { key: "drop-line" }),
+          );
         // A line break between rows of images: a spacer before the row's first image.
         doc.forEach((node, offset, index) => {
           if (
@@ -1590,7 +1467,7 @@ export function imagePlugin(
       // level with them) both ends of a drag go where a click there would.
       createSelectionBetween: (view, $anchor, $head) => {
         const head = dragHead(view);
-        const anchor = anchors.get(view);
+        const anchor = drags.get(view)?.anchor;
         if (head)
           return rangeSelection(
             view.state.doc,
@@ -1752,19 +1629,14 @@ export interface ImageOptions {
   source: (pic: Picture) => Promise<string>;
   /**
    * Puts the originals on the system clipboard; `rows` marks the images that
-   * start a new row (see `selectedImages`); `afterBrowser` when the browser
-   * writes it too (copy events). Returns false when this is unavailable.
+   * start a new row (see `selectedImages`).
    */
-  copy: (
-    pictures: Picture[],
-    rows: boolean[],
-    afterBrowser: boolean,
-  ) => boolean;
+  copy: (pictures: Picture[], rows: boolean[]) => void;
   /**
    * Keeps copies of the originals of images copied with text lines, for a
    * paste into another document; the clipboard itself is the browser's.
    */
-  stage?: (pictures: Picture[]) => void;
+  stage: (pictures: Picture[]) => void;
 }
 
 /**
@@ -1807,8 +1679,6 @@ export function image({ preview, source, copy, stage }: ImageOptions) {
           run(leaveImages(-1)) || enterImages(this.editor.view, -1),
         ArrowDown: () =>
           run(leaveImages(1)) || enterImages(this.editor.view, 1),
-        "Mod-c": () => copyKey(this.editor.view, copy, false),
-        "Mod-x": () => copyKey(this.editor.view, copy, true),
       };
     },
     addProseMirrorPlugins: () => [imagePlugin(copy, stage)],

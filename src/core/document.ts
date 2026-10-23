@@ -128,14 +128,21 @@ export function exportImages(doc: Diary): { id: string; file: string }[] {
       }
   return [...images.values()];
 }
-export function toHtml(doc: Diary): string {
-  const body = doc.blocks
+/** The exported body: a div per line, a div of images per row, each image's `src` from `src`. */
+function bodyHtml(doc: Diary, src: (pic: Picture) => string): string {
+  return doc.blocks
     .map((block) =>
       block.type === "line"
         ? `<div class="line">${escapeHtml(block.text) || "<br>"}</div>`
-        : `<div class="images">${block.images.map((pic) => `<img src="附件/${escapeHtml(encodeURIComponent(exportFile(pic)))}" alt="${escapeHtml(pic.name)}" width="${pic.width}" height="${pic.height}">`).join("")}</div>`,
+        : `<div class="images">${block.images.map((pic) => `<img src="${src(pic)}" alt="${escapeHtml(pic.name)}" width="${pic.width}" height="${pic.height}">`).join("")}</div>`,
     )
     .join("\n");
+}
+export function toHtml(doc: Diary): string {
+  const body = bodyHtml(
+    doc,
+    (pic) => `附件/${escapeHtml(encodeURIComponent(exportFile(pic)))}`,
+  );
   return (
     '<!doctype html>\n<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LineHush 日记</title>\n' +
     '<style>body{background:#f9f9f9;color:#202020;font:16px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;margin:24px}.line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1.6em}.images{display:flex;flex-wrap:wrap;gap:8px}.images+.images{margin-top:16px}img{max-width:280px;max-height:200px;object-fit:contain;width:auto;height:auto}</style>\n<body>' +
@@ -156,13 +163,7 @@ export interface PrintOptions {
  * 自定义协议提供），等比缩小到不超出 A4 版心，且不跨页拆开。
  */
 export function toPrintHtml(doc: Diary, options: PrintOptions): string {
-  const body = doc.blocks
-    .map((block) =>
-      block.type === "line"
-        ? `<div class="line">${escapeHtml(block.text) || "<br>"}</div>`
-        : `<div class="images">${block.images.map((pic) => `<img src="/image/${encodeURIComponent(pic.id)}" alt="${escapeHtml(pic.name)}" width="${pic.width}" height="${pic.height}">`).join("")}</div>`,
-    )
-    .join("\n");
+  const body = bodyHtml(doc, (pic) => `/image/${encodeURIComponent(pic.id)}`);
   // 字体列表里若有 `</` 会提前结束 <style>，转成 CSS 转义。
   const font = options.fontFamily.replace(/</g, "\\3c ");
   return (

@@ -1,24 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { SETTINGS_CHANGED, readSettings, writeSettings } from "../core/native";
-import { LAYOUT_CHANGED, setCaretWidth, setSelectionCorners } from "../editor/caret";
+import { LAYOUT_CHANGED, configureCaret } from "../editor/caret";
 import {
   DEFAULT_SETTINGS,
   applySettings,
   normalizeSettings,
   type Settings,
 } from "../core/settings";
-
-/** Browser preview only; the desktop app keeps settings in Rust's settings.json. */
-const STORAGE_KEY = "linehush-settings";
-
-function readLocal(): unknown {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Settings load once at start and apply as CSS variables on <html>. Changes
@@ -27,58 +16,61 @@ function readLocal(): unknown {
  * every window when settings were written (`settings-changed`): they apply
  * here without being written again, unless this window has a change of its own
  * still waiting to be written.
+ *
+ * `loaded` resolves once `current` holds the settings in use, not the defaults
+ * shown before the file is read: read (or unreadable), or changed first.
  */
-export function useSettings({
-  desktop,
-  report,
-}: {
-  desktop: boolean;
-  report: (error: string) => void;
-}) {
+export function useSettings(report: (error: string) => void) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  /** `settings` 已是读到的（或用户改过的）值，不再只是读取前的默认值。 */
-  const [loaded, setLoaded] = useState(false);
   const current = useRef(settings);
-  /** A change made before loading finished wins over the loaded value. */
-  const changed = useRef(false);
+  const [ready] = useState(() => {
+    let done = () => {};
+    const loaded = new Promise<void>((resolve) => (done = resolve));
+    return { loaded, done, known: false };
+  });
+  const reportRef = useRef(report);
+  reportRef.current = report;
   const pending = useRef<{
     timer?: ReturnType<typeof setTimeout>;
     value?: Settings;
   }>({});
 
+  /** Shows `next`; once known, the file's value no longer replaces it. */
+  const show = useCallback(
+    (next: Settings) => {
+      ready.known = true;
+      ready.done();
+      if (JSON.stringify(next) === JSON.stringify(current.current)) return;
+      current.current = next;
+      setSettings(next);
+    },
+    [ready],
+  );
+
   useEffect(() => {
     let active = true;
-    const load = desktop ? readSettings() : Promise.resolve(readLocal());
-    load
+    readSettings()
       .then(
         (value) => {
-          if (!active || changed.current) return;
-          current.current = normalizeSettings(value);
-          setSettings(current.current);
+          // A change made before loading finished wins over the loaded value.
+          if (active && !ready.known) show(normalizeSettings(value));
         },
         (e) => console.error("无法读取设置：", e),
       )
       .finally(() => {
-        if (active) setLoaded(true);
+        if (active) ready.done();
       });
     return () => {
       active = false;
     };
-  }, [desktop]);
+  }, [ready, show]);
 
   // Settings written by any window (this one included) apply to all of them.
   useEffect(() => {
-    if (!desktop) return;
     let active = true;
     let remove: (() => void) | undefined;
     listen<unknown>(SETTINGS_CHANGED, (event) => {
-      if (pending.current.value) return;
-      const next = normalizeSettings(event.payload);
-      changed.current = true;
-      setLoaded(true);
-      if (JSON.stringify(next) === JSON.stringify(current.current)) return;
-      current.current = next;
-      setSettings(next);
+      if (!pending.current.value) show(normalizeSettings(event.payload));
     }).then(
       (unlisten) => {
         if (active) remove = unlisten;
@@ -90,14 +82,13 @@ export function useSettings({
       active = false;
       remove?.();
     };
-  }, [desktop]);
+  }, [show]);
 
   useLayoutEffect(() => {
     applySettings(document.documentElement.style, settings);
     // 光标粗细 and 选区边角 are not CSS: the drawn caret and selection read them
     // (redrawn only when one changed).
-    setCaretWidth(settings.caretWidth);
-    setSelectionCorners(settings.selectionCorners);
+    configureCaret({ width: settings.caretWidth, corners: settings.selectionCorners });
     // The font can change where lines wrap without resizing the editor; the
     // drawn caret and selection are placed again (src/editor/caret.ts).
     window.dispatchEvent(new Event(LAYOUT_CHANGED));
@@ -109,29 +100,19 @@ export function useSettings({
     clearTimeout(slot.timer);
     const value = slot.value;
     slot.value = undefined;
-    if (!value) return;
-    if (desktop)
-      writeSettings(value).catch((e) => report(`保存设置失败：${e}`));
-    else
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
-      } catch {
-        // Browser preview: settings simply do not persist.
-      }
-  }, [desktop, report]);
+    if (value)
+      writeSettings(value).catch((e) => reportRef.current(`保存设置失败：${e}`));
+  }, []);
 
   const set = useCallback(
     (next: Settings) => {
-      changed.current = true;
-      setLoaded(true);
-      current.current = next;
-      setSettings(next);
+      show(next);
       const slot = pending.current;
       slot.value = next;
       clearTimeout(slot.timer);
       slot.timer = setTimeout(flush, 300);
     },
-    [flush],
+    [flush, show],
   );
   const update = useCallback(
     (partial: Partial<Settings>) =>
@@ -146,5 +127,5 @@ export function useSettings({
     return () => window.removeEventListener("beforeunload", flush);
   }, [flush]);
 
-  return { settings, loaded, update, reset, flush };
+  return { settings, current, loaded: ready.loaded, update, reset, flush };
 }

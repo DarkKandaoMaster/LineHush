@@ -1,9 +1,8 @@
-import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import { fileName, fromText, type Diary } from "./document.ts";
+import { fileName, type Diary } from "./document.ts";
 import * as native from "./native.ts";
-import type { Opened, TabOpened } from "./native.ts";
+import type { TabOpened } from "./native.ts";
 import {
   createSession,
   HUSH_FILTER,
@@ -60,23 +59,17 @@ function isBlank(doc: Diary) {
     doc.blocks.length === 1 && first.type === "line" && first.text === ""
   );
 }
-const blankDocument = (): Opened => ({
-  document: fromText(""),
-  path: null,
-  recovered: false,
-  notice: null,
-});
 
 /**
  * The tabs of this window, each with its own document session and editor.
  * `confirmUnsaved` (the window's "save changes?" dialog) is shared by all tabs.
- * `startup` reads the current “启动时” setting when the window closes.
+ * `startup` gives the “启动时” setting when the window closes, once the
+ * settings are read (never the default in their place).
  */
 export function createTabs(
   confirmUnsaved: (name: string) => Promise<UnsavedChoice>,
   startup: () => Startup | Promise<Startup> = () => "newWindow",
 ) {
-  const desktop = isTauri();
   let state: TabsState = {
     tabs: [],
     active: "",
@@ -98,8 +91,6 @@ export function createTabs(
   let closingWindow = false;
   /** The tabs are released; the next close request closes the window. */
   let closing = false;
-  /** Tab ids of the browser preview, which has no Rust behind it. */
-  let previewTabs = 0;
   const label = () => getCurrentWindow().label;
 
   const activeTab = () => state.tabs.find((tab) => tab.id === state.active);
@@ -138,12 +129,7 @@ export function createTabs(
   }
   async function restore() {
     try {
-      const opened: native.WindowOpened = desktop
-        ? await native.restoreWindow()
-        : {
-            tabs: [{ tab: `preview-${++previewTabs}`, opened: blankDocument(), error: null }],
-            active: `preview-${previewTabs}`,
-          };
+      const opened = await native.restoreWindow();
       const tabs: Tab[] = [];
       for (const result of opened.tabs) tabs.push(makeTab(result, tabs));
       set({ tabs, active: opened.active });
@@ -158,8 +144,7 @@ export function createTabs(
     if (!state.tabs.some((tab) => tab.id === id)) return;
     const changed = id !== state.active;
     set({ active: id, focus: state.focus + 1 });
-    if (changed && desktop)
-      native.activateTab(id).catch((e) => console.error(e));
+    if (changed) native.activateTab(id).catch((e) => console.error(e));
   }
   /** Ctrl+Tab / Ctrl+Shift+Tab: the next or previous tab, wrapping around. */
   function cycle(delta: number) {
@@ -185,10 +170,7 @@ export function createTabs(
   /** Ctrl+N: a new unnamed tab at the end. */
   async function newTab() {
     try {
-      const result: TabOpened = desktop
-        ? await native.newTab()
-        : { tab: `preview-${++previewTabs}`, opened: blankDocument(), error: null };
-      insert(makeTab(result, state.tabs), null);
+      insert(makeTab(await native.newTab(), state.tabs), null);
     } catch (e) {
       report(`无法新建标签页：${e}`);
     }
@@ -200,7 +182,6 @@ export function createTabs(
    * front itself).
    */
   async function openPath(path: string) {
-    if (!desktop) return;
     const current = activeTab();
     const snapshot = current?.session.getSnapshot();
     const replace =
@@ -237,7 +218,7 @@ export function createTabs(
   }
   /** Ctrl+O: picks a file and opens it (see `openPath`). */
   async function openFile() {
-    if (!desktop || opening) return;
+    if (opening) return;
     opening = true;
     try {
       const target = await open({
@@ -258,7 +239,6 @@ export function createTabs(
    * double-clicked while running) and opens it like 打开.
    */
   async function openRequested() {
-    if (!desktop) return;
     try {
       requested = (await native.takeOpenRequest()) ?? requested;
     } catch (e) {
@@ -302,7 +282,6 @@ export function createTabs(
   }
   /** Ctrl+Shift+N: a new window with one new unnamed tab. */
   async function newWindow() {
-    if (!desktop) return;
     try {
       await native.newWindow();
     } catch (e) {
@@ -342,7 +321,6 @@ export function createTabs(
       activeTab()?.session.setNotice("操作仍在进行，完成后可关闭窗口。");
       return;
     }
-    if (!desktop) return;
     closingWindow = true;
     try {
       const keep =
@@ -388,7 +366,6 @@ export function createTabs(
         listeners.delete(listener);
       };
     },
-    desktop,
     activeTab,
     report,
     initialize,

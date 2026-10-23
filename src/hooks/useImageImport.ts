@@ -9,17 +9,17 @@ import {
 } from "../core/native";
 import { blockPictures, withoutPictures } from "../editor/image-view";
 import type { Session } from "../core/session";
-import type { DiaryEditorHandle } from "../editor/DiaryEditor";
+import type { DiaryEditorHandle, EditorImages } from "../editor/DiaryEditor";
 
 /** `<12 hex digits of the id>-<name>`: how a LineHush copy names its files. */
 const STAGED = /^([0-9a-f]{12})-(.+)$/;
+
+type Insertion = ReturnType<DiaryEditorHandle["reserveInsertion"]>;
 
 /**
  * Image import, paste and copy for one tab:
  * - `importFiles` imports files one by one through Rust; pasted files that are
  *   still LineHush's last copy are not imported but used as they are;
- * - `pasteCopied` pastes images copied in LineHush under the same ids and in
- *   the same rows, after Rust has made sure this document holds their originals;
  * - `pasteBlocks` pastes images with text lines copied in LineHush, also from
  *   another document, once Rust has made those images available here;
  * - `copy` puts selected images on the system clipboard, `stage` keeps copies
@@ -29,37 +29,31 @@ const STAGED = /^([0-9a-f]{12})-(.+)$/;
 export function useImageImport(
   session: Session,
   editor: RefObject<DiaryEditorHandle | null>,
-) {
-  /** Runs `load` under the import lock, then inserts what it produced. */
-  const insertAfter = useCallback(
+): EditorImages {
+  /**
+   * Runs `work` under the import lock, then `finish` inserts what it produced
+   * at the place reserved before it started (also after a failure).
+   */
+  const locked = useCallback(
     async (
-      count: number,
-      load: (images: Picture[], rows: boolean[]) => Promise<void>,
+      work: () => Promise<void>,
       failure: (e: unknown) => string,
+      finish: (insertion: Insertion) => void,
     ) => {
       // The session snapshot updates synchronously, so overlapping paste events see the lock.
-      if (session.getSnapshot().importing || !count) return;
-      if (!session.desktop) {
-        session.setError("请在桌面版导入图片。");
-        return;
-      }
+      if (session.getSnapshot().importing) return;
       const insertion = editor.current?.reserveInsertion();
       if (!insertion) return;
       session.setImporting(true);
-      const images: Picture[] = [];
-      // Which images start a new row; only a paste of copied rows has any.
-      const rows: boolean[] = [];
       try {
-        await load(images, rows);
+        await work();
       } catch (e) {
         session.setError(failure(e));
       } finally {
         // Unlock first so a throwing insertion cannot leave the lock held.
         session.setImporting(false);
-        // Keep successfully imported images visible if a later file fails.
         try {
-          if (images.length) insertion.insert(images, rows);
-          else insertion.cancel();
+          finish(insertion);
         } catch (e) {
           session.setError(String(e));
         }
@@ -69,10 +63,13 @@ export function useImageImport(
   );
   const importFiles = useCallback(
     (files: File[], fromClipboard = false) => {
+      if (!files.length) return;
       let current = "";
-      return insertAfter(
-        files.length,
-        async (images, rows) => {
+      const images: Picture[] = [];
+      // Which images start a new row; only a paste of copied rows has any.
+      const rows: boolean[] = [];
+      return locked(
+        async () => {
           if (fromClipboard) {
             const copied = await copiedImages(session.tab);
             if (copied) {
@@ -95,64 +92,37 @@ export function useImageImport(
         // Rust says why (format, damage, size); the name says which file.
         (e) =>
           current ? `无法插入图片“${current}”：${e}` : `无法插入图片：${e}`,
+        // Successfully imported images stay if a later file fails.
+        (insertion) =>
+          images.length ? insertion.insert(images, rows) : insertion.cancel(),
       );
     },
-    [insertAfter, session],
-  );
-  const pasteCopied = useCallback(
-    (pictures: Picture[], copiedRows: boolean[]) =>
-      insertAfter(
-        pictures.length,
-        async (images, rows) => {
-          const missing = await pasteImages(
-            session.tab,
-            pictures.map((pic) => pic.id),
-          );
-          if (missing.length) throw "剪贴板中的图片已不可用，请重新复制";
-          images.push(...pictures);
-          rows.push(...copiedRows);
-        },
-        (e) => `无法粘贴图片：${e}`,
-      ),
-    [insertAfter, session],
+    [locked, session],
   );
   const pasteBlocks = useCallback(
-    async (blocks: Block[]) => {
-      if (session.getSnapshot().importing) return;
-      if (!session.desktop) {
-        session.setError("请在桌面版导入图片。");
-        return;
-      }
-      const insertion = editor.current?.reserveInsertion();
-      if (!insertion) return;
-      session.setImporting(true);
+    (blocks: Block[]) => {
       let missing: string[] | null = null;
-      try {
-        missing = await pasteImages(
-          session.tab,
-          blockPictures(blocks).map((pic) => pic.id),
-        );
-      } catch (e) {
-        session.setError(`无法粘贴图片：${e}`);
-      } finally {
-        session.setImporting(false);
-        try {
-          if (missing === null) insertion.cancel();
-          else {
-            // Images that are gone are left out; the text goes in all the same.
-            insertion.insertBlocks(withoutPictures(blocks, missing));
-            if (missing.length) session.setError("剪贴板中的部分图片已不可用");
-          }
-        } catch (e) {
-          session.setError(String(e));
-        }
-      }
+      return locked(
+        async () => {
+          missing = await pasteImages(
+            session.tab,
+            blockPictures(blocks).map((pic) => pic.id),
+          );
+        },
+        (e) => `无法粘贴图片：${e}`,
+        (insertion) => {
+          if (missing === null) return insertion.cancel();
+          // Images that are gone are left out; the text goes in all the same.
+          insertion.insertBlocks(withoutPictures(blocks, missing));
+          if (missing.length) session.setError("剪贴板中的部分图片已不可用");
+        },
+      );
     },
-    [session, editor],
+    [locked, session],
   );
   const stage = useCallback(
     (pictures: Picture[]) => {
-      if (!session.desktop || !pictures.length) return;
+      if (!pictures.length) return;
       stageImages(session.tab, pictures).catch((e) =>
         session.setError(`复制图片失败：${e}`),
       );
@@ -160,17 +130,15 @@ export function useImageImport(
     [session],
   );
   const copy = useCallback(
-    (pictures: Picture[], rows: boolean[], afterBrowser: boolean) => {
-      if (!session.desktop) return false;
-      copyImages(session.tab, pictures, rows, afterBrowser).catch((e) =>
+    (pictures: Picture[], rows: boolean[]) => {
+      copyImages(session.tab, pictures, rows).catch((e) =>
         session.setError(`复制图片失败：${e}`),
       );
-      return true;
     },
     [session],
   );
   return useMemo(
-    () => ({ importFiles, pasteCopied, pasteBlocks, copy, stage }),
-    [importFiles, pasteCopied, pasteBlocks, copy, stage],
+    () => ({ importFiles, pasteBlocks, copy, stage }),
+    [importFiles, pasteBlocks, copy, stage],
   );
 }

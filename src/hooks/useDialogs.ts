@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { revealRect, type PhysicalRect } from "../core/native";
+import { physicalRect, revealRect } from "../core/native";
 
 /** 应用内的三个对话框。 */
-export type DialogKind = "unsaved" | "settings" | "preview";
+type DialogKind = "unsaved" | "settings" | "preview";
 /** 上面的在前：保存询问可能出现在设置 / 预览之上（例如从任务栏关窗）。 */
 const ORDER: DialogKind[] = ["unsaved", "settings", "preview"];
 
 interface Options {
+  /**
+   * Esc、点遮罩、标题栏 × 时以 `close("cancel")` 关掉（保存询问即“取消”），各对话框
+   * 在自己的 close 事件里收尾。
+   */
   dialogs: Record<DialogKind, RefObject<HTMLDialogElement | null>>;
-  /** Esc、点遮罩、标题栏 × 时关掉这个对话框（保存询问为“取消”）。 */
-  dismiss: Record<DialogKind, () => void>;
   /** 对话框全部关掉后把焦点还给编辑器。 */
   focus: () => void;
 }
@@ -31,11 +33,15 @@ export function useDialogs(options: Options) {
   const latest = useRef(options);
   latest.current = options;
   const [top, setTop] = useState<DialogKind | null>(null);
+  const dismiss = (kind: DialogKind) =>
+    latest.current.dialogs[kind].current?.close("cancel");
 
   const reveal = useCallback((kind: DialogKind) => {
     requestAnimationFrame(() => {
       const element = latest.current.dialogs[kind].current;
-      if (element?.open) revealElement(element);
+      if (!element?.open) return;
+      const rect = physicalRect(element);
+      if (rect.w > 0 && rect.h > 0) revealRect(rect).catch(console.error);
     });
   }, []);
 
@@ -63,7 +69,7 @@ export function useDialogs(options: Options) {
       const kind = ORDER.find((kind) => dialogs[kind].current?.open);
       if (!kind) return;
       event.preventDefault();
-      latest.current.dismiss[kind]();
+      dismiss(kind);
     }
     window.addEventListener("keydown", keydown);
     return () => {
@@ -72,38 +78,23 @@ export function useDialogs(options: Options) {
     };
   }, [reveal]);
 
-  const mask = useCallback(() => {
-    const { dialogs, dismiss } = latest.current;
+  const mask = () => {
+    const { dialogs } = latest.current;
     const kind = ORDER.find((kind) => dialogs[kind].current?.open);
-    if (kind && kind !== "unsaved") dismiss[kind]();
-  }, []);
+    if (kind && kind !== "unsaved") dismiss(kind);
+  };
 
-  const closeWindow = useCallback(() => {
-    const { dialogs, dismiss } = latest.current;
+  const closeWindow = () => {
+    const { dialogs } = latest.current;
     // 关窗流程本来就在等这个回答（tabs.closeWindow 会忽略重入），不能再发起一次。
     if (dialogs.unsaved.current?.open) {
-      dismiss.unsaved();
+      dismiss("unsaved");
       return;
     }
-    for (const kind of ORDER) if (dialogs[kind].current?.open) dismiss[kind]();
+    for (const kind of ORDER) if (dialogs[kind].current?.open) dismiss(kind);
     // 走 onCloseRequested 的关窗流程（逐个询问未保存的标签页），不直接销毁。
     void getCurrentWindow().close();
-  }, []);
+  };
 
   return { top, reveal, mask, closeWindow };
-}
-
-/** 元素在客户区中的位置（物理像素），交给 Rust 看要不要挪窗口。 */
-function revealElement(element: Element) {
-  const box = element.getBoundingClientRect();
-  const scale = window.devicePixelRatio;
-  const x = Math.round(box.left * scale);
-  const y = Math.round(box.top * scale);
-  const rect: PhysicalRect = {
-    x,
-    y,
-    w: Math.round(box.right * scale) - x,
-    h: Math.round(box.bottom * scale) - y,
-  };
-  if (rect.w > 0 && rect.h > 0) revealRect(rect).catch(console.error);
 }

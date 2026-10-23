@@ -15,41 +15,41 @@ export interface CaretMetrics {
   timeoutMs: number;
 }
 
-/** Windows' defaults, also used outside the desktop app. */
+/** Windows' defaults, until Rust has read the settings. */
 export const DEFAULT_CARET_METRICS: CaretMetrics = {
   width: 1,
   blinkMs: 530,
   timeoutMs: 5000,
 };
 
-/** The “中” caret setting: this many times the Windows caret width. */
-export const MEDIUM_CARET_FACTOR = 2;
-/** The “粗” caret setting: this many times the Windows caret width. */
-export const THICK_CARET_FACTOR = 3;
+/** The “光标粗细” setting: this many times the Windows caret width. */
+const CARET_FACTORS: Record<CaretWidth, number> = { thin: 1, medium: 2, thick: 3 };
+// Named for tests/unit/settings.test.mjs.
+export const MEDIUM_CARET_FACTOR = CARET_FACTORS.medium;
+export const THICK_CARET_FACTOR = CARET_FACTORS.thick;
 
 /**
  * The caret's width in screen pixels for the “光标粗细” setting: the Windows
- * setting (`metrics.width`) for "thin", MEDIUM_CARET_FACTOR times it for
- * "medium", THICK_CARET_FACTOR times it for "thick" (at the default 1 screen
+ * setting (`metrics.width`) times `CARET_FACTORS` (at the default 1 screen
  * pixel: 1 / 2 / 3), with no upper limit. Blinking always follows Windows.
  */
 export const caretWidth = (metrics: CaretMetrics, choice: CaretWidth) =>
-  metrics.width *
-  (choice === "thick"
-    ? THICK_CARET_FACTOR
-    : choice === "medium"
-      ? MEDIUM_CARET_FACTOR
-      : 1);
+  metrics.width * CARET_FACTORS[choice];
 
-/** Where to draw the caret, in client coordinates: its left edge, top and bottom. */
+/**
+ * Where the caret goes, in client coordinates: across at `x`, its left edge
+ * (in text) or, with `centered`, its middle (between blocks, in the gap beside
+ * an image); down from `top` to `bottom`.
+ */
 export interface CaretSpot {
   x: number;
   top: number;
   bottom: number;
+  centered?: boolean;
 }
 
 /** The caret's box in CSS pixels relative to `origin` (its positioned container). */
-export interface CaretBox {
+interface CaretBox {
   left: number;
   top: number;
   width: number;
@@ -73,13 +73,14 @@ export function caretBox(
   width: number,
   dpr: number,
 ): CaretBox {
-  const left = toDevicePixel(spot.x, dpr);
+  const across = Math.max(1, Math.round(width)) / dpr;
+  const left = toDevicePixel(spot.centered ? spot.x - across / 2 : spot.x, dpr);
   const top = toDevicePixel(spot.top, dpr);
   const bottom = Math.max(toDevicePixel(spot.bottom, dpr), top + 1 / dpr);
   return {
     left: left - origin.left,
     top: top - origin.top,
-    width: Math.max(1, Math.round(width)) / dpr,
+    width: across,
     height: bottom - top,
   };
 }

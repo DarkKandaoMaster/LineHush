@@ -7,13 +7,11 @@ import {
   type RefObject,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { CAPTION_HOVER, setCaptionButtons, type PhysicalRect } from "../core/native";
+import { CAPTION_HOVER, physicalRect, setCaptionButtons } from "../core/native";
 import type { Tab } from "../core/tabs";
 import TabBar from "./TabBar";
 
 interface Props {
-  /** 桌面版才有标题按钮与窗口事件；浏览器里只显示标签栏。 */
-  desktop: boolean;
   tabs: Tab[];
   active: string;
   onActivate: (id: string) => void;
@@ -37,8 +35,7 @@ const keepFocus = (event: MouseEvent) => event.preventDefault();
  * `setTitle` 设置，供任务栏显示。窗口失焦时标签文字与按钮图标变淡。
  */
 export default function TitleBar(props: Props) {
-  const { desktop } = props;
-  const caption = useCaption(desktop);
+  const caption = useCaption();
   return (
     <div
       className={`titlebar${caption.focused ? "" : " inactive"}${props.dimmed ? " dimmed" : ""}${props.dimmed === "dark" ? " dark" : ""}`}
@@ -53,42 +50,40 @@ export default function TitleBar(props: Props) {
         inert={!!props.dimmed}
       />
       <div className="titlebar-drag" data-tauri-drag-region />
-      {desktop && (
-        <div className="caption-buttons">
-          <button
-            className="caption-min"
-            title="最小化"
-            aria-label="最小化"
-            tabIndex={-1}
-            onMouseDown={keepFocus}
-            onClick={() => void getCurrentWindow().minimize()}
-          >
-            <MinimizeIcon />
-          </button>
-          <button
-            ref={caption.maximizeButton}
-            className={`caption-max${caption.hover ? " hover" : ""}${caption.pressed ? " pressed" : ""}`}
-            title={caption.maximized ? "向下还原" : "最大化"}
-            aria-label={caption.maximized ? "向下还原" : "最大化"}
-            tabIndex={-1}
-            onMouseDown={keepFocus}
-            // 覆盖窗口就位后点击由 Rust 处理，这里只在它还没就位时起作用。
-            onClick={() => void getCurrentWindow().toggleMaximize()}
-          >
-            {caption.maximized ? <RestoreIcon /> : <MaximizeIcon />}
-          </button>
-          <button
-            className="caption-close"
-            title="关闭"
-            aria-label="关闭"
-            tabIndex={-1}
-            onMouseDown={keepFocus}
-            onClick={props.onCloseWindow}
-          >
-            <CloseIcon />
-          </button>
-        </div>
-      )}
+      <div className="caption-buttons">
+        <button
+          className="caption-min"
+          title="最小化"
+          aria-label="最小化"
+          tabIndex={-1}
+          onMouseDown={keepFocus}
+          onClick={() => void getCurrentWindow().minimize()}
+        >
+          <MinimizeIcon />
+        </button>
+        <button
+          ref={caption.maximizeButton}
+          className={`caption-max${caption.hover ? " hover" : ""}${caption.pressed ? " pressed" : ""}`}
+          title={caption.maximized ? "向下还原" : "最大化"}
+          aria-label={caption.maximized ? "向下还原" : "最大化"}
+          tabIndex={-1}
+          onMouseDown={keepFocus}
+          // 覆盖窗口就位后点击由 Rust 处理，这里只在它还没就位时起作用。
+          onClick={() => void getCurrentWindow().toggleMaximize()}
+        >
+          {caption.maximized ? <RestoreIcon /> : <MaximizeIcon />}
+        </button>
+        <button
+          className="caption-close"
+          title="关闭"
+          aria-label="关闭"
+          tabIndex={-1}
+          onMouseDown={keepFocus}
+          onClick={props.onCloseWindow}
+        >
+          <CloseIcon />
+        </button>
+      </div>
     </div>
   );
 }
@@ -106,14 +101,13 @@ interface CaptionState {
  * 跟踪窗口焦点、最大化状态与最大化按钮的悬停，并把最大化按钮的位置（客户区物理
  * 像素）报给 Rust，供贴靠布局（Snap layouts）的覆盖窗口使用（见 caption.rs）。
  */
-function useCaption(desktop: boolean): CaptionState {
+function useCaption(): CaptionState {
   const [focused, setFocused] = useState(() => document.hasFocus());
   const [maximized, setMaximized] = useState(false);
   const [hover, setHover] = useState({ hover: false, pressed: false });
   const maximizeButton = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (!desktop) return;
     const current = getCurrentWindow();
     let active = true;
     const removers: (() => void)[] = [];
@@ -145,27 +139,18 @@ function useCaption(desktop: boolean): CaptionState {
       active = false;
       removers.splice(0).forEach((remove) => remove());
     };
-  }, [desktop]);
+  }, []);
 
   // 最大化按钮的位置：布局、窗口大小或缩放比例变化时重新上报。
   useEffect(() => {
     const button = maximizeButton.current;
-    if (!desktop || !button) return;
+    if (!button) return;
     let last = "";
     let frame = 0;
     const report = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const box = button.getBoundingClientRect();
-        const scale = window.devicePixelRatio;
-        const left = Math.round(box.left * scale);
-        const top = Math.round(box.top * scale);
-        const rect: PhysicalRect = {
-          x: left,
-          y: top,
-          w: Math.round(box.right * scale) - left,
-          h: Math.round(box.bottom * scale) - top,
-        };
+        const rect = physicalRect(button);
         const key = JSON.stringify(rect);
         if (key === last) return;
         last = key;
@@ -198,7 +183,7 @@ function useCaption(desktop: boolean): CaptionState {
       window.removeEventListener("resize", report);
       media?.removeEventListener("change", onScale);
     };
-  }, [desktop]);
+  }, []);
 
   return { focused, maximized, ...hover, maximizeButton };
 }

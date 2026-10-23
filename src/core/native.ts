@@ -2,14 +2,10 @@
 // the IPC contract with src-tauri and with the test doubles; do not rename them.
 // Commands that act on a document name its tab; window commands act on the
 // calling window (Tauri passes it to Rust).
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import type { Diary, Picture } from "./document.ts";
-import {
-  DEFAULT_CARET_METRICS,
-  type CaretMetrics,
-} from "../editor/caret-math.ts";
+import type { CaretMetrics } from "../editor/caret-math.ts";
 import type { Settings } from "./settings.ts";
-export type { Settings } from "./settings.ts";
 
 /** Serialized `store::Opened`. */
 export interface Opened {
@@ -120,18 +116,12 @@ export const importImage = (tab: string, bytes: ArrayBuffer) =>
 export const exportImage = (tab: string, id: string, path: string) =>
   invoke<void>("export_image", { tab, id, path });
 /**
- * Puts the originals on the system clipboard: as files, as HTML that LineHush
- * pastes back under the same ids and in the same rows (`rows` marks the
- * pictures that start a new row) and, for one image, as pixels. With
- * `afterBrowser` (a copy event the browser also writes) Rust lets the browser's
- * write land first and replaces it.
+ * Puts the originals on the system clipboard: as files and, for one image, as
+ * pixels; Rust remembers the copy and its rows (`rows` marks the pictures that
+ * start a new row) for `copiedImages`.
  */
-export const copyImages = (
-  tab: string,
-  pictures: Picture[],
-  rows: boolean[],
-  afterBrowser: boolean,
-) => invoke<void>("copy_images", { tab, pictures, rows, afterBrowser });
+export const copyImages = (tab: string, pictures: Picture[], rows: boolean[]) =>
+  invoke<void>("copy_images", { tab, pictures, rows });
 /**
  * The images of LineHush's last copy and their rows, made available to the
  * tab's document, while the clipboard still holds exactly that copy; otherwise
@@ -155,34 +145,43 @@ export const pasteImages = (tab: string, ids: string[]) =>
 export const stageImages = (tab: string, pictures: Picture[]) =>
   invoke<void>("stage_images", { tab, pictures });
 /** 客户区物理像素中的矩形。 */
-export interface PhysicalRect {
+interface PhysicalRect {
   x: number;
   y: number;
   w: number;
   h: number;
+}
+/** 元素在客户区中的位置（物理像素，各边分别取整）。 */
+export function physicalRect(element: Element): PhysicalRect {
+  const box = element.getBoundingClientRect();
+  const scale = window.devicePixelRatio;
+  const x = Math.round(box.left * scale);
+  const y = Math.round(box.top * scale);
+  return {
+    x,
+    y,
+    w: Math.round(box.right * scale) - x,
+    h: Math.round(box.bottom * scale) - y,
+  };
 }
 /** 上报最大化按钮的位置（客户区物理像素），Rust 在那里放贴靠布局用的覆盖窗口；宽或高为 0 时撤掉。 */
 export const setCaptionButtons = (maximize: PhysicalRect) =>
   invoke<void>("set_caption_buttons", { maximize });
 /**
  * 应用内对话框打开后报上它的位置（客户区物理像素）：窗口有一部分在屏幕外、对话框露不全时，
- * Rust 把窗口挪进屏幕（照 Win11 记事本），之后不挪回。浏览器里不做任何事。
+ * Rust 把窗口挪进屏幕（照 Win11 记事本），之后不挪回。
  */
 export const revealRect = (rect: PhysicalRect) =>
-  isTauri() ? invoke<void>("reveal_rect", { rect }) : Promise.resolve();
+  invoke<void>("reveal_rect", { rect });
 /** The stored settings, or the defaults when the file is missing or damaged; normalize before use. */
 export const readSettings = () => invoke<Settings>("read_settings");
 export const writeSettings = (settings: Settings) =>
   invoke<void>("write_settings", { settings });
 /**
  * Windows' text caret settings: width in screen pixels, blink rate and timeout
- * (see src/editor/caret.ts). Outside the desktop app (a plain browser) the
- * Windows defaults.
+ * (see src/editor/caret.ts).
  */
-export const caretMetrics = () =>
-  isTauri()
-    ? invoke<CaretMetrics>("caret_metrics")
-    : Promise.resolve(DEFAULT_CARET_METRICS);
+export const caretMetrics = () => invoke<CaretMetrics>("caret_metrics");
 
 /** Reads a thumbnail (or the original) of the tab's document into a Blob URL the caller must revoke. */
 export async function imageUrl(
