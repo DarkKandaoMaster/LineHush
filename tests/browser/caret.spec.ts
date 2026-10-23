@@ -433,6 +433,86 @@ test("拖选经过图片：松开鼠标之前文字高亮（DOM 选区）就与�
   expect(errors).toEqual([]);
 });
 
+test("拖选越出窗口左 / 右边框：图片行旁按单击的几何规则定端点，与夹到编辑区边缘相同；再向上到文字照常", async ({
+  page,
+}) => {
+  const errors = await load(page);
+  // "文本" 0-4, images a 4-5 and b 5-6 in one row, b the document's last node.
+  await editorOf(page).evaluate((el: any) => {
+    const image = (id: string) => ({
+      type: "image",
+      attrs: { id, name: `${id}.png`, width: 200, height: 100 },
+    });
+    el.editor.commands.setContent({
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "文本" }] }, image("a"), image("b")],
+    });
+  });
+  const editor = (await editorOf(page).boundingBox())!;
+  const a = (await tile(page, 0).boundingBox())!;
+  const b = (await tile(page, 1).boundingBox())!;
+  const line = (await editorOf(page).locator("p").first().boundingBox())!;
+  const row = a.y + a.height / 2;
+  const text = line.y + line.height / 2;
+  const width = page.viewportSize()!.width;
+  /** The editor's selection and the DOM's, after the next frame is drawn. */
+  const both = () =>
+    editorOf(page).evaluate(async (el: any) => {
+      await new Promise((done) => requestAnimationFrame(() => setTimeout(done)));
+      const view = el.editor.view;
+      const dom = getSelection()!;
+      const { anchor, head } = view.state.selection;
+      return {
+        state: [anchor, head],
+        dom: [
+          view.posAtDOM(dom.anchorNode, dom.anchorOffset),
+          view.posAtDOM(dom.focusNode, dom.focusOffset),
+        ],
+        images: el.querySelectorAll(".image-selected").length,
+      };
+    });
+  let at = { x: 0, y: 0 };
+  async function moveTo(x: number, y: number) {
+    for (let i = 1; i <= 8; i++)
+      await page.mouse.move(at.x + ((x - at.x) * i) / 8, at.y + ((y - at.y) * i) / 8);
+    at = { x, y };
+  }
+  async function step(x: number, y: number, range: number[], images: number, label: string) {
+    await moveTo(x, y);
+    expect(await both(), label).toEqual({ state: range, dom: range, images });
+  }
+  // Pressed beside the row after b (the caret after image 2, put there by a
+  // click far below first), dragged left.
+  await page.mouse.click(editor.x + 300, editor.y + editor.height - 20);
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 6, side: -1 });
+  at = { x: b.x + b.width + 40, y: row };
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  // 1. Past the empty space left of image 1, still in the window: both images.
+  await step(editor.x + 8, row, [6, 4], 2, "图片 1 左侧空白");
+  // 2. Out of the window's left edge: still both (the browser alone took the
+  //    position after image 1, leaving only image 2).
+  await step(-50, row, [6, 4], 2, "越出左边框");
+  await step(-50, a.y + a.height - 5, [6, 4], 2, "越出左边框，图片行下部");
+  // 3. Up to the text line: the text too.
+  await step(-50, text, [6, 1], 2, "越出左边框后向上到文字");
+  await page.mouse.up();
+  expect(await both(), "松开后").toEqual({ state: [6, 1], dom: [6, 1], images: 2 });
+
+  // Mirrored: pressed left of image 1 (the browser's own anchor would be after
+  // it), dragged right out of the window, then up to the text line.
+  await page.mouse.click(editor.x + 300, editor.y + editor.height - 20);
+  at = { x: editor.x + 8, y: row };
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  await step(b.x + b.width + 60, row, [4, 6], 2, "图片 2 右侧空白");
+  await step(width + 50, row, [4, 6], 2, "越出右边框");
+  await step(width + 50, text, [4, 3], 0, "越出右边框后向上到文字");
+  await page.mouse.up();
+  expect(await both(), "松开后").toEqual({ state: [4, 3], dom: [4, 3], images: 0 });
+  expect(errors).toEqual([]);
+});
+
 test("拖动图片仍按左右半区落位", async ({ page }) => {
   const errors = await load(page);
   const target = (await tile(page, 1).boundingBox())!;

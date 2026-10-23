@@ -1098,6 +1098,22 @@ export const spotBy = (
 const imageRect = (view: EditorView, pos: number) =>
   (view.nodeDOM(pos) as HTMLElement).getBoundingClientRect();
 
+/**
+ * The DOM of each top-level block, in document order, from one pass over the
+ * editor's children (`nodeDOM` for each block would take time quadratic in the
+ * length of the document; a drag selection measures them on every move).
+ */
+function blockDOMs(view: EditorView): HTMLElement[] {
+  const { doc } = view.state;
+  const doms = Array.from(view.dom.children).filter((el) =>
+    el.matches("p, .image-item"),
+  ) as HTMLElement[];
+  if (doms.length === doc.childCount) return doms;
+  const each: HTMLElement[] = [];
+  doc.forEach((_node, offset) => each.push(view.nodeDOM(offset) as HTMLElement));
+  return each;
+}
+
 /** The spacer of a line break between rows of images under an event, if any. */
 const rowSpacer = (event: MouseEvent) =>
   (event.target as Element | null)?.closest?.(".image-row-break") ?? null;
@@ -1218,6 +1234,8 @@ export function spotBeside(
   }
   let distance = Infinity;
   const onSpacer = spot !== null;
+  const blocks = onSpacer ? [] : blockDOMs(view);
+  const rectAt = (i: number) => blocks[i].getBoundingClientRect();
   for (
     let i = 0, offset = 0;
     !onSpacer && i < doc.childCount;
@@ -1225,7 +1243,7 @@ export function spotBeside(
   ) {
     const node = doc.child(i);
     if (!isImage(node)) continue;
-    const rect = imageRect(view, offset);
+    const rect = rectAt(i);
     if (y < rect.top || y > rect.bottom) continue;
     const gap = Math.max(rect.left - x, x - rect.right, 0);
     if (gap < distance) {
@@ -1236,18 +1254,18 @@ export function spotBeside(
   const { firstChild, lastChild } = doc;
   if (spot === null && isImage(lastChild)) {
     const end = doc.content.size;
-    if (y > imageRect(view, end - lastChild!.nodeSize).bottom)
-      spot = { pos: end, side: -1 };
+    if (y > rectAt(doc.childCount - 1).bottom) spot = { pos: end, side: -1 };
   }
-  if (spot === null && isImage(firstChild) && y < imageRect(view, 0).top)
+  if (spot === null && isImage(firstChild) && y < rectAt(0).top)
     spot = { pos: 0, side: 1 };
   if (spot === null) {
     let level = false;
     for (let i = 0, offset = 0; i < doc.childCount; offset += doc.child(i++).nodeSize) {
       const node = doc.child(i);
-      const rect = imageRect(view, offset);
+      const rect = rectAt(i);
       if (!isImage(node)) {
-        level ||= y >= rect.top && y <= rect.bottom;
+        level = y >= rect.top && y <= rect.bottom;
+        if (level) break;
         continue;
       }
       if (Math.max(rect.top - y, y - rect.bottom, 0) > ROW_REACH) continue;
@@ -1274,15 +1292,53 @@ function onSelection(view: EditorView, event: MouseEvent) {
 
 /** The pointer during a drag selection in the editor. */
 const pointers = new WeakMap<EditorView, { x: number; y: number }>();
+/**
+ * The anchor of a drag selection pressed beside images (see `spotBeside`), as
+ * for a click there. The browser's own anchor is its canonical position, which
+ * skips over a non-editable image: pressed before a row's first image it is
+ * after that image.
+ */
+const anchors = new WeakMap<EditorView, number>();
 
 /** During a drag selection over an image, the side of it under the pointer. */
-function dragOverImage(view: EditorView): Spot | null {
-  const pointer = pointers.get(view);
-  if (!pointer) return null;
+function dragOverImage(
+  view: EditorView,
+  pointer: { x: number; y: number },
+): Spot | null {
   const hit = view.posAtCoords({ left: pointer.x, top: pointer.y });
   const node = hit && hit.inside >= 0 ? view.state.doc.nodeAt(hit.inside) : null;
   if (!hit || !node || !isImage(node)) return null;
   return spotBy(hit.inside, node, pointer.x, imageRect(view, hit.inside));
+}
+
+/**
+ * Where a point beside images puts an end of a drag selection: as for a click
+ * there (`spotBeside`), with a point left / right of the text (in the editor's
+ * padding or out of the window) taken at the edge of the text. Null on or level
+ * with a text line, where the browser extends the selection. Left to the
+ * browser, a point left of a row of images (in the padding or out of the
+ * window) would read back as the position after the row's first image, the
+ * browser's canonical position for the one before it.
+ */
+function dragBeside(view: EditorView, x: number, y: number): Spot | null {
+  const dom = view.dom;
+  const rect = dom.getBoundingClientRect();
+  const style = getComputedStyle(dom);
+  const left = rect.left + dom.clientLeft + parseFloat(style.paddingLeft);
+  const right =
+    rect.left + dom.clientLeft + dom.clientWidth - parseFloat(style.paddingRight);
+  const at = Math.min(Math.max(x, left + 1), right - 1);
+  const target = dom.ownerDocument.elementFromPoint(at, y);
+  return spotBeside(view, at, y, target && dom.contains(target) ? target : null);
+}
+
+/** During a drag selection, the end set by the pointer on or beside images, if it is there. */
+function dragHead(view: EditorView): Spot | null {
+  const pointer = pointers.get(view);
+  if (!pointer) return null;
+  return (
+    dragOverImage(view, pointer) ?? dragBeside(view, pointer.x, pointer.y)
+  );
 }
 
 /**
@@ -1367,6 +1423,14 @@ export function imagePlugin(
         // as a whole, see dropMixed) instead of starting a new one.
         if (!view.state.selection.empty && onSelection(view, event)) return;
         pointers.set(view, { x: event.clientX, y: event.clientY });
+        // Shift extends the selection from its anchor; a double click selects
+        // words.
+        const spot =
+          event.shiftKey || event.detail > 1
+            ? null
+            : dragBeside(view, event.clientX, event.clientY);
+        if (spot) anchors.set(view, spot.pos);
+        else anchors.delete(view);
       };
       // Bubbling to the window, this runs after ProseMirror's own mousemove
       // listener (on the document) has marked the drag as the browser's, so
@@ -1378,14 +1442,16 @@ export function imagePlugin(
       const move = (event: MouseEvent) => {
         if (!(event.buttons & 1)) {
           pointers.delete(view);
+          anchors.delete(view);
           drawn = false;
           return;
         }
         if (!pointers.has(view)) return;
         pointers.set(view, { x: event.clientX, y: event.clientY });
         // Over an image the browser's end stays in the nearest text line, often
-        // without a selection change to read, so the range is set here.
-        const head = dragOverImage(view);
+        // without a selection change to read, and beside images (also out of
+        // the window) it goes to the wrong side of one, so the range is set here.
+        const head = dragHead(view);
         if (head === null) {
           // Off the image again, the browser's end takes over. It is moved
           // after this listener, but not if the browser deems the new end the
@@ -1401,18 +1467,17 @@ export function imagePlugin(
           return;
         }
         const { doc, selection } = view.state;
-        if (head.pos !== selection.head)
+        const anchor = anchors.get(view) ?? selection.anchor;
+        if (head.pos !== selection.head || anchor !== selection.anchor)
           view.dispatch(
             view.state.tr
-              .setSelection(
-                rangeSelection(doc, selection.anchor, head.pos, 1, head.side),
-              )
+              .setSelection(rangeSelection(doc, anchor, head.pos, 1, head.side))
               .setMeta("pointer", true),
           );
         if (!frame)
           frame = win.requestAnimationFrame(() => {
             frame = 0;
-            if (!view.isDestroyed && dragOverImage(view) !== null) {
+            if (!view.isDestroyed && dragHead(view) !== null) {
               drawDragSelection(view);
               drawn = true;
             }
@@ -1420,6 +1485,7 @@ export function imagePlugin(
       };
       const up = () => {
         pointers.delete(view);
+        anchors.delete(view);
         drawn = false;
       };
       win.addEventListener("mousedown", down, true);
@@ -1432,6 +1498,7 @@ export function imagePlugin(
           win.removeEventListener("mousemove", move);
           win.removeEventListener("mouseup", up, true);
           pointers.delete(view);
+          anchors.delete(view);
         },
       };
     },
@@ -1519,18 +1586,23 @@ export function imagePlugin(
       // images, the browser's own moves, a drag past the last image) keeps that
       // end there, not snapped into text. Dragging over an image, the browser
       // puts the end in the nearest text line; the half under the pointer
-      // decides instead, as for a click.
+      // decides instead, as for a click. Beside images (or out of the window
+      // level with them) both ends of a drag go where a click there would.
       createSelectionBetween: (view, $anchor, $head) => {
-        const head = dragOverImage(view);
+        const head = dragHead(view);
+        const anchor = anchors.get(view);
         if (head)
           return rangeSelection(
             view.state.doc,
-            $anchor.pos,
+            anchor ?? $anchor.pos,
             head.pos,
             1,
             head.side,
           );
-        const sel = selectionBetween($anchor, $head);
+        const sel = selectionBetween(
+          anchor === undefined ? $anchor : view.state.doc.resolve(anchor),
+          $head,
+        );
         // The DOM cannot tell the two sides of a line break between rows
         // apart: the caret keeps the side it is on.
         const current = view.state.selection;
