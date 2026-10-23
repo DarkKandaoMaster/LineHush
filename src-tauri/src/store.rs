@@ -9,13 +9,14 @@
 use crate::db::Db;
 use crate::errors::describe;
 use crate::fsx::{ensure_extension, shown};
+use crate::lock;
 use crate::model::{Diary, ExportImage, Result};
 use serde::Serialize;
 use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::Mutex,
 };
 
 pub const EXTENSION: &str = "hush";
@@ -51,10 +52,8 @@ pub struct Store {
     /// `None` only after `close` or a failed switch.
     work: Option<Db>,
     /// Thumbnails (or why they failed) by image id, kept until the document is switched.
-    thumbnails: HashMap<String, Thumbnail>,
+    thumbnails: HashMap<String, Result<Vec<u8>>>,
 }
-/// Filled once; requests arriving while it is being built wait for that build.
-type Thumbnail = Arc<OnceLock<Result<Vec<u8>>>>;
 impl Store {
     fn blank(work_file: PathBuf) -> Result<Self> {
         if let Some(folder) = work_file.parent() {
@@ -80,52 +79,63 @@ impl Store {
         let opened = store.open(path)?;
         Ok((store, opened))
     }
-    /// Whether the working copy at `work` holds unsaved changes worth restoring:
-    /// a stashed body, except an empty one of an unnamed document (`named` false).
-    /// A working copy that cannot be read counts, so restoring it says why.
-    pub fn has_stash(work: &Path, named: bool) -> bool {
+    /// The working copy at `work`, opened, with its stashed body if that is worth
+    /// restoring: any stash of a file (`named`), a non-empty one of an unnamed
+    /// document.
+    fn stashed(work: &Path, named: bool) -> Result<Option<(Db, Diary)>> {
         if !work.exists() {
-            return false;
+            return Ok(None);
         }
-        match Db::open_stash(work) {
-            Ok((_, Some(stash))) => named || stash != Diary::empty(),
-            Ok((_, None)) => false,
-            Err(_) => true,
-        }
+        Ok(match Db::open_stash(work)? {
+            (db, Some(stash)) if named || stash != Diary::empty() => Some((db, stash)),
+            _ => None,
+        })
     }
-    /// A tab left by an earlier session: picks up the stash in its working copy
-    /// and pairs it with `path`, the file it belonged to. Without a stash the tab
-    /// starts as a new unnamed document. A file that can no longer be opened
-    /// leaves the stash as an unnamed document, with a notice saying why.
-    pub fn resume(work: PathBuf, path: Option<&Path>) -> Result<(Self, Opened)> {
+    /// Whether the working copy at `work` holds unsaved changes worth restoring
+    /// (see `load`). A working copy that cannot be read counts, so loading it
+    /// says why.
+    pub fn has_stash(work: &Path, named: bool) -> bool {
+        Self::stashed(work, named).map_or(true, |stash| stash.is_some())
+    }
+    /// A tab of session.json, loaded at the start or when a window destroyed
+    /// without closing its tabs is opened again. Unsaved changes in its working
+    /// copy (see `has_stash`) are picked up and paired with `path`, the file it
+    /// belongs to; a file that can no longer be opened leaves them as an
+    /// unnamed document, with a notice saying why. Otherwise `path` is opened
+    /// afresh. A file (or working copy) that cannot be opened leaves a new
+    /// unnamed document, and the reason as the third value.
+    pub fn load(work: PathBuf, path: Option<&Path>) -> Result<(Self, Opened, Option<String>)> {
         let mut store = Self::blank(work)?;
-        let Some(stash) = store.resume_work()? else {
-            store.reset_work()?;
-            return Ok((store, Opened::blank()));
-        };
-        let Some(path) = path else {
-            // An untouched draft is not "recovered".
-            let recovered = stash != Diary::empty();
-            let opened = store.opened(stash, recovered);
-            return Ok((store, opened));
-        };
-        match Db::open(path) {
-            Ok((db, _)) => {
-                store.file = Some((path.to_path_buf(), db));
-                let opened = store.opened(stash, true);
-                Ok((store, opened))
-            }
-            // Unsaved changes outlive their file: keep them as the draft.
-            Err(e) => {
+        let error = match Self::stashed(&store.work_file, path.is_some()) {
+            Ok(Some((db, stash))) => {
+                store.work = Some(db);
+                let mut notice = None;
+                if let Some(path) = path {
+                    match Db::open(path) {
+                        Ok((db, _)) => store.file = Some((path.to_path_buf(), db)),
+                        // Unsaved changes outlive their file: keep them as the draft.
+                        Err(e) => {
+                            notice = Some(format!(
+                                "原文件无法打开，未保存的修改已作为未命名文档恢复。{e}"
+                            ))
+                        }
+                    }
+                }
                 let opened = Opened {
-                    notice: Some(format!(
-                        "原文件无法打开，未保存的修改已作为未命名文档恢复。{e}"
-                    )),
+                    notice,
                     ..store.opened(stash, true)
                 };
-                Ok((store, opened))
+                return Ok((store, opened, None));
             }
-        }
+            Ok(None) => match path.map(|path| store.open(path)) {
+                Some(Ok(opened)) => return Ok((store, opened, None)),
+                Some(Err(e)) => Some(e),
+                None => None,
+            },
+            Err(e) => Some(e),
+        };
+        store.reset_work()?;
+        Ok((store, Opened::blank(), error))
     }
     /// What the tab shows now, for a window that loads again (e.g. a reload
     /// while developing): the stash if there is one, else the saved body.
@@ -163,29 +173,13 @@ impl Store {
         self.work = Some(Db::create(&self.work_file)?);
         Ok(())
     }
-    /// Opens the working copy left by the last session and returns its stashed body.
-    fn resume_work(&mut self) -> Result<Option<Diary>> {
-        self.work = None;
-        if !self.work_file.exists() {
-            self.work = Some(Db::create(&self.work_file)?);
-            return Ok(None);
-        }
-        let (db, stash) = Db::open_stash(&self.work_file)?;
-        self.work = Some(db);
-        Ok(stash)
-    }
     /// Leaves the current file, dropping the images its saved body no longer
-    /// references. The working copy is reset by whatever comes next.
-    /// The cleanup is best effort: a file that is gone or damaged is still left,
-    /// and the returned text says why its images stay.
-    fn leave(&mut self) -> Option<String> {
-        let warning = match &self.file {
-            Some((_, db)) => db.collect_garbage().err(),
-            None => None,
-        };
-        self.file = None;
+    /// references, and the thumbnails. The cleanup is best effort: a file that
+    /// is gone or damaged is still left, and the error says why its images stay.
+    fn leave_file(&mut self) -> Option<String> {
         self.thumbnails.clear();
-        warning.map(|e| format!("上一个文件的未引用图片未能清理：{e}"))
+        let (_, db) = self.file.take()?;
+        db.collect_garbage().err()
     }
     /// Opens `path` in this tab: Ctrl+O in an unnamed, unchanged tab opens in
     /// place. A failed open leaves the current document in use.
@@ -194,7 +188,9 @@ impl Store {
             .map_err(|e| format!("无法打开 {}：{}", shown(path), describe(e)))?;
         // Read the new file first so a failed open leaves the current one in use.
         let (db, document) = Db::open(&path)?;
-        let notice = self.leave();
+        let notice = self
+            .leave_file()
+            .map(|e| format!("上一个文件的未引用图片未能清理：{e}"));
         self.reset_work()?;
         self.file = Some((path, db));
         Ok(Opened {
@@ -250,14 +246,9 @@ impl Store {
     /// A working copy that could not be deleted is removed on a later launch, as
     /// session.json no longer names it.
     pub fn close(&mut self) -> Option<String> {
-        let garbage = match &self.file {
-            Some((_, db)) => db.collect_garbage().err(),
-            None => None,
-        };
-        self.file = None;
+        let garbage = self.leave_file();
         // Closes the working copy before its file is removed.
         self.work = None;
-        self.thumbnails.clear();
         let warnings: Vec<String> = [
             garbage.map(|e| format!("未引用图片未能清理：{e}")),
             remove_if_exists(&self.work_file)
@@ -269,12 +260,14 @@ impl Store {
         .collect();
         (!warnings.is_empty()).then(|| warnings.join("；"))
     }
-    /// Stores an original in the working copy (once per distinct content) and
-    /// caches its thumbnail.
-    pub fn add_image(&mut self, id: &str, bytes: &[u8], thumbnail: Vec<u8>) -> Result<()> {
+    /// Stores an original in the working copy (once per distinct content), so it
+    /// is saved with this document: an import, which brings its `thumbnail`
+    /// along, or an image pasted from another document (its id already checked).
+    pub fn add_image(&mut self, id: &str, bytes: &[u8], thumbnail: Option<Vec<u8>>) -> Result<()> {
         self.work()?.insert_image(id, bytes)?;
-        self.thumbnails
-            .insert(id.to_owned(), Arc::new(OnceLock::from(Ok(thumbnail))));
+        if let Some(thumbnail) = thumbnail {
+            self.thumbnails.insert(id.to_owned(), Ok(thumbnail));
+        }
         Ok(())
     }
     /// Whether this document can show `id`: the working copy or the open file holds it.
@@ -284,11 +277,6 @@ impl Store {
                 Some((_, db)) => db.has_image(id)?,
                 None => false,
             })
-    }
-    /// Stores an original pasted from another document (its id already checked)
-    /// in the working copy, so it is saved with this document.
-    pub fn adopt_image(&self, id: &str, bytes: &[u8]) -> Result<()> {
-        self.work()?.insert_image(id, bytes)
     }
     /// An original, from the working copy or else from the open file.
     pub fn image(&self, id: &str) -> Result<Vec<u8>> {
@@ -301,27 +289,25 @@ impl Store {
         }
         .ok_or_else(|| "日记中缺少这张图片的数据".into())
     }
-    /// Thumbnail of `id`, built by `build` once per document; concurrent callers
-    /// wait for the first build. `build` runs without the store lock so a slow
-    /// decode never holds up saving.
+    /// Thumbnail of `id`, built by `build` and then kept. `build` runs without
+    /// the store lock so a slow decode never holds up saving. Two requests for an
+    /// image not cached yet may both build it; the id is the content hash, so
+    /// either result is the same.
     pub fn thumbnail(
         store: &Mutex<Self>,
         id: &str,
         build: impl FnOnce(&[u8]) -> Result<Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        let (slot, source) = {
-            let mut store = store.lock().map_err(|e| e.to_string())?;
-            let slot = store.thumbnails.entry(id.to_owned()).or_default().clone();
-            // The original is read only while the slot is still empty.
-            let source = match slot.get() {
-                None => Some(store.image(id)?),
-                Some(_) => None,
-            };
-            (slot, source)
+        let source = {
+            let store = lock(store);
+            if let Some(cached) = store.thumbnails.get(id) {
+                return cached.clone();
+            }
+            store.image(id)?
         };
-        // A filled slot never runs `build`, so `source` is always present when it does.
-        slot.get_or_init(|| build(source.as_deref().unwrap_or_default()))
-            .clone()
+        let thumbnail = build(&source);
+        lock(store).thumbnails.insert(id.to_owned(), thumbnail.clone());
+        thumbnail
     }
     /// Writes an original byte-for-byte.
     pub fn export_image(&self, id: &str, path: &Path) -> Result<()> {

@@ -14,16 +14,11 @@ use std::{
     fs,
     hash::{BuildHasher, Hasher, RandomState},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 pub const SESSION_FILE: &str = "session.json";
 /// 各标签页工作副本所在的文件夹。
 const TABS_DIR: &str = "tabs";
-/// 旧版本（单窗口单文档）的工作副本与它所属文件的记录，首次启动时迁移。
-const LEGACY_WORKING: &str = "working.hush";
-const LEGACY_RECOVERY: &str = "recovery.json";
 const VERSION: u32 = 1;
 /// 窗口标签的前缀：`win-1`、`win-2`…
 pub const WINDOW_PREFIX: &str = "win-";
@@ -63,30 +58,22 @@ pub struct Launch {
     pub request: Option<(String, PathBuf)>,
 }
 
-/// 旧版 recovery.json：`{path}`。
-#[derive(Deserialize)]
-struct LegacyRecovery {
-    path: Option<PathBuf>,
-}
-
 pub struct Session {
     /// 数据目录。
     root: PathBuf,
     data: Data,
 }
 impl Session {
-    /// 读 session.json（读不出视为空会话），迁移旧版工作副本，删除 `tabs/` 中
-    /// 没有被引用的文件。结果尚未写回，由调用方 `save()`。
+    /// 读 session.json（读不出视为空会话），删除 `tabs/` 中没有被引用的文件。
     pub fn load(root: PathBuf) -> Self {
         let data = fs::read(root.join(SESSION_FILE))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Data>(&bytes).ok())
             .unwrap_or_default();
-        let mut session = Self { root, data };
+        let session = Self { root, data };
         if let Err(e) = fs::create_dir_all(session.tabs_dir()) {
             eprintln!("无法创建 {}：{}", shown(&session.tabs_dir()), describe(e));
         }
-        session.migrate();
         session.remove_orphans();
         session
     }
@@ -112,46 +99,6 @@ impl Session {
             .map_err(|e| format!("无法写入会话记录 {}：{}", shown(&path), describe(e)))
     }
 
-    /// 旧版本留下的 `working.hush`：有暂存就按 recovery.json 的路径变成一个残留
-    /// 标签页（改名为 `tabs/<新 id>.hush`），没有就删除；recovery.json 一律删除。
-    fn migrate(&mut self) {
-        let legacy = self.root.join(LEGACY_WORKING);
-        let recovery = self.root.join(LEGACY_RECOVERY);
-        if legacy.exists() {
-            let path = fs::read(&recovery)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<LegacyRecovery>(&bytes).ok())
-                .and_then(|r| r.path);
-            if Store::has_stash(&legacy, path.is_some()) {
-                let id = self.new_id();
-                let target = self.work_file(&id);
-                match fs::rename(&legacy, &target) {
-                    Ok(()) => {
-                        // 未提交事务的回滚日志跟着走，SQLite 打开时据此恢复。
-                        let journal = crate::fsx::sidecar(&legacy, "-journal");
-                        if journal.exists() {
-                            let _ = fs::rename(&journal, crate::fsx::sidecar(&target, "-journal"));
-                        }
-                        let label = match self.data.windows.first() {
-                            Some(window) => window.label.clone(),
-                            None => self.new_label(&[]),
-                        };
-                        self.add_tab(&label, TabEntry { id, path }, None);
-                    }
-                    Err(e) => eprintln!("无法迁移旧的工作副本 {}：{}", shown(&legacy), describe(e)),
-                }
-            } else {
-                for file in [legacy.clone(), crate::fsx::sidecar(&legacy, "-journal")] {
-                    if let Err(e) = remove_if_exists(&file) {
-                        eprintln!("{e}");
-                    }
-                }
-            }
-        }
-        if let Err(e) = remove_if_exists(&recovery) {
-            eprintln!("{e}");
-        }
-    }
     /// 删除 `tabs/` 中不属于任何标签页的文件（含 SQLite 的 `-journal`）。
     fn remove_orphans(&self) {
         let Ok(entries) = fs::read_dir(self.tabs_dir()) else {
@@ -181,17 +128,10 @@ impl Session {
         self.data.windows.iter().flat_map(|w| w.tabs.iter())
     }
     /// 新的标签页 id：16 位小写十六进制随机数，不与现有标签页或文件重复。
+    /// 每个 `RandomState` 的密钥都不同（随机初值，之后每次加一），空哈希即是随机数。
     pub fn new_id(&self) -> String {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
         loop {
-            let mut hasher = RandomState::new().build_hasher();
-            hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos());
-            hasher.write_u128(nanos);
-            hasher.write_u32(std::process::id());
-            let id = format!("{:016x}", hasher.finish());
+            let id = format!("{:016x}", RandomState::new().build_hasher().finish());
             if !self.all_tabs().any(|tab| tab.id == id) && !self.work_file(&id).exists() {
                 return id;
             }
@@ -327,20 +267,18 @@ impl Session {
     ///   留下的未保存修改（`leftover_tabs`），没有就是一个新的空标签页；启动参数里的
     ///   文件交给这个窗口，按“打开”的规则处理。
     /// - “打开上一会话中的内容”：会话中的窗口按顺序全部重开，标签页与当前标签页
-    ///   不变（各窗口载入时有暂存接上暂存，否则重新打开文件，见 lib.rs 的
-    ///   `load_tab`），焦点回到上次最后使用的窗口。启动参数里的文件已在某个标签页
+    ///   不变（各窗口载入时有暂存接上暂存，否则重新打开文件，见 `Store::load`），
+    ///   焦点回到上次最后使用的窗口。启动参数里的文件已在某个标签页
     ///   中：那个标签页成为当前、那个窗口获得焦点；否则按“打开文件”交给焦点窗口，
     ///   或开一个新窗口。
-    /// `stashed` 判断工作副本里是否有未保存的修改。
     pub fn plan_launch(
         &mut self,
         startup: Startup,
         open_file: OpenFile,
         launch: Option<PathBuf>,
-        stashed: impl Fn(&TabEntry, &Path) -> bool,
     ) -> Launch {
         if startup == Startup::NewWindow || self.data.windows.is_empty() {
-            let leftovers = self.leftover_tabs(stashed);
+            let leftovers = self.leftover_tabs();
             let label = self.new_label(&[]);
             let tabs = if leftovers.is_empty() {
                 vec![TabEntry {
@@ -392,14 +330,14 @@ impl Session {
         }
     }
     /// 启动时（“打开新窗口”）：所有窗口从会话中移除，只留下工作副本里有未保存
-    /// 修改的标签页（`stashed` 判断），按原窗口顺序返回；其余标签页的工作副本删除。
-    pub fn leftover_tabs(&mut self, stashed: impl Fn(&TabEntry, &Path) -> bool) -> Vec<TabEntry> {
+    /// 修改的标签页（`Store::has_stash`），按原窗口顺序返回；其余标签页的工作副本删除。
+    pub fn leftover_tabs(&mut self) -> Vec<TabEntry> {
         let windows = std::mem::take(&mut self.data.windows);
         self.data.focused = None;
         let mut kept = Vec::new();
         for tab in windows.into_iter().flat_map(|w| w.tabs) {
             let work = self.work_file(&tab.id);
-            if work.exists() && stashed(&tab, &work) {
+            if Store::has_stash(&work, tab.path.is_some()) {
                 kept.push(tab);
             } else if let Err(e) = remove_if_exists(&work) {
                 eprintln!("{e}");
@@ -602,7 +540,7 @@ mod tests {
         // bbbb 有工作副本但没有暂存，dddd 连工作副本都没有。
         Store::create(session.work_file("bbbb")).unwrap();
         stashed_copy(&session.work_file("cccc"), "草稿");
-        let left = session.leftover_tabs(|tab, work| Store::has_stash(work, tab.path.is_some()));
+        let left = session.leftover_tabs();
         assert_eq!(left, vec![tab("aaaa", Some("a.hush")), tab("cccc", None)]);
         assert!(session.window("win-1").is_none() && session.window("win-2").is_none());
         assert_eq!(session.focused(), None);
@@ -620,17 +558,10 @@ mod tests {
         // 未命名且暂存为空文档不算；有路径时空文档也算修改（原文件可能有内容）。
         stashed_copy(&session.work_file("aaaa"), "");
         stashed_copy(&session.work_file("bbbb"), "");
-        let left = session.leftover_tabs(|tab, work| Store::has_stash(work, tab.path.is_some()));
+        let left = session.leftover_tabs();
         assert_eq!(left, vec![tab("bbbb", Some("b.hush"))]);
         assert!(!session.work_file("aaaa").exists());
         fs::remove_dir_all(root).unwrap();
-    }
-
-    fn no_stash(_: &TabEntry, _: &Path) -> bool {
-        false
-    }
-    fn stashed(tab: &TabEntry, work: &Path) -> bool {
-        Store::has_stash(work, tab.path.is_some())
     }
 
     #[test]
@@ -652,7 +583,6 @@ mod tests {
             Startup::NewWindow,
             OpenFile::Window,
             Some(PathBuf::from("e.hush")),
-            stashed,
         );
         assert_eq!(
             launch,
@@ -670,7 +600,7 @@ mod tests {
 
         // 没有残留：一个新的空标签页。
         let mut session = Session::load(root.clone());
-        let launch = session.plan_launch(Startup::NewWindow, OpenFile::Tab, None, no_stash);
+        let launch = session.plan_launch(Startup::NewWindow, OpenFile::Tab, None);
         assert_eq!((launch.windows, launch.request), (vec!["win-1".to_string()], None));
         let tabs = session.window_tabs("win-1");
         assert_eq!(tabs.len(), 1);
@@ -689,7 +619,7 @@ mod tests {
         session.set_focused("win-5");
         // 没有暂存的标签页也保留，不删工作副本（载入时重新打开文件）。
         Store::create(session.work_file("aaaa")).unwrap();
-        let launch = session.plan_launch(Startup::LastSession, OpenFile::Tab, None, no_stash);
+        let launch = session.plan_launch(Startup::LastSession, OpenFile::Tab, None);
         assert_eq!(
             launch,
             Launch {
@@ -708,7 +638,6 @@ mod tests {
             Startup::LastSession,
             OpenFile::Window,
             Some(PathBuf::from(r"D:\日记\甲.hush")),
-            no_stash,
         );
         assert_eq!((launch.focus.as_str(), launch.request), ("win-2", None));
         assert_eq!(session.window("win-2").unwrap().active.as_deref(), Some("aaaa"));
@@ -719,7 +648,6 @@ mod tests {
             Startup::LastSession,
             OpenFile::Tab,
             Some(PathBuf::from(r"D:\日记\丙.hush")),
-            no_stash,
         );
         assert_eq!(launch.windows, ["win-2", "win-5"]);
         assert_eq!(
@@ -732,7 +660,6 @@ mod tests {
             Startup::LastSession,
             OpenFile::Window,
             Some(PathBuf::from(r"D:\日记\丙.hush")),
-            no_stash,
         );
         assert_eq!(launch.windows, ["win-2", "win-5", "win-1"]);
         assert_eq!(launch.focus, "win-1");
@@ -750,13 +677,13 @@ mod tests {
         let root = temp("launch-empty");
         let mut session = Session::load(root.clone());
         session.set_focused("win-9");
-        let launch = session.plan_launch(Startup::LastSession, OpenFile::Tab, None, no_stash);
+        let launch = session.plan_launch(Startup::LastSession, OpenFile::Tab, None);
         assert_eq!(launch.windows, ["win-1"]);
         assert_eq!(session.window_tabs("win-1").len(), 1);
         // 记录的焦点窗口已不在会话中：焦点给第一个窗口。
         session.add_tab("win-4", tab("zzzz", None), None);
         session.set_focused("win-9");
-        let launch = session.plan_launch(Startup::LastSession, OpenFile::Tab, None, no_stash);
+        let launch = session.plan_launch(Startup::LastSession, OpenFile::Tab, None);
         assert_eq!(launch.windows, ["win-1", "win-4"]);
         assert_eq!(launch.focus, "win-1");
         fs::remove_dir_all(root).unwrap();
@@ -779,53 +706,6 @@ mod tests {
         assert!(tabs.join("aaaa.hush").exists() && tabs.join("aaaa.hush-journal").exists());
         assert!(!tabs.join("zzzz.hush").exists() && !tabs.join("zzzz.hush-journal").exists());
         assert!(tabs.join("子文件夹").exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn legacy_working_copy_with_a_stash_becomes_a_tab() {
-        let root = temp("legacy");
-        stashed_copy(&root.join(LEGACY_WORKING), "旧版暂存");
-        fs::write(
-            root.join(LEGACY_RECOVERY),
-            r#"{"path":"D:\\日记\\旧.hush"}"#,
-        )
-        .unwrap();
-        let session = Session::load(root.clone());
-        let tabs = session.window_tabs("win-1");
-        assert_eq!(tabs.len(), 1);
-        assert_eq!(tabs[0].path, Some(PathBuf::from(r"D:\日记\旧.hush")));
-        let work = session.work_file(&tabs[0].id);
-        let (_, opened) = Store::resume(work, None).unwrap();
-        assert_eq!(
-            opened.document,
-            Diary {
-                blocks: vec![Block::Line { text: "旧版暂存".into() }]
-            }
-        );
-        assert!(!root.join(LEGACY_WORKING).exists());
-        assert!(!root.join(LEGACY_RECOVERY).exists());
-        // 迁移后的会话记录写回后再读，标签页仍在，工作副本不被当作孤儿删除。
-        session.save().unwrap();
-        let again = Session::load(root.clone());
-        assert_eq!(again.window_tabs("win-1"), tabs);
-        assert!(again.work_file(&tabs[0].id).exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn legacy_working_copy_without_a_stash_is_deleted() {
-        let root = temp("legacy-empty");
-        Store::create(root.join(LEGACY_WORKING)).unwrap();
-        fs::write(root.join(LEGACY_RECOVERY), r#"{"path":null}"#).unwrap();
-        let session = Session::load(root.clone());
-        assert!(session.window("win-1").is_none());
-        assert!(!root.join(LEGACY_WORKING).exists());
-        assert!(!root.join(LEGACY_RECOVERY).exists());
-        // 只有 recovery.json 也删除。
-        fs::write(root.join(LEGACY_RECOVERY), r#"{"path":null}"#).unwrap();
-        Session::load(root.clone());
-        assert!(!root.join(LEGACY_RECOVERY).exists());
         fs::remove_dir_all(root).unwrap();
     }
 }

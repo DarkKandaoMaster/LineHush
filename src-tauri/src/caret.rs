@@ -15,16 +15,6 @@ pub struct CaretMetrics {
     /// How long it blinks before it stands still; 0 for always.
     pub timeout_ms: u32,
 }
-impl Default for CaretMetrics {
-    /// Windows' defaults (also used where a setting cannot be read).
-    fn default() -> Self {
-        Self {
-            width: 1,
-            blink_ms: 530,
-            timeout_ms: 5000,
-        }
-    }
-}
 
 /// `GetCaretBlinkTime` returns INFINITE (or, failing, 0) for a caret that does not blink.
 fn blink(raw: u32) -> u32 {
@@ -35,7 +25,6 @@ fn blink(raw: u32) -> u32 {
     }
 }
 
-#[cfg(windows)]
 fn read() -> CaretMetrics {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetCaretBlinkTime, SystemParametersInfoW, SPI_GETCARETTIMEOUT, SPI_GETCARETWIDTH,
@@ -62,10 +51,6 @@ fn read() -> CaretMetrics {
         timeout_ms: get(SPI_GETCARETTIMEOUT).unwrap_or(0),
     }
 }
-#[cfg(not(windows))]
-fn read() -> CaretMetrics {
-    CaretMetrics::default()
-}
 
 /// Read on every call: the frontend asks again when a window gets the focus,
 /// so a change in Windows settings applies when the user comes back.
@@ -84,7 +69,12 @@ mod tests {
         assert_eq!(blink(530), 530);
         let metrics = caret_metrics();
         assert!(metrics.width >= 1);
-        let json = serde_json::to_value(CaretMetrics::default()).unwrap();
+        let json = serde_json::to_value(CaretMetrics {
+            width: 1,
+            blink_ms: 530,
+            timeout_ms: 5000,
+        })
+        .unwrap();
         assert_eq!(
             json,
             serde_json::json!({ "width": 1, "blinkMs": 530, "timeoutMs": 5000 })

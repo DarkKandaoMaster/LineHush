@@ -4,9 +4,8 @@
 //! - the originals as files (CF_HDROP), written byte for byte to a temporary
 //!   folder as `<first 12 hex digits of the id>-<original name>`, so Explorer
 //!   pastes the very same files;
-//! - an HTML fragment with one `<img>` per image: its `file:` URL for programs
-//!   such as Word, and `data-linehush-*` attributes from which LineHush pastes the
-//!   same images (same ids) in the same rows without importing them again;
+//! - an HTML fragment with one `<img>` per image, its `file:` URL, for programs
+//!   such as Word;
 //! - for a single image, its pixels as CF_DIB and PNG, for Paint, chat programs
 //!   and the like.
 //!
@@ -26,7 +25,7 @@ use std::{
 };
 
 /// How many hex digits of the id prefix a staged file name.
-const ID_PREFIX: usize = 12;
+pub const ID_PREFIX: usize = 12;
 
 /// `name` with the characters Windows forbids in file names replaced.
 fn safe_name(name: &str) -> String {
@@ -56,11 +55,18 @@ pub fn staged_path(dir: &Path, pic: &Picture, bytes: &[u8]) -> PathBuf {
     let prefix = pic.id.get(..ID_PREFIX).unwrap_or(&pic.id);
     dir.join(format!("{prefix}-{name}"))
 }
-/// Writes the original of `pic` into `dir`, unless it is already there.
+/// Writes the original of `pic` into `dir`, unless it is already there; then
+/// its time is only brought up to date (best effort), so cleaning the folder
+/// by age (`sweep_staged` in lib.rs) leaves it alone.
 pub fn stage(dir: &Path, pic: &Picture, bytes: &[u8]) -> Result<PathBuf> {
     let path = staged_path(dir, pic, bytes);
     let present = fs::metadata(&path).is_ok_and(|meta| meta.len() == bytes.len() as u64);
-    if !present {
+    if present {
+        let _ = fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+    } else {
         fs::create_dir_all(dir)
             .map_err(|e| format!("无法创建 {}：{}", shown(dir), describe(e)))?;
         fs::write(&path, bytes)
@@ -98,27 +104,17 @@ fn file_url(path: &Path) -> String {
     }
     url
 }
-/// The fragment LineHush reads back when pasting (see `clipboardImages` in the
-/// editor). `rows[i]` marks an image that starts a new row after the one before
-/// it (`data-linehush-newline`); missing entries count as false.
-pub fn html(items: &[(Picture, PathBuf)], rows: &[bool]) -> String {
+/// One `<img>` per staged original, for programs that paste HTML. LineHush
+/// itself never sees it: WebView2 offers a paste that has files only as those
+/// files (see `copied_images` in lib.rs for how LineHush pastes its own copy).
+pub fn html(items: &[(Picture, PathBuf)]) -> String {
     items
         .iter()
-        .enumerate()
-        .map(|(i, (pic, path))| {
+        .map(|(pic, path)| {
             format!(
-                r#"<img src="{}" alt="{}" data-linehush-id="{}" data-linehush-name="{}" data-linehush-width="{}" data-linehush-height="{}"{}>"#,
+                r#"<img src="{}" alt="{}">"#,
                 escape(&file_url(path)),
                 escape(&pic.name),
-                escape(&pic.id),
-                escape(&pic.name),
-                pic.width,
-                pic.height,
-                if rows.get(i).copied().unwrap_or(false) {
-                    r#" data-linehush-newline="true""#
-                } else {
-                    ""
-                }
             )
         })
         .collect()
@@ -131,30 +127,40 @@ pub struct Content {
     pub pixels: Option<(Vec<u8>, Vec<u8>)>,
 }
 
-#[cfg(windows)]
 mod system {
     use super::Content;
     use crate::fsx::shown;
     use crate::model::Result;
     use clipboard_win::{formats, raw, Clipboard};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+
+    /// How often, and how long apart, opening the clipboard is tried again while
+    /// another program holds it (some open it to read every change at once).
+    const OPEN_RETRIES: u32 = 20;
+    const OPEN_PAUSE: Duration = Duration::from_millis(10);
 
     /// Changes whenever any program writes the clipboard.
     pub fn sequence() -> u32 {
         raw::seq_num().map_or(0, |n| n.get())
     }
-    /// Waits (at most `limit`) for the clipboard to change from `since`.
-    pub fn wait_for_change(since: u32, limit: Duration) {
-        let start = Instant::now();
-        while sequence() == since && start.elapsed() < limit {
-            std::thread::sleep(Duration::from_millis(15));
+    fn open() -> Result<Clipboard> {
+        let mut retries = 0;
+        loop {
+            match Clipboard::new() {
+                Ok(open) => return Ok(open),
+                Err(e) if retries == OPEN_RETRIES => return Err(fail(e)),
+                Err(_) => {
+                    retries += 1;
+                    std::thread::sleep(OPEN_PAUSE);
+                }
+            }
         }
     }
     /// Replaces the clipboard with `content`, unless something else was copied
     /// after `since`. Returns the clipboard's sequence number once it is closed,
     /// or None when it was left alone.
     pub fn write(content: &Content, since: u32) -> Result<Option<u32>> {
-        let open = Clipboard::new_attempts(10).map_err(fail)?;
+        let open = open()?;
         if sequence() != since {
             return Ok(None);
         }
@@ -185,20 +191,7 @@ mod system {
         Ok(())
     }
 }
-#[cfg(not(windows))]
-mod system {
-    use super::Content;
-    use crate::model::Result;
-    use std::time::Duration;
-    pub fn sequence() -> u32 {
-        0
-    }
-    pub fn wait_for_change(_since: u32, _limit: Duration) {}
-    pub fn write(_content: &Content, _since: u32) -> Result<Option<u32>> {
-        Err("仅 Windows 版支持复制图片".into())
-    }
-}
-pub use system::{sequence, wait_for_change, write};
+pub use system::{sequence, write};
 
 #[cfg(test)]
 mod tests {
@@ -237,28 +230,20 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
-    fn html_carries_the_ids_and_file_urls() {
-        let html = html(
-            &[(
+    fn html_names_the_staged_files() {
+        let html = html(&[
+            (
                 picture("ab", "a \"b\".png"),
                 PathBuf::from(r"C:\Temp\linehush-clipboard\ab-a #b.png"),
-            )],
-            &[],
-        );
+            ),
+            (picture("cd", "c.png"), PathBuf::from(r"C:\T\cd-c.png")),
+        ]);
         assert_eq!(
             html,
-            r#"<img src="file:///C:/Temp/linehush-clipboard/ab-a%20%23b.png" alt="a &quot;b&quot;.png" data-linehush-id="ab" data-linehush-name="a &quot;b&quot;.png" data-linehush-width="3" data-linehush-height="2">"#
+            concat!(
+                r#"<img src="file:///C:/Temp/linehush-clipboard/ab-a%20%23b.png" alt="a &quot;b&quot;.png">"#,
+                r#"<img src="file:///C:/T/cd-c.png" alt="c.png">"#
+            )
         );
-    }
-    #[test]
-    fn html_marks_images_that_start_a_new_row() {
-        let item = |id: &str| (picture(id, "p.png"), PathBuf::from(format!(r"C:\T\{id}.png")));
-        let html = html(&[item("a"), item("b"), item("c")], &[false, true]);
-        let marked: Vec<bool> = html
-            .split("<img")
-            .skip(1)
-            .map(|img| img.contains(r#" data-linehush-newline="true""#))
-            .collect();
-        assert_eq!(marked, [false, true, false]);
     }
 }

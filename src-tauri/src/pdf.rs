@@ -1,7 +1,7 @@
 //! 导出 PDF：在隐藏窗口里加载前端生成的打印页（`toPrintHtml`），用 WebView2 自带的
 //! `ICoreWebView2_7::PrintToPdf` 写到用户选的路径。打印页与其中的原图都由自定义协议
 //! `linehush-print` 提供（Windows 上实际 URL 为 `http://linehush-print.localhost/...`）。
-use crate::{errors::describe, fsx::shown, lock_tab, model::Result};
+use crate::{errors::describe, fsx::shown, lock, lock_tab, model::Result};
 use std::{
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
@@ -34,29 +34,20 @@ const MARGIN: f64 = 0.59;
 #[derive(Default)]
 pub struct PrintJob(Mutex<Option<(String, String)>>);
 
-/// `linehush-print` 协议：只回答打印窗口的请求。`/doc.html` 为待打印页面，
-/// `/image/<id>` 为正在导出的标签页中的原图，其他路径 404。
+/// `linehush-print` 协议：`/doc.html` 为待打印页面，`/image/<id>` 为正在导出的
+/// 标签页中的原图，其他路径 404。
 pub fn protocol(
     ctx: UriSchemeContext<'_, Wry>,
     request: Request<Vec<u8>>,
     responder: UriSchemeResponder,
 ) {
-    if ctx.webview_label() != LABEL {
-        return responder.respond(status(StatusCode::FORBIDDEN));
-    }
     let app = ctx.app_handle().clone();
     let path = request.uri().path().to_owned();
     // 读原图要拿 Store 的锁，不放在 UI 线程上做。
     tauri::async_runtime::spawn_blocking(move || responder.respond(serve(&app, &path)));
 }
 fn serve(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
-    let Some((tab, html)) = app
-        .state::<PrintJob>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
-    else {
+    let Some((tab, html)) = lock(&app.state::<PrintJob>().0).clone() else {
         return status(StatusCode::NOT_FOUND);
     };
     if path == "/doc.html" {
@@ -70,10 +61,7 @@ fn serve(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
     let Some(id) = path.strip_prefix("/image/") else {
         return status(StatusCode::NOT_FOUND);
     };
-    let original = lock_tab(app, &tab).and_then(|store| {
-        let store = store.lock().map_err(|e| e.to_string())?;
-        store.image(id)
-    });
+    let original = lock_tab(app, &tab).and_then(|store| lock(&store).image(id));
     let bytes = match original {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -101,7 +89,7 @@ fn status(code: StatusCode) -> Response<Vec<u8>> {
 pub async fn export_pdf(tab: String, path: PathBuf, html: String, app: AppHandle) -> Result<()> {
     {
         let job = app.state::<PrintJob>();
-        let mut slot = job.0.lock().map_err(|e| e.to_string())?;
+        let mut slot = lock(&job.0);
         if slot.is_some() || app.get_webview_window(LABEL).is_some() {
             return Err("上一次导出尚未完成".into());
         }
@@ -116,9 +104,7 @@ pub async fn export_pdf(tab: String, path: PathBuf, html: String, app: AppHandle
                 crate::blocking(move || Ok(closed_rx.recv_timeout(Duration::from_secs(5)))).await;
         }
     }
-    if let Ok(mut slot) = app.state::<PrintJob>().0.lock() {
-        *slot = None;
-    }
+    *lock(&app.state::<PrintJob>().0) = None;
     result
 }
 async fn print(app: &AppHandle, path: &Path, closed: mpsc::Sender<()>) -> Result<()> {
@@ -177,7 +163,6 @@ fn check_target(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn start(webview: tauri::webview::PlatformWebview, path: &Path, done: mpsc::Sender<Result<()>>) {
     let failed = done.clone();
     // SAFETY：只在 WebView2 所在的 UI 线程调用，接口均来自同一个活着的 WebView。
@@ -185,11 +170,6 @@ fn start(webview: tauri::webview::PlatformWebview, path: &Path, done: mpsc::Send
         let _ = failed.send(Err(format!("无法导出 PDF：{}", hresult(&e))));
     }
 }
-#[cfg(not(windows))]
-fn start(_: tauri::webview::PlatformWebview, _: &Path, done: mpsc::Sender<Result<()>>) {
-    let _ = done.send(Err("导出 PDF 仅支持 Windows".into()));
-}
-#[cfg(windows)]
 unsafe fn print_to_pdf(
     webview: &tauri::webview::PlatformWebview,
     path: &Path,
@@ -230,7 +210,6 @@ unsafe fn print_to_pdf(
     core.PrintToPdf(PCWSTR(file.as_ptr()), &settings, &handler)
 }
 /// Win32 错误码（0x8007xxxx）按 errors.rs 译成中文，其他 HRESULT 原样显示。
-#[cfg(windows)]
 fn hresult(e: &windows::core::Error) -> String {
     let code = e.code().0 as u32;
     if code & 0xFFFF_0000 == 0x8007_0000 {

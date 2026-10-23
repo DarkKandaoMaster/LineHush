@@ -26,23 +26,7 @@ serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 sha2 = "0.11"
-
-# Debug builds would otherwise take seconds to decode a large photo.
-[profile.dev.package."*"]
-opt-level = 3
-
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-panic = "abort"
-strip = true
-
-[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
-
-[target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4"
 # 导出 PDF 调用 WebView2 的 PrintToPdf。版本须与 wry 所用的一致（webview2-com 0.38 / windows 0.61），
 # 否则 Tauri 给出的 WebView2 接口类型对不上。
@@ -55,3 +39,15 @@ windows = { version = "0.61", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Debug builds would otherwise take seconds to decode a large photo.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

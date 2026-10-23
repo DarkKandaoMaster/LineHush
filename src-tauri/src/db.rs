@@ -41,6 +41,10 @@ fn read_body(conn: &Connection) -> rusqlite::Result<Option<String>> {
     conn.query_row("SELECT body FROM doc WHERE id = 1", [], |row| row.get(0))
         .optional()
 }
+/// Parses a body row; one that does not parse is reported as `{what}（serde's reason）`.
+fn parse_body(body: &str, what: &str) -> Result<Diary> {
+    serde_json::from_str(body).map_err(|e| format!("{what}（{e}）"))
+}
 
 pub struct Db {
     conn: Connection,
@@ -78,34 +82,29 @@ impl Db {
             }
             Err(e) => return Err(cannot_open(path, describe(e))),
         };
-        let doc = serde_json::from_str(&body).map_err(|_| cannot_open(path, NOT_HUSH))?;
+        let doc = parse_body(&body, NOT_HUSH).map_err(|_| cannot_open(path, NOT_HUSH))?;
         Ok((Self { conn }, doc))
     }
     /// Opens the working copy and its stashed body, if any.
     pub fn open_stash(path: &Path) -> Result<(Self, Option<Diary>)> {
-        let conn = connect(path)?;
-        let stash = match read_body(&conn).map_err(sql)? {
-            Some(body) => Some(
-                serde_json::from_str(&body).map_err(|e| format!("暂存的修改无法读取（{e}）"))?,
-            ),
-            None => None,
+        let db = Self {
+            conn: connect(path)?,
         };
-        Ok((Self { conn }, stash))
+        let stash = db.stash()?;
+        Ok((db, stash))
     }
     /// The stashed body of a working copy, if any.
     pub fn stash(&self) -> Result<Option<Diary>> {
-        match read_body(&self.conn).map_err(sql)? {
-            Some(body) => serde_json::from_str(&body)
-                .map(Some)
-                .map_err(|e| format!("暂存的修改无法读取（{e}）")),
-            None => Ok(None),
-        }
+        read_body(&self.conn)
+            .map_err(sql)?
+            .map(|body| parse_body(&body, "暂存的修改无法读取"))
+            .transpose()
     }
     pub fn body(&self) -> Result<Diary> {
         let body = read_body(&self.conn)
             .map_err(sql)?
             .ok_or("日记中缺少正文")?;
-        serde_json::from_str(&body).map_err(|e| format!("{NOT_HUSH}（{e}）"))
+        parse_body(&body, NOT_HUSH)
     }
     /// Rewrites only the body; image rows are left untouched.
     pub fn save(&self, doc: &Diary) -> Result<()> {

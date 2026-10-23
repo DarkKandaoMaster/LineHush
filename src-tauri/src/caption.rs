@@ -59,16 +59,10 @@ fn overlay_hit(parent_hit: isize) -> isize {
 /// 由网页自己的按钮处理点击。
 #[tauri::command]
 pub fn set_caption_buttons(window: WebviewWindow, maximize: Rect) -> Result<()> {
-    #[cfg(windows)]
-    {
-        let parent = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
-        window
-            .run_on_main_thread(move || win::place(parent, maximize))
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(windows))]
-    let _ = (window, maximize);
-    Ok(())
+    let parent = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    window
+        .run_on_main_thread(move || win::place(parent, maximize))
+        .map_err(|e| e.to_string())
 }
 
 /// 屏幕坐标中的矩形（物理像素），左上含、右下不含。纯函数用，不依赖 Win32 类型。
@@ -108,37 +102,25 @@ fn reveal_shift(rect: Edges, work: Edges, margin: i32) -> (i32, i32) {
 /// Z 序与激活状态不变。最大化或最小化时不动。之后不挪回。
 #[tauri::command]
 pub fn reveal_rect(window: WebviewWindow, rect: Rect) -> Result<()> {
-    #[cfg(windows)]
-    {
-        let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
-        window
-            .run_on_main_thread(move || win::reveal(hwnd, rect))
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(windows))]
-    let _ = (window, rect);
-    Ok(())
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    window
+        .run_on_main_thread(move || win::reveal(hwnd, rect))
+        .map_err(|e| e.to_string())
 }
 
 /// 为编辑器窗口建立（隐藏的）覆盖窗口。可在任意线程调用，实际在 UI 线程上创建。
 pub fn attach(window: &WebviewWindow) {
-    #[cfg(windows)]
-    {
-        let Ok(parent) = window.hwnd() else {
-            return;
-        };
-        let parent = parent.0 as isize;
-        let app = window.app_handle().clone();
-        let label = window.label().to_owned();
-        if let Err(e) = window.run_on_main_thread(move || win::create(parent, app, label)) {
-            eprintln!("无法创建最大化按钮的覆盖窗口：{e}");
-        }
+    let Ok(parent) = window.hwnd() else {
+        return;
+    };
+    let parent = parent.0 as isize;
+    let app = window.app_handle().clone();
+    let label = window.label().to_owned();
+    if let Err(e) = window.run_on_main_thread(move || win::create(parent, app, label)) {
+        eprintln!("无法创建最大化按钮的覆盖窗口：{e}");
     }
-    #[cfg(not(windows))]
-    let _ = window;
 }
 
-#[cfg(windows)]
 mod win {
     use super::{overlay_hit, reveal_shift, CaptionHover, Edges, Rect, CAPTION_HOVER, REVEAL_MARGIN};
     use std::{cell::Cell, sync::Once};
