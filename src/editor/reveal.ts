@@ -7,6 +7,7 @@ import {
   type Selection,
 } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
+import { headSide, pointAt } from "./affinity.ts";
 import {
   BlockRange,
   caretAt,
@@ -140,14 +141,13 @@ export function caretBox(view: EditorView): CaretBox | null {
   const $head = sel.$head;
   const text = (pos: number): CaretBox => {
     const $pos = view.state.doc.resolve(pos);
-    // An empty line: its line box. (With its line break selected the trailing
-    // <br> is hidden, see newline-selection.ts, and coordsAtPos then reports
-    // a zero-height rectangle elsewhere.)
+    // An empty line: its line box (coordsAtPos would measure the trailing <br>).
     if ($pos.parent.isTextblock && !$pos.parent.content.size && $pos.depth) {
       const rect = rectOf(view, $pos.before());
       if (rect?.height) return { top: rect.top, bottom: rect.bottom, x: rect.left };
     }
-    const c = view.coordsAtPos(pos, 1);
+    // At a soft wrap, the line the caret is drawn on (caret.ts, affinity.ts).
+    const c = view.coordsAtPos(pos, pos === sel.head ? headSide(view) : 1);
     return { top: c.top, bottom: c.bottom, x: c.left };
   };
   const image = (pos: number, after: boolean): CaretBox | null => {
@@ -313,6 +313,8 @@ export function pageMove(
   const next = extend
     ? rangeSelection(doc, state.selection.anchor, head.head, dir, side)
     : head;
+  // At a soft wrap the caret goes to the line at that point.
+  pointAt(view, y);
   view.dispatch(state.tr.setSelection(next).scrollIntoView());
   goals.set(view, { x, selection: view.state.selection });
   return true;

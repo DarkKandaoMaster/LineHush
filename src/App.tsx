@@ -8,6 +8,7 @@ import {
   type Startup,
 } from "./core/settings";
 import { createTabs, displayName, type Tab } from "./core/tabs";
+import { useCaretMetrics } from "./hooks/useCaretMetrics";
 import { useImagePreview } from "./hooks/useImagePreview";
 import { useSettings } from "./hooks/useSettings";
 import { useUnsavedPrompt } from "./hooks/useUnsavedPrompt";
@@ -42,6 +43,7 @@ export default function App() {
   }, [settings.loaded, settings.settings.startup]);
 
   useWindowGuards(tabs);
+  useCaretMetrics(tabs.desktop);
   useWindowTitle(tabs.desktop, current, currentState?.dirty ?? false);
   const fileDisabled =
     !tabs.desktop ||

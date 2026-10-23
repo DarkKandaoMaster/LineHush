@@ -10,6 +10,7 @@ import {
   typeBetween,
   type ImageOptions,
 } from "./image-view.ts";
+import { DrawnCaret } from "./caret.ts";
 import { NewlineSelection } from "./newline-selection.ts";
 import { Reveal } from "./reveal.ts";
 
@@ -48,5 +49,7 @@ export function extensions(images: ImageOptions) {
     NewlineSelection,
     // Scrolling to the caret (safe zone) and PageUp / PageDown.
     Reveal,
+    // The caret and the text selection, drawn by the editor (caret.ts).
+    DrawnCaret,
   ];
 }

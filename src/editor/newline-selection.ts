@@ -7,9 +7,11 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
  * Like Notepad / VS Code, a selected line break shows as a small block in the
  * selection colour after the line's text. The browser draws nothing for it
  * when the selection starts at the end of the line (e.g. "我|" to the start of
- * the next line), so the line gets a class (.newline-selected) and CSS draws
- * the block with ::after. A node decoration only changes the paragraph's
- * class attribute, nothing inside the editable content.
+ * the next line); the editor's own selection (caret.ts) adds half a character
+ * to the line's row for each line break `selectedNewlines` gives. The line
+ * also gets a class (.newline-selected, no style of its own) through a node
+ * decoration, which only changes the paragraph's class attribute, nothing
+ * inside the editable content.
  */
 export const newlineSelectionKey = new PluginKey<DecorationSet>("newlineSelection");
 

@@ -2,8 +2,12 @@
 // the IPC contract with src-tauri and with the test doubles; do not rename them.
 // Commands that act on a document name its tab; window commands act on the
 // calling window (Tauri passes it to Rust).
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Diary, Picture } from "./document.ts";
+import {
+  DEFAULT_CARET_METRICS,
+  type CaretMetrics,
+} from "../editor/caret-math.ts";
 import type { Settings } from "./settings.ts";
 export type { Settings } from "./settings.ts";
 
@@ -164,6 +168,15 @@ export const setCaptionButtons = (maximize: PhysicalRect) =>
 export const readSettings = () => invoke<Settings>("read_settings");
 export const writeSettings = (settings: Settings) =>
   invoke<void>("write_settings", { settings });
+/**
+ * Windows' text caret settings: width in screen pixels, blink rate and timeout
+ * (see src/editor/caret.ts). Outside the desktop app (a plain browser) the
+ * Windows defaults.
+ */
+export const caretMetrics = () =>
+  isTauri()
+    ? invoke<CaretMetrics>("caret_metrics")
+    : Promise.resolve(DEFAULT_CARET_METRICS);
 
 /** Reads a thumbnail (or the original) of the tab's document into a Blob URL the caller must revoke. */
 export async function imageUrl(

@@ -82,20 +82,25 @@ test("单击图片左右半区：光标停在图片前 / 后，画成与图片�
   expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 6, side: -1 });
   await expect(editorOf(page).locator(".ProseMirror-selectednode")).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).selections)).not.toContain("node");
-  // The caret line is drawn at the image's full height while the editor has focus.
+  // The caret line is drawn (by caret.ts) at the image's full height while
+  // the editor has focus, in the middle of the 8px gap after the image.
   const drawn = await editorOf(page)
     .locator(".image-item")
     .nth(1)
     .evaluate((item) => {
-      const after = getComputedStyle(item, "::after");
+      const caret = item.closest(".tiptap")!.parentElement!.querySelector(".editor-caret")!;
+      const c = caret.getBoundingClientRect();
+      const r = item.getBoundingClientRect();
       return {
-        display: after.display,
-        height: parseFloat(after.height),
-        image: item.getBoundingClientRect().height,
+        display: getComputedStyle(caret).display,
+        height: c.height,
+        image: r.height,
+        middle: (c.left + c.right) / 2 - r.right,
       };
     });
   expect(drawn.display).toBe("block");
   expect(Math.abs(drawn.height - drawn.image)).toBeLessThan(1.5);
+  expect(Math.abs(drawn.middle - 4)).toBeLessThan(1);
   // The browser's own caret is hidden meanwhile.
   await expect(editorOf(page)).toHaveClass(/ProseMirror-hideselection/);
   // A double click keeps the caret where the first click put it.
@@ -370,6 +375,8 @@ test("拖选经过图片：松开鼠标之前文字高亮（DOM 选区）就与�
         ],
         // The whole text "文本1" is highlighted.
         text: dom.containsNode(el.querySelector("p").firstChild, false),
+        // The editor draws the selection itself (caret.ts) from its state.
+        drawn: !!el.parentElement.querySelector(".selection-layer path").getAttribute("d"),
       };
     });
   type Point = { x: number; y: number };
@@ -407,7 +414,7 @@ test("拖选经过图片：松开鼠标之前文字高亮（DOM 选区）就与�
     await reset(nodes);
     await press(...stops);
     const during = await both();
-    expect(during, stops.join(" → ")).toEqual({ state: range, dom: range, text });
+    expect(during, stops.join(" → ")).toEqual({ state: range, dom: range, text, drawn: true });
     await page.mouse.up();
     expect(await both(), stops.join(" → ") + "（松开后）").toEqual(during);
   }
@@ -628,7 +635,7 @@ test("图片后的空行上插入图片：新图自成一行在图 1 下方，�
   expect(errors).toEqual([]);
 });
 
-test("选中换行：行末画半个字宽的选区色块，空行隐藏 trailingBreak，行高不变，收起后消失", async ({
+test("选中换行：选区在行末多出半个字宽，空行同样，行高不变，收起后消失", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -645,55 +652,74 @@ test("选中换行：行末画半个字宽的选区色块，空行隐藏 trailin
     el.editor.commands.focus();
     el.editor.commands.setTextSelection(2); // after "我"
   });
+  /**
+   * Per line: whether the drawn selection (caret.ts) covers the points a
+   * quarter and three quarters of a character after the line's text, at its
+   * middle and near its top and bottom.
+   */
   const lines = () =>
-    editor.evaluate((el: any) =>
-      Array.from(el.querySelectorAll(":scope > p")).map((p: any) => {
-        const after = getComputedStyle(p, "::after");
-        const br = p.querySelector("br.ProseMirror-trailingBreak");
+    editor.evaluate((el: any) => {
+      const layer = el.parentElement.querySelector(".selection-layer");
+      const origin = layer.getBoundingClientRect();
+      const path = layer.querySelector("path");
+      const filled = (x: number, y: number) => {
+        const point = layer.createSVGPoint();
+        point.x = x - origin.left;
+        point.y = y - origin.top;
+        return !!path.getAttribute("d") && path.isPointInFill(point);
+      };
+      return Array.from(el.querySelectorAll(":scope > p")).map((p: any) => {
+        const box = p.getBoundingClientRect();
+        const em = parseFloat(getComputedStyle(p).fontSize);
+        const range = document.createRange();
+        range.selectNodeContents(p);
+        const end = p.textContent ? range.getBoundingClientRect().right : box.left;
+        const middle = (box.top + box.bottom) / 2;
         return {
           selected: p.classList.contains("newline-selected"),
-          height: p.getBoundingClientRect().height,
-          em: parseFloat(getComputedStyle(p).fontSize),
-          after: after.content === "none" || after.content === "normal" ? null : parseFloat(after.width),
-          afterHeight: parseFloat(after.height),
-          br: br ? getComputedStyle(br).display : null,
+          height: box.height,
+          half: filled(end + em / 4, middle),
+          beyond: filled(end + (em * 3) / 4, middle),
+          full: filled(end + em / 4, box.top + 1) && filled(end + em / 4, box.bottom - 1),
         };
-      }),
-    );
+      });
+    });
   const before = await lines();
   expect(before.map((l) => l.selected)).toEqual([false, false, false]);
-  expect(before[1].br).not.toBe("none");
+  expect(before.some((l) => l.half)).toBe(false);
 
-  // "我|" + Shift+→: the selection is just the line break of the first line.
+  // "我|" + Shift+→: the selection is just the line break of the first line,
+  // half a character wide, the line's full height.
   await page.keyboard.press("Shift+ArrowRight");
   expect(await selection(page)).toEqual({ type: "text", anchor: 2, head: 4 });
   let now = await lines();
   expect(now.map((l) => l.selected)).toEqual([true, false, false]);
-  expect(now[0].after).toBeCloseTo(now[0].em / 2, 1);
-  expect(now[0].afterHeight).toBeCloseTo(before[0].height, 0);
+  expect(now.map((l) => l.half)).toEqual([true, false, false]);
+  expect(now[0].beyond).toBe(false);
+  expect(now[0].full).toBe(true);
   expect(now.map((l) => l.height)).toEqual(before.map((l) => l.height));
 
-  // Across the empty line too: its trailing <br> is hidden, the block holds it open.
+  // Across the empty line too: half a character at its start.
   await page.keyboard.press("Shift+ArrowRight");
   expect(await selection(page)).toEqual({ type: "text", anchor: 2, head: 6 });
   now = await lines();
   expect(now.map((l) => l.selected)).toEqual([true, true, false]);
-  expect(now[1].br).toBe("none");
-  expect(now[1].after).toBeCloseTo(now[1].em / 2, 1);
+  expect(now.map((l) => l.half)).toEqual([true, true, false]);
+  expect(now[1].beyond).toBe(false);
+  expect(now[1].full).toBe(true);
   expect(now.map((l) => l.height)).toEqual(before.map((l) => l.height));
 
   // Select all: the last line has no line break after it.
   await page.keyboard.press("Control+a");
   now = await lines();
   expect(now.map((l) => l.selected)).toEqual([true, true, false]);
-  expect(now[2].after).toBeNull();
+  expect(now.map((l) => l.half)).toEqual([true, true, false]);
 
-  // Collapsing the selection removes the blocks.
+  // Collapsing the selection removes the shape.
   await page.keyboard.press("ArrowRight");
   now = await lines();
   expect(now.map((l) => l.selected)).toEqual([false, false, false]);
-  expect(now.every((l) => l.after === null)).toBe(true);
-  expect(now[1].br).not.toBe("none");
+  expect(now.some((l) => l.half)).toBe(false);
   expect(now.map((l) => l.height)).toEqual(before.map((l) => l.height));
   expect(errors).toEqual([]);
 });
@@ -1214,4 +1240,296 @@ test.describe("滚动：安全区与连按", () => {
     expect(safeZoneMiss({ ...back, box: await headBox() })).toEqual([]);
     expect(errors).toEqual([]);
   });
+});
+
+// ---- The editor's own caret and selection (2026-10-23, src/editor/caret.ts). ----
+
+type Shot = { width: number; height: number; data: number[] };
+/** A screenshot of `clip` (CSS px) as RGBA screen pixels; finite animations end first (the caret on). */
+async function shoot(
+  page: Page,
+  clip: { x: number; y: number; width: number; height: number },
+  path?: string,
+): Promise<Shot> {
+  const png = await page.screenshot({ clip, animations: "disabled", path });
+  return page.evaluate(async (b64) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${b64}`;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(img, 0, 0);
+    const data = ctx.getImageData(0, 0, img.width, img.height).data;
+    return { width: img.width, height: img.height, data: Array.from(data) };
+  }, png.toString("base64"));
+}
+const pixel = (shot: Shot, x: number, y: number) => {
+  const i = (y * shot.width + x) * 4;
+  return shot.data.slice(i, i + 3);
+};
+const near = (rgb: number[], hex: string, tolerance = 2) =>
+  [1, 3, 5].every(
+    (k, i) => Math.abs(rgb[i] - parseInt(hex.slice(k, k + 2), 16)) <= tolerance,
+  );
+/** Each column of the shot: "caret" (#151515 all the way down), "background" (#f9f9f9), or "other". */
+const columns = (shot: Shot) =>
+  Array.from({ length: shot.width }, (_, x) => {
+    const column = Array.from({ length: shot.height }, (_, y) => pixel(shot, x, y));
+    if (column.every((rgb) => near(rgb, "#151515"))) return "caret";
+    if (column.every((rgb) => near(rgb, "#f9f9f9"))) return "background";
+    return `other(${column[Math.floor(column.length / 2)]})`;
+  });
+const caretOf = (page: Page) =>
+  editorOf(page).evaluate((el: any) => {
+    const caret = el.parentElement.querySelector(".editor-caret");
+    return {
+      ...caret.getBoundingClientRect().toJSON(),
+      display: getComputedStyle(caret).display,
+      color: getComputedStyle(caret).backgroundColor,
+    } as { x: number; y: number; width: number; height: number; display: string; color: string };
+  });
+
+test.describe("150% 缩放", () => {
+  test.use({ deviceScaleFactor: 1.5 });
+
+  test("自绘光标恰好 1 个屏幕像素宽、#151515，左右没有灰色半透明列；块间光标同宽", async ({
+    page,
+  }) => {
+    const errors = await load(page);
+    expect(await page.evaluate(() => devicePixelRatio)).toBe(1.5);
+    await setDoc(page, ["文字", "", { id: "a" }, { id: "b" }, "下面"]);
+    // The caret in the empty line (nothing else drawn around it).
+    await editorOf(page).evaluate((el: any) => {
+      el.editor.commands.focus();
+      el.editor.commands.setTextSelection(5);
+    });
+    let caret = await caretOf(page);
+    expect(caret.display).toBe("block");
+    expect(caret.color).toBe("rgb(21, 21, 21)");
+    // 2/3 px in layout units (1/64 px): 42/64; painted as one screen pixel (below).
+    expect(caret.width).toBeCloseTo(1 / 1.5, 1);
+    // The browser's own caret is transparent.
+    expect(await editorOf(page).evaluate((el) => getComputedStyle(el).caretColor)).toBe(
+      "rgba(0, 0, 0, 0)",
+    );
+    const clip = (c: typeof caret) => ({
+      // Narrow enough to stay inside the 8px gap between images.
+      x: Math.floor(c.x) - 2,
+      y: Math.ceil(c.y) + 2,
+      width: 5,
+      height: Math.floor(c.height) - 4,
+    });
+    let cols = columns(await shoot(page, clip(caret), "test-results/caret-150-text-2026-10-23.png"));
+    expect(cols.filter((c) => c === "caret").length, cols.join(" ")).toBe(1);
+    expect(cols.filter((c) => c.startsWith("other")), cols.join(" ")).toEqual([]);
+
+    // Between the two images: as tall as the image, the same single column.
+    await clickHalf(tile(page, 0), "right");
+    caret = await caretOf(page);
+    const image = (await tile(page, 0).boundingBox())!;
+    expect(caret.display).toBe("block");
+    expect(Math.abs(caret.height - image.height)).toBeLessThan(1);
+    // 2/3 px in layout units (1/64 px): 42/64; painted as one screen pixel (below).
+    expect(caret.width).toBeCloseTo(1 / 1.5, 1);
+    cols = columns(await shoot(page, clip(caret), "test-results/caret-150-gap-2026-10-23.png"));
+    expect(cols.filter((c) => c === "caret").length, cols.join(" ")).toBe(1);
+    expect(cols.filter((c) => c.startsWith("other")), cols.join(" ")).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+});
+
+test("圆角选区：三行参差的文字连成一块，外角圆、内角反向圆，中部为 #b7d9f8；截图", async ({
+  page,
+}) => {
+  const errors = await load(page);
+  await setDoc(page, [
+    "短短的一行文字",
+    "这一行比上一行和下一行都要长很多很多很多",
+    "中等长度的一行文字",
+    "后面",
+  ]);
+  // From after the second character of line 1 to after the fifth of line 3;
+  // the editor blurred so no caret is drawn (the selection still is).
+  await editorOf(page).evaluate((el: any) => {
+    el.editor.commands.setTextSelection({ from: 3, to: 37 });
+    el.blur();
+  });
+  expect(await selection(page)).toEqual({ type: "text", anchor: 3, head: 37 });
+  const box = (await editorOf(page).boundingBox())!;
+  const region = { x: box.x, y: box.y, width: 520, height: 110 };
+  await shoot(page, region, "test-results/rounded-selection-2026-10-23.png");
+  // The shape alone: the text made transparent.
+  await page.addStyleTag({ content: ".tiptap { color: transparent !important; }" });
+  const geometry = await editorOf(page).evaluate((el: any) => {
+    const ps = el.querySelectorAll(":scope > p");
+    const part = (p: Element, start: number, end?: number) => {
+      const range = document.createRange();
+      range.setStart(p.firstChild!, start);
+      range.setEnd(p.firstChild!, end ?? p.firstChild!.textContent!.length);
+      return range.getBoundingClientRect().toJSON() as DOMRect;
+    };
+    return { first: part(ps[0], 2), second: part(ps[1], 0), third: part(ps[2], 0, 5) };
+  });
+  const shot = await shoot(page, region, "test-results/rounded-selection-shape-2026-10-23.png");
+  const at = (x: number, y: number) =>
+    pixel(shot, Math.floor(x - region.x), Math.floor(y - region.y));
+  const { first, second, third } = geometry;
+  // Outer corner (top left of line 1's part): its corner pixel stays background.
+  const outer = at(Math.round(first.left), Math.round(first.top));
+  expect(outer[0], `outer corner ${outer}`).toBeGreaterThan(240);
+  // Inside that corner, the selection colour.
+  expect(near(at(first.left + 4, first.top + 4), "#b7d9f8", 1)).toBe(true);
+  // The middle of line 2.
+  const middle = at((second.left + second.right) / 2, (second.top + second.bottom) / 2);
+  expect(near(middle, "#b7d9f8", 1), `middle ${middle}`).toBe(true);
+  // Inner corner where line 2 starts further left than line 1: the pixel just
+  // left of line 1's part and just above line 2 is filled by the reverse
+  // rounding (it would be background with square corners).
+  const inner = at(Math.round(first.left) - 1, Math.round(first.bottom) - 1);
+  expect(inner[0], `inner corner ${inner}`).toBeLessThan(215);
+  // Below line 3's part (line 4, not selected): background.
+  expect(at(third.right - 1, third.bottom + 3)[0]).toBeGreaterThan(240);
+  expect(errors).toEqual([]);
+});
+
+test("输入法组字期间：自绘光标与选区隐藏，浏览器画光标；结束后恢复", async ({ page }) => {
+  const errors = await load(page);
+  await editorOf(page).evaluate((el: any) => {
+    el.editor.commands.focus();
+    el.editor.commands.setTextSelection(3);
+  });
+  expect((await caretOf(page)).display).toBe("block");
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition", { text: "ni", selectionStart: 2, selectionEnd: 2 });
+  const during = await editorOf(page).evaluate((el) => ({
+    composing: el.parentElement!.classList.contains("composing"),
+    caret: getComputedStyle(el.parentElement!.querySelector(".editor-caret")!).display,
+    layer: getComputedStyle(el.parentElement!.querySelector(".selection-layer")!).display,
+    native: getComputedStyle(el).caretColor,
+  }));
+  expect(during).toEqual({ composing: true, caret: "none", layer: "none", native: "rgb(21, 21, 21)" });
+  await cdp.send("Input.insertText", { text: "你" });
+  await expect.poll(() => content(page)).toEqual(["上面你", "[a]", "[b]", "下面"]);
+  await expect
+    .poll(() => editorOf(page).evaluate((el) => el.parentElement!.classList.contains("composing")))
+    .toBe(false);
+  // Drawn again, after the composed text.
+  const caret = await caretOf(page);
+  expect(caret.display).toBe("block");
+  const end = await editorOf(page).evaluate((el: any) => el.editor.view.coordsAtPos(4, 1).left);
+  expect(Math.abs(caret.x - end)).toBeLessThan(1);
+  expect(errors).toEqual([]);
+});
+
+test("全选长文档：画选区不卡（量一次全选的耗时）", async ({ page }) => {
+  const errors = await load(page);
+  await setDoc(
+    page,
+    Array.from({ length: 3000 }, (_, i) =>
+      i % 7 === 3 ? "" : `第 ${i} 行：这是一行用来量画选区耗时的文字，长短不一${"。".repeat(i % 13)}`,
+    ),
+  );
+  await editorOf(page).evaluate((el: any) => el.editor.commands.focus("start"));
+  const ms = await editorOf(page).evaluate((el: any) => {
+    const t = performance.now();
+    el.editor.commands.selectAll();
+    return performance.now() - t;
+  });
+  console.log(`3000 行全选：${ms.toFixed(1)} ms`);
+  expect(
+    await editorOf(page).evaluate(
+      (el) => !!el.parentElement!.querySelector(".selection-layer path")!.getAttribute("d"),
+    ),
+  ).toBe(true);
+  expect(ms).toBeLessThan(500);
+  // Only lines near the viewport are measured; scrolled far away, the lines
+  // shown are measured then and drawn selected.
+  for (const at of [0.5, 1]) {
+    await editorOf(page).evaluate((el: any, at: number) => {
+      const host = el.closest(".editor-host");
+      host.scrollTop = (host.scrollHeight - host.clientHeight) * at;
+    }, at);
+    await frames(page);
+    const covered = await editorOf(page).evaluate((el: any) => {
+      const host = el.closest(".editor-host").getBoundingClientRect();
+      const layer = el.parentElement.querySelector(".selection-layer");
+      const origin = layer.getBoundingClientRect();
+      const path = layer.querySelector("path");
+      const lines = Array.from(el.querySelectorAll(":scope > p")).filter((p: any) => {
+        const r = p.getBoundingClientRect();
+        return p.textContent && r.top > host.top && r.bottom < host.bottom;
+      }) as HTMLElement[];
+      return lines.map((p) => {
+        const r = p.getBoundingClientRect();
+        const point = layer.createSVGPoint();
+        point.x = r.left + 4 - origin.left;
+        point.y = (r.top + r.bottom) / 2 - origin.top;
+        return path.isPointInFill(point);
+      });
+    });
+    expect(covered.length).toBeGreaterThan(10);
+    expect(covered.every(Boolean), `scrolled to ${at}`).toBe(true);
+  }
+  expect(errors).toEqual([]);
+});
+
+test("自动换行处光标所在行与浏览器一致：End / 点上一行末尾空白在上一行末，→ / ← / 点下一行行首在下一行首", async ({
+  page,
+}) => {
+  const errors = await load(page);
+  const text =
+    "今天天气很好，我们去公园散步，看见湖边有很多人在钓鱼。孩子们在草地上奔跑，老人坐在长椅上晒太阳聊天。" +
+    "中午在附近的小馆子吃了一碗面，味道一般但是分量很足。下午回家整理了书架，把不再看的旧书装进箱子里准备捐出去。";
+  await setDoc(page, ["上面", text, "下面"]);
+  // The first wrap of the long line (it starts at 4, its text at 5).
+  const wrap = await editorOf(page).evaluate((el: any) => {
+    const view = el.editor.view;
+    for (let pos = 6; pos < 5 + view.state.doc.child(1).content.size; pos++) {
+      const up = view.coordsAtPos(pos, -1);
+      const down = view.coordsAtPos(pos, 1);
+      if (Math.abs(up.top - down.top) > 2) return { pos, up, down };
+    }
+    return null;
+  });
+  expect(wrap).not.toBeNull();
+  const { pos, up, down } = wrap!;
+  const set = (at: number) =>
+    editorOf(page).evaluate((el: any, at: number) => {
+      el.editor.commands.focus();
+      el.editor.commands.setTextSelection(at);
+    }, at);
+  /** Which line the drawn caret is on at the wrap: "up" (end of the upper line) or "down". */
+  const line = async () => {
+    expect((await selection(page)).head).toBe(pos);
+    await frames(page);
+    const c = await caretOf(page);
+    expect(c.display).toBe("block");
+    const near = (r: { top: number; left: number }) => Math.abs(c.y - r.top) < 1.5 && Math.abs(c.x - r.left) < 1.5;
+    return near(up) ? "up" : near(down) ? "down" : `elsewhere ${JSON.stringify(c)}`;
+  };
+  await set(5);
+  await page.keyboard.press("End");
+  expect(await line()).toBe("up");
+  await set(pos - 1);
+  await page.keyboard.press("ArrowRight");
+  expect(await line()).toBe("down");
+  await page.keyboard.press("End");
+  expect((await selection(page)).head).toBeGreaterThan(pos); // the end of the lower line
+  await set(pos + 1);
+  await page.keyboard.press("ArrowLeft");
+  expect(await line()).toBe("down");
+  // A click right of the upper line's end, then one on the lower line's first
+  // character (the same position: no new selection in ProseMirror).
+  const right = (await editorOf(page).boundingBox())!;
+  await page.mouse.click(right.x + right.width - 4, (up.top + up.bottom) / 2);
+  expect(await line()).toBe("up");
+  await page.mouse.click(down.left + 1, (down.top + down.bottom) / 2);
+  expect(await line()).toBe("down");
+  // Shift+End: the head (a range) at the end of the upper line.
+  await set(5);
+  await page.keyboard.press("Shift+End");
+  expect(await line()).toBe("up");
+  expect(errors).toEqual([]);
 });

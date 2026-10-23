@@ -1,4 +1,5 @@
 mod caption;
+mod caret;
 mod clipboard;
 mod db;
 mod errors;
@@ -1096,6 +1097,7 @@ pub fn run() {
             stage_images,
             pdf::export_pdf,
             caption::set_caption_buttons,
+            caret::caret_metrics,
             settings::read_settings,
             settings::write_settings
         ])

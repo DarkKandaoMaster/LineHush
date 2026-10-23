@@ -381,8 +381,9 @@ test("选中图片的样式是与文字选区同色的半透明蒙层，没有�
     selector: selector.replace(/\/\*[\s\S]*?\*\//g, "").trim(),
     body,
   }));
+  // The text selection is drawn by the editor (caret.ts) in this colour.
   const hex = rules
-    .find((r) => r.selector === ".tiptap ::selection")
+    .find((r) => r.selector === ".selection-layer path")
     .body.match(/#([0-9a-f]{6})/i)[1];
   const rgb = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(" ");
   const selected = rules.filter((r) =>

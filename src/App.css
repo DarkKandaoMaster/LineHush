@@ -266,6 +266,13 @@ input:focus-visible {
   min-height: 100%;
   display: flex;
   flex-direction: column;
+  /*
+   * Holds the editor's own caret and selection (src/editor/caret.ts) next to
+   * the editable root; they scroll with it. A stacking context of its own, so
+   * the selection (z-index -1) lies under the text but above the background.
+   */
+  position: relative;
+  isolation: isolate;
 }
 .tiptap {
   flex: 1 0 auto;
@@ -291,7 +298,8 @@ input:focus-visible {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   tab-size: 4;
-  caret-color: #151515;
+  /* The editor draws the caret and the selection itself (src/editor/caret.ts). */
+  caret-color: transparent;
   /*
    * Space between rows of images: a row that wraps 8px (the images' 4px
    * margins), rows a line break apart 8px more (the spacer), rows a text line
@@ -305,27 +313,54 @@ input:focus-visible {
   min-height: 1lh;
 }
 .tiptap ::selection {
+  background: transparent;
+}
+/*
+ * While an input method composes, the editor's state lags behind the text, so
+ * the browser draws the caret and the selection (caret.ts adds .composing).
+ */
+.composing > .tiptap {
+  caret-color: #151515;
+}
+.composing > .tiptap ::selection {
   background: #b7d9f8;
 }
 /*
- * A selected line break (src/editor/newline-selection.ts): a block half a
- * character wide in the selection colour after the line's text, as Notepad
- * draws it. The negative margin keeps it out of line breaking, so a full line
- * never wraps because of it (it overhangs into the padding). In an empty line
- * the trailing <br> would push ::after onto a second line; it is hidden there
- * and the block (1lh high, like the line's min-height) holds the line open.
+ * The text selection: VS Code's rounded shape (src/editor/selection-shape.ts),
+ * a selected line break half a character wide after its line's text, as
+ * Notepad draws it. Under the text; overflow shows the path beyond the 1px box.
  */
-.tiptap p.newline-selected::after {
-  content: "";
-  display: inline-block;
-  width: 0.5em;
-  height: 1lh;
-  margin-right: -0.5em;
-  vertical-align: top;
-  background: #b7d9f8;
+.selection-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  z-index: -1;
   pointer-events: none;
 }
-.tiptap p.newline-selected > br.ProseMirror-trailingBreak {
+.selection-layer path {
+  fill: #b7d9f8;
+}
+/*
+ * The caret, in the text and between blocks (on an image, see image-view's
+ * .gap-before / .gap-after). Placed, sized and blinked by caret.ts; shown
+ * while the editor has the focus, which comes before it in the DOM.
+ */
+.editor-caret {
+  position: absolute;
+  display: none;
+  background: #151515;
+  pointer-events: none;
+  z-index: 1;
+}
+.ProseMirror-focused ~ .editor-caret {
+  display: block;
+}
+/* While composing the browser draws them (see .composing above). */
+.composing > .editor-caret,
+.composing > .selection-layer {
   display: none;
 }
 /*
@@ -340,21 +375,6 @@ input:focus-visible {
   inset: 0;
   background: rgb(183 217 248 / 50%);
   pointer-events: none;
-}
-/*
- * The caret between blocks (a collapsed BlockRange) only exists next to an
- * image and is drawn on it at its full height (.gap-before / .gap-after); the
- * browser's own caret, which would sit in the editor root, is hidden. (A
- * block-level widget would break the row of images, as .image-row-break does
- * on purpose.)
- */
-.tiptap.ProseMirror-hideselection {
-  caret-color: transparent;
-}
-@keyframes blink {
-  to {
-    visibility: hidden;
-  }
 }
 .error-banner {
   display: flex;
@@ -412,9 +432,11 @@ input:focus-visible {
   height: var(--image-row-gap, 8px);
   pointer-events: auto;
 }
-/* Carets between images: centred in the 8px gap, as tall as the image. */
-.image-item.gap-before::before,
-.image-item.gap-after::after,
+/*
+ * Drop positions between images, as tall as the image. (The caret between
+ * blocks, .gap-before / .gap-after, is drawn by caret.ts in the middle of the
+ * 8px gap.)
+ */
 .image-item.drop-before::before,
 .image-item.drop-after::after {
   content: "";
@@ -422,26 +444,7 @@ input:focus-visible {
   top: 0;
   bottom: 0;
   pointer-events: none;
-}
-.image-item.gap-before::before,
-.image-item.gap-after::after {
-  display: none;
-  border-left: 1px solid #151515;
-  animation: blink 1.1s steps(2, start) infinite;
-}
-.ProseMirror-focused .image-item.gap-before::before,
-.ProseMirror-focused .image-item.gap-after::after {
-  display: block;
-}
-.image-item.drop-before::before,
-.image-item.drop-after::after {
   border-left: 2px solid #0067c0;
-}
-.image-item.gap-before::before {
-  left: -5px;
-}
-.image-item.gap-after::after {
-  right: -5px;
 }
 .image-item.drop-before::before {
   left: -5px;
