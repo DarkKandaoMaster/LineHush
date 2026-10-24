@@ -379,6 +379,8 @@ test("原图预览：非模态、深色遮罩；载入原图后再报一次位�
       .toBe(400);
   };
   await open();
+  // 焦点在对话框本身，没有按钮带焦点环。
+  await expect(preview).toBeFocused();
   expect(await preview.evaluate((d) => d.matches(":modal"))).toBe(false);
   const s = await state(page);
   expect(s).toMatchObject({
@@ -410,6 +412,9 @@ test("原图预览：非模态、深色遮罩；载入原图后再报一次位�
     await column(page, test.info().outputPath("dialog-dim-preview.png")),
     0.6,
   );
+  // 按一次 Tab 到“保存原图”（DOM 顺序在“关闭”之前）。
+  await page.keyboard.press("Tab");
+  await expect(preview.getByRole("button", { name: "保存原图" })).toBeFocused();
 
   await clickMask(page);
   await expect(preview).toBeHidden();
@@ -423,6 +428,13 @@ test("原图预览：非模态、深色遮罩；载入原图后再报一次位�
 
   await open();
   await preview.getByRole("button", { name: "关闭原图" }).click();
+  await expect(preview).toBeHidden();
+  await expect(editorOf(page)).toBeFocused();
+
+  // 焦点在对话框本身时 Enter = “关闭”。
+  await open();
+  await expect(preview).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(preview).toBeHidden();
   await expect(editorOf(page)).toBeFocused();
 

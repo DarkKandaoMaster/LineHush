@@ -32,6 +32,8 @@ export function useImagePreview() {
       const version = ++current.version;
       setShown({ session, picture: pic });
       dialog.current?.show();
+      // The dialog itself takes focus, not a button (see ImagePreviewDialog).
+      dialog.current?.focus({ preventScroll: true });
       try {
         const url = await imageUrl(session.tab, pic, true);
         if (version !== current.version) URL.revokeObjectURL(url);

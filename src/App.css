@@ -563,6 +563,9 @@ input:focus-visible {
   max-height: 94vh;
   background: #f9f9f9;
 }
+.image-preview:focus {
+  outline: none;
+}
 .image-preview header {
   display: flex;
   align-items: center;
