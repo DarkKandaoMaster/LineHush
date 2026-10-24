@@ -2,11 +2,13 @@ import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { letterOf } from "../core/keys";
 import type { Tabs } from "../core/tabs";
+import { findCommandsOf } from "./useFind";
 
 /**
  * Loads the window's tabs, then registers the shortcuts (Ctrl+N new tab,
  * Ctrl+Shift+N new window, Ctrl+O,
- * Ctrl+S / Ctrl+Shift+S, Ctrl+W close tab, Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+1…9),
+ * Ctrl+S / Ctrl+Shift+S, Ctrl+W close tab, Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+1…9;
+ * 查找 / 替换：Ctrl+F、Ctrl+H、F3 / Shift+F3，查找条开着时 Alt+C / Alt+W),
  * the close guard and the requests from Rust (a file to open, a tab to show).
  * Registration waits for initialize(); `active` makes the StrictMode
  * mount → unmount → mount cycle register each listener exactly once.
@@ -19,7 +21,43 @@ export function useWindowGuards(tabs: Tabs) {
       if (active) removers.push(remove);
       else remove();
     };
+    /**
+     * 查找 / 替换的快捷键，交给当前标签页（hooks/useFind.ts）。一律 preventDefault：
+     * Ctrl+F、F3 / Shift+F3 否则会打开 WebView2 自带的页内查找条。
+     */
+    function findKeys(event: KeyboardEvent): boolean {
+      if (event.isComposing || event.metaKey) return false;
+      // 有对话框开着时不生效，但仍拦掉自带的查找条。
+      const dialog = !!document.querySelector("dialog[open]");
+      const find = dialog ? undefined : findCommandsOf(tabs.activeTab()?.id);
+      if (event.key === "F3" && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        if (event.shiftKey) find?.prev();
+        else find?.next();
+        return true;
+      }
+      const letter = letterOf(event);
+      if (event.ctrlKey && !event.altKey && !event.shiftKey && (letter === "f" || letter === "h")) {
+        event.preventDefault();
+        if (letter === "f") find?.find();
+        else find?.replace();
+        return true;
+      }
+      if (
+        event.altKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        (letter === "c" || letter === "w") &&
+        find?.isOpen()
+      ) {
+        event.preventDefault();
+        find.toggle(letter === "c" ? "caseSensitive" : "wholeWord");
+        return true;
+      }
+      return false;
+    }
     function keydown(event: KeyboardEvent) {
+      if (findKeys(event)) return;
       if (
         event.isComposing ||
         !event.ctrlKey ||

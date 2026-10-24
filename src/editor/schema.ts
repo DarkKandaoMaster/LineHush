@@ -11,6 +11,7 @@ import {
   type ImageOptions,
 } from "./image-view.ts";
 import { DrawnCaret } from "./caret.ts";
+import { FindHighlight } from "./find.ts";
 import { InputSource } from "./input.ts";
 import { MarginSelect } from "./margin.ts";
 import { Reveal } from "./reveal.ts";
@@ -55,5 +56,7 @@ export function extensions(images: ImageOptions) {
     DrawnCaret,
     // 左栏选行（margin.ts）。
     MarginSelect,
+    // 查找 / 替换的匹配高亮（find.ts）。
+    FindHighlight,
   ];
 }

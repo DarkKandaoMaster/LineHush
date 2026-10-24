@@ -146,6 +146,12 @@ function revealCaret(view: EditorView): boolean {
   return true;
 }
 
+/**
+ * 不经 ProseMirror 的滚动请求揭示选区（编辑器没有焦点时，`tr.scrollIntoView()` 因 DOM 选区
+ * 不在编辑器里而不滚动；查找条跳到匹配时用，find.ts）。规则同 `revealCaret`。
+ */
+export const revealSelection = (view: EditorView) => revealCaret(view);
+
 /** A remembered across position for consecutive PageUp / PageDown, as in a text editor. */
 const goals = new WeakMap<EditorView, { x: number; selection: Selection }>();
 

@@ -11,8 +11,10 @@ import { stats } from "../core/document";
 import type { Session } from "../core/session";
 import type { Tab } from "../core/tabs";
 import DiaryEditor, { type DiaryEditorHandle } from "../editor/DiaryEditor";
+import { useFind } from "../hooks/useFind";
 import { useImageImport } from "../hooks/useImageImport";
 import Banners from "./Banners";
+import FindWidget from "./FindWidget";
 import StatusBar from "./StatusBar";
 
 interface Props {
@@ -33,6 +35,8 @@ export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
   const [position, setPosition] = useState({ line: 1, column: 1 });
   const counts = useMemo(() => stats(document), [document]);
   const images = useImageImport(session, editor);
+  // 查找 / 替换：每个标签页一份，切换标签页时各自保留（快捷键经 useWindowGuards 调到当前标签页）。
+  const find = useFind(tab.id, editor, generation);
   const preview = useCallback(
     (pic: Picture) => onPreview(session, pic),
     [onPreview, session],
@@ -54,17 +58,21 @@ export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
         notice={notice}
         saveFailed={saveFailed}
       />
-      <DiaryEditor
-        key={generation}
-        ref={editor}
-        tab={tab.id}
-        initial={document}
-        disabled={busy}
-        onChange={session.update}
-        images={images}
-        onPreview={preview}
-        onSelection={setPosition}
-      />
+      {/* 查找条盖在编辑区右上角（相对这一层定位，不随正文滚动）。 */}
+      <div className="editor-area">
+        <DiaryEditor
+          key={generation}
+          ref={editor}
+          tab={tab.id}
+          initial={document}
+          disabled={busy}
+          onChange={session.update}
+          images={images}
+          onPreview={preview}
+          onSelection={setPosition}
+        />
+        {find.ui.open && <FindWidget find={find} />}
+      </div>
       <StatusBar
         line={position.line}
         column={position.column}

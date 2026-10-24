@@ -87,6 +87,16 @@ export function pointerInput(view: EditorView, y: number) {
 }
 
 /**
+ * 由编辑器外的键盘操作定的选区（查找条的 Enter / F3 跳到匹配，find.ts）：来源记为键盘
+ * （reveal.ts 保留安全区），折行处光标按默认规则画在下一行首。
+ */
+export function keyboardInput(view: EditorView) {
+  const input = inputOf(view);
+  input.source = "keyboard";
+  input.cause = { kind: "default" };
+}
+
+/**
  * The two places of a text position at a soft wrap, or null elsewhere (both
  * sides on the same visual line).
  */

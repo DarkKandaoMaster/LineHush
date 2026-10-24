@@ -7,7 +7,12 @@ import {
   useState,
   type Ref,
 } from "react";
-import { EditorContent, useEditor, type UseEditorOptions } from "@tiptap/react";
+import {
+  EditorContent,
+  useEditor,
+  type Editor,
+  type UseEditorOptions,
+} from "@tiptap/react";
 import { Fragment, Slice, type Node as PmNode } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 import { closeHistory, redo, undo } from "@tiptap/pm/history";
@@ -40,6 +45,8 @@ export interface DiaryEditorHandle {
     insertBlocks: (blocks: Block[]) => void;
   };
   focus: () => void;
+  /** 查找 / 替换（hooks/useFind.ts）直接读写编辑器状态。随编辑器重建（换文档）而换。 */
+  editor: Editor;
 }
 interface Props {
   /** The tab whose document this is; thumbnails are read from it. Fixed for the editor's lifetime. */
@@ -263,6 +270,7 @@ function DiaryEditor(props: Props) {
       focus: () => {
         editor.commands.focus();
       },
+      editor,
     }),
     [editor],
   );
