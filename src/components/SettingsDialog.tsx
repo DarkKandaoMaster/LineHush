@@ -100,6 +100,16 @@ interface Props {
 }
 
 /**
+ * 打开设置：`show()` 照规范先把焦点给第一个控件（“字体”），随即挪到 `<dialog>` 本身
+ * （`tabIndex={-1}`，不进 Tab 顺序），没有控件高亮，按 Tab 才进“字体”。
+ */
+export function openSettings(dialog: HTMLDialogElement | null) {
+  if (!dialog) return;
+  dialog.show();
+  dialog.focus({ preventScroll: true });
+}
+
+/**
  * Changes apply while typing; there is nothing to confirm. The inputs keep
  * what is being typed (e.g. "1" on the way to "18") and only valid values
  * (6–30 pt, at most one decimal, e.g. 10.5) are applied; leaving a field shows the value in use again.
@@ -144,6 +154,7 @@ export default function SettingsDialog(props: Props) {
     <dialog
       ref={props.dialogRef}
       className="settings-dialog"
+      tabIndex={-1}
       aria-labelledby="settings-title"
       onClose={props.onClose}
     >

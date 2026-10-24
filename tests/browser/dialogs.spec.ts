@@ -141,6 +141,8 @@ test("设置：非模态，页面其余部分 inert、标题栏可用且盖同�
   const dialog = page.locator("dialog.settings-dialog");
   await page.locator(".settings-button").click();
   await expect(dialog).toBeVisible();
+  // 焦点在对话框本身，不落到第一个控件“字体”上。
+  await expect(dialog).toBeFocused();
   // show() 而非 showModal()：不在顶层。
   expect(await dialog.evaluate((d) => d.matches(":modal"))).toBe(false);
   let s = await state(page);
@@ -172,6 +174,9 @@ test("设置：非模态，页面其余部分 inert、标题栏可用且盖同�
       [box.x + box.width / 2, box.y + 10],
     ),
   ).toBe(true);
+  // 按一次 Tab 进第一项“字体”。
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByLabel("字体")).toBeFocused();
   // 编辑器拿不到焦点，Tab 也进不去。
   expect(await tryFocusEditor(page)).toBe(false);
   // 整扇窗口一块均匀的灰：标题栏与内容区之间没有接缝。截图给人看。

@@ -9,7 +9,7 @@ import { useSettings } from "./hooks/useSettings";
 import { useUnsavedPrompt } from "./hooks/useUnsavedPrompt";
 import { useWindowGuards } from "./hooks/useWindowGuards";
 import ImagePreviewDialog from "./components/ImagePreviewDialog";
-import SettingsDialog from "./components/SettingsDialog";
+import SettingsDialog, { openSettings } from "./components/SettingsDialog";
 import TabPane from "./components/TabPane";
 import TitleBar from "./components/TitleBar";
 import Toolbar from "./components/Toolbar";
@@ -69,7 +69,7 @@ export default function App() {
           settings={settings.settings}
           onNew={() => void tabs.newTab()}
           onOpen={() => void tabs.openFile()}
-          onSettings={() => settingsDialog.current?.show()}
+          onSettings={() => openSettings(settingsDialog.current)}
         />
         {error && !list.length && (
           <div className="error-banner" role="alert">

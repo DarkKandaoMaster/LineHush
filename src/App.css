@@ -657,6 +657,10 @@ input:focus-visible {
   color: inherit;
   box-shadow: 0 8px 24px #0002;
 }
+/* 打开时焦点在对话框本身（openSettings），不画焦点环。 */
+.settings-dialog:focus {
+  outline: none;
+}
 .settings-dialog h2 {
   margin: 0 0 14px;
   font-size: 16px;
