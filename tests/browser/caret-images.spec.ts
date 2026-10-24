@@ -449,17 +449,32 @@ test("拖选越出窗口左 / 右边框：图片行旁按单击的几何规则�
   await page.mouse.up();
   expect(await both(), "松开后").toEqual({ state: [6, 1], dom: [6, 1], images: 2 });
 
-  // Mirrored: pressed left of image 1 (the browser's own anchor would be after
-  // it), dragged right out of the window, then up to the text line.
+  // Mirrored: pressed left of image 1. That is the left margin (the editor's
+  // left padding), where a press selects the whole row of images instead
+  // (2026-10-24, src/editor/margin.ts); dragged right out of the window the row
+  // stays selected, and up to the text line the selection grows by whole lines
+  // (anchor at the row's end, head at the text line's start).
   await page.mouse.click(editor.x + 300, editor.y + editor.height - 20);
   at = { x: editor.x + 8, y: row };
   await page.mouse.move(at.x, at.y);
   await page.mouse.down();
   await step(b.x + b.width + 60, row, [4, 6], 2, "图片 2 右侧空白");
   await step(width + 50, row, [4, 6], 2, "越出右边框");
-  await step(width + 50, text, [4, 3], 0, "越出右边框后向上到文字");
+  await step(width + 50, text, [6, 1], 2, "越出右边框后向上到文字");
   await page.mouse.up();
-  expect(await both(), "松开后").toEqual({ state: [4, 3], dom: [4, 3], images: 0 });
+  expect(await both(), "松开后").toEqual({ state: [6, 1], dom: [6, 1], images: 2 });
+
+  // Pressed beside the row after b, dragged right out of the window (the caret
+  // stays after image 2), then up to the text line: the browser's end at the
+  // text's end, both images in the range.
+  await page.mouse.click(editor.x + 300, editor.y + editor.height - 20);
+  at = { x: b.x + b.width + 40, y: row };
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  await step(width + 50, row, [6, 6], 0, "图片 2 右侧按下后越出右边框");
+  await step(width + 50, text, [6, 3], 2, "越出右边框后向上到文字（从图片 2 右侧）");
+  await page.mouse.up();
+  expect(await both(), "松开后").toEqual({ state: [6, 3], dom: [6, 3], images: 2 });
   expect(errors).toEqual([]);
 });
 

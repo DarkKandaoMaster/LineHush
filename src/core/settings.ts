@@ -32,11 +32,19 @@ export interface Settings {
    * 不切回浏览器的原生选区。
    */
   selectionCorners: SelectionCorners;
+  /**
+   * 左栏选行：在编辑区左侧的内边距（左栏）单击 / 拖动时，“整行”选整个逻辑行（一个文字段落，
+   * 或一整行图片），“视觉行”只选指针所在的那一折（软折行的一个行盒，或折行后的那一排图片）。
+   * 都包含行尾的换行；见 src/editor/margin.ts。
+   */
+  marginSelection: MarginSelection;
 }
 export type CaretWidth = "thin" | "medium" | "thick";
 const CARET_WIDTH_VALUES: readonly CaretWidth[] = ["thin", "medium", "thick"];
 export type SelectionCorners = "square" | "rounded";
 const SELECTION_CORNERS_VALUES: readonly SelectionCorners[] = ["square", "rounded"];
+export type MarginSelection = "line" | "visualLine";
+const MARGIN_SELECTION_VALUES: readonly MarginSelection[] = ["line", "visualLine"];
 export type OpenFile = "tab" | "window";
 const OPEN_FILE_VALUES: readonly OpenFile[] = ["tab", "window"];
 export type Startup = "newWindow" | "lastSession";
@@ -55,6 +63,7 @@ export const DEFAULT_SETTINGS: Settings = {
   startup: "newWindow",
   caretWidth: "thin",
   selectionCorners: "rounded",
+  marginSelection: "line",
 };
 /** In pt. */
 export const MIN_FONT_SIZE = 6;
@@ -69,8 +78,8 @@ const FALLBACK_FONTS = [
 
 /**
  * Any stored or typed value made valid: size rounded to 0.1 and clamped, an
- * empty font is the default, an unknown `openFile`, `startup`, `caretWidth` or
- * `selectionCorners` is the default.
+ * empty font is the default, an unknown `openFile`, `startup`, `caretWidth`,
+ * `selectionCorners` or `marginSelection` is the default.
  */
 export function normalizeSettings(value: unknown): Settings {
   const input = (typeof value === "object" && value !== null ? value : {}) as {
@@ -80,6 +89,7 @@ export function normalizeSettings(value: unknown): Settings {
     startup?: unknown;
     caretWidth?: unknown;
     selectionCorners?: unknown;
+    marginSelection?: unknown;
   };
   const family =
     typeof input.fontFamily === "string" ? input.fontFamily.trim() : "";
@@ -98,6 +108,9 @@ export function normalizeSettings(value: unknown): Settings {
     selectionCorners:
       SELECTION_CORNERS_VALUES.find((value) => value === input.selectionCorners) ??
       DEFAULT_SETTINGS.selectionCorners,
+    marginSelection:
+      MARGIN_SELECTION_VALUES.find((value) => value === input.marginSelection) ??
+      DEFAULT_SETTINGS.marginSelection,
   };
 }
 

@@ -12,6 +12,7 @@ import {
 } from "./image-view.ts";
 import { DrawnCaret } from "./caret.ts";
 import { InputSource } from "./input.ts";
+import { MarginSelect } from "./margin.ts";
 import { Reveal } from "./reveal.ts";
 
 const PlainKeys = Extension.create({
@@ -52,5 +53,7 @@ export function extensions(images: ImageOptions) {
     Reveal,
     // The caret and the text selection, drawn by the editor (caret.ts).
     DrawnCaret,
+    // 左栏选行（margin.ts）。
+    MarginSelect,
   ];
 }

@@ -78,6 +78,15 @@ export function pointAt(view: EditorView, y: number, by: "pointer" | "page") {
 }
 
 /**
+ * 由编辑器自己按指针定的选区（左栏选行，margin.ts；按下不进 ProseMirror）：来源记为鼠标
+ * （reveal.ts 只保证可见），折行处光标画在 y 所在的那一行。
+ */
+export function pointerInput(view: EditorView, y: number) {
+  inputOf(view).source = "mouse";
+  pointAt(view, y, "pointer");
+}
+
+/**
  * The two places of a text position at a soft wrap, or null elsewhere (both
  * sides on the same visual line).
  */

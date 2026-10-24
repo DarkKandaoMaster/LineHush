@@ -995,7 +995,7 @@ const imageRect = (view: EditorView, pos: number) =>
  * editor's children (`nodeDOM` for each block would take time quadratic in the
  * length of the document; a drag selection measures them on every move).
  */
-function blockDOMs(view: EditorView): HTMLElement[] {
+export function blockDOMs(view: EditorView): HTMLElement[] {
   const { doc } = view.state;
   const doms = Array.from(view.dom.children).filter((el) =>
     el.matches("p, .image-item"),

@@ -20,6 +20,7 @@ test("设置规范化：字号（pt）保留一位小数并限制在 6–30，�
     startup: "newWindow",
     caretWidth: "thin",
     selectionCorners: "rounded",
+    marginSelection: "line",
   });
   assert.deepEqual(normalizeSettings(null), DEFAULT_SETTINGS);
   assert.deepEqual(normalizeSettings({ fontSizePt: "abc", fontFamily: 3 }), DEFAULT_SETTINGS);
@@ -30,6 +31,7 @@ test("设置规范化：字号（pt）保留一位小数并限制在 6–30，�
     startup: "newWindow",
     caretWidth: "thin",
     selectionCorners: "rounded",
+    marginSelection: "line",
   });
   assert.equal(normalizeSettings({ fontSizePt: 10.5 }).fontSizePt, 10.5);
   assert.equal(normalizeSettings({ fontSizePt: 12.55 }).fontSizePt, 12.6);
@@ -48,7 +50,7 @@ test("打开文件：只认 tab / window，其他值取默认 tab，不影响其
     assert.equal(normalizeSettings({ openFile: value }).openFile, "tab");
   assert.deepEqual(
     normalizeSettings({ fontFamily: "宋体", fontSizePt: 12, openFile: "新窗口" }),
-    { fontFamily: "宋体", fontSizePt: 12, openFile: "tab", startup: "newWindow", caretWidth: "thin", selectionCorners: "rounded" },
+    { fontFamily: "宋体", fontSizePt: 12, openFile: "tab", startup: "newWindow", caretWidth: "thin", selectionCorners: "rounded", marginSelection: "line" },
   );
   // 已规范化的值再规范化不变（设置广播到其他窗口时会再走一遍）。
   const settings = {
@@ -58,6 +60,7 @@ test("打开文件：只认 tab / window，其他值取默认 tab，不影响其
     startup: "lastSession",
     caretWidth: "thick",
     selectionCorners: "square",
+    marginSelection: "visualLine",
   };
   assert.deepEqual(normalizeSettings(settings), settings);
 });
@@ -70,7 +73,7 @@ test("启动时：只认 newWindow / lastSession，其他值取默认 newWindow�
     assert.equal(normalizeSettings({ startup: value }).startup, "newWindow");
   assert.deepEqual(
     normalizeSettings({ fontSizePt: 12, openFile: "window", startup: "恢复" }),
-    { fontFamily: "微软雅黑", fontSizePt: 12, openFile: "window", startup: "newWindow", caretWidth: "thin", selectionCorners: "rounded" },
+    { fontFamily: "微软雅黑", fontSizePt: 12, openFile: "window", startup: "newWindow", caretWidth: "thin", selectionCorners: "rounded", marginSelection: "line" },
   );
   // 没有 startup：取默认。
   assert.deepEqual(normalizeSettings({ fontFamily: "宋体", fontSizePt: 12 }), {
@@ -80,6 +83,7 @@ test("启动时：只认 newWindow / lastSession，其他值取默认 newWindow�
     startup: "newWindow",
     caretWidth: "thin",
     selectionCorners: "rounded",
+    marginSelection: "line",
   });
 });
 
@@ -104,6 +108,7 @@ test("光标粗细：只认 thin / medium / thick，缺省或其他值取默认 
       startup: "lastSession",
       caretWidth: "thin",
       selectionCorners: "rounded",
+      marginSelection: "line",
     },
   );
   // “细”跟随系统设置，“中”为其 2 倍，“粗”为其 3 倍，不设上限，闪烁不受影响。
@@ -145,6 +150,7 @@ test("选区边角：只认 square / rounded，缺省或其他值取默认 round
       startup: "newWindow",
       caretWidth: "thick",
       selectionCorners: "rounded",
+      marginSelection: "line",
     },
   );
   assert.deepEqual(
@@ -153,6 +159,27 @@ test("选区边角：只认 square / rounded，缺省或其他值取默认 round
   );
   // 没有这一项：取默认圆角。
   assert.equal(normalizeSettings({ fontFamily: "宋体", fontSizePt: 12 }).selectionCorners, "rounded");
+});
+
+test("左栏选行：只认 line / visualLine，缺省或其他值取默认 line，不影响其他字段", () => {
+  assert.equal(DEFAULT_SETTINGS.marginSelection, "line");
+  assert.equal(normalizeSettings({}).marginSelection, "line");
+  assert.equal(normalizeSettings(null).marginSelection, "line");
+  assert.equal(normalizeSettings({ marginSelection: "line" }).marginSelection, "line");
+  assert.equal(normalizeSettings({ marginSelection: "visualLine" }).marginSelection, "visualLine");
+  for (const value of [undefined, null, "", "Line", "visualline", "visual-line", "整行", "视觉行", 1, true, ["visualLine"], {}])
+    assert.equal(normalizeSettings({ marginSelection: value }).marginSelection, "line");
+  assert.deepEqual(
+    normalizeSettings({ fontSizePt: 12, selectionCorners: "square", marginSelection: "视觉行" }),
+    { ...DEFAULT_SETTINGS, fontSizePt: 12, selectionCorners: "square" },
+  );
+  assert.deepEqual(
+    normalizeSettings({ caretWidth: "粗", marginSelection: "visualLine" }),
+    { ...DEFAULT_SETTINGS, marginSelection: "visualLine" },
+  );
+  // 往返不变（广播到其他窗口时会再规范化一遍）。
+  const visual = { ...DEFAULT_SETTINGS, marginSelection: "visualLine" };
+  assert.deepEqual(normalizeSettings(JSON.parse(JSON.stringify(visual))), visual);
 });
 
 test("设置写成 CSS 变量：单个字体名加引号与回退字体，字体列表原样使用", () => {

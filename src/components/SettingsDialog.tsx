@@ -3,6 +3,7 @@ import {
   MAX_FONT_SIZE,
   MIN_FONT_SIZE,
   type CaretWidth,
+  type MarginSelection,
   type OpenFile,
   type SelectionCorners,
   type Settings,
@@ -79,6 +80,11 @@ const CARET_WIDTH: { value: CaretWidth; label: string }[] = [
 const SELECTION_CORNERS: { value: SelectionCorners; label: string }[] = [
   { value: "square", label: "方角" },
   { value: "rounded", label: "圆角" },
+];
+/** 左栏（编辑区左侧内边距）单击 / 拖动选中的“行”：整个逻辑行，或指针所在的那一折。 */
+const MARGIN_SELECTION: { value: MarginSelection; label: string }[] = [
+  { value: "line", label: "整行" },
+  { value: "visualLine", label: "视觉行" },
 ];
 /** 文案照 Win11 记事本。 */
 const OPEN_FILE: { value: OpenFile; label: string }[] = [
@@ -219,6 +225,13 @@ export default function SettingsDialog(props: Props) {
             choices={SELECTION_CORNERS}
             value={settings.selectionCorners}
             onChange={(selectionCorners) => onChange({ selectionCorners })}
+          />
+          <Choices
+            name="settings-margin-selection"
+            label="左栏选行"
+            choices={MARGIN_SELECTION}
+            value={settings.marginSelection}
+            onChange={(marginSelection) => onChange({ marginSelection })}
           />
           <Choices
             name="settings-open-file"

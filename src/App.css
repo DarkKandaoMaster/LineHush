@@ -371,6 +371,25 @@ input:focus-visible {
 .ProseMirror-focused ~ .editor-caret {
   display: block;
 }
+/*
+ * 左栏（.tiptap 的左内边距，src/editor/margin.ts）：盖在内边距上的透明层，单击 / 拖动选行。
+ * 宽度不在这里写，由 margin.ts 取根节点的 padding-left。指针是反向箭头（记事本 / Word 选择栏那种，
+ * 尖端朝右上）：Win11 默认箭头的水平镜像，白填充、1px 黑描边，32×32 画布，热点在尖端
+ * （13, 0）。SVG 光标由 Chromium 按设备缩放栅格化（未在真机高 DPI 下核对，见 AGENTS.md）。
+ * 从正文开始的按下与 HTML5 拖放期间（.passive）不接收指针，拖选、落点经过这里照常由浏览器 /
+ * image-view / ProseMirror 处理。
+ */
+.margin-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath transform='translate(14 0) scale(-1 1)' d='M0.5 0.5V17.5L4.5 13.5L7.5 20.5L10 19.5L7 12.5H12.5Z' fill='white' stroke='black' stroke-width='1' stroke-linejoin='miter'/%3E%3C/svg%3E") 13 0, default;
+}
+.margin-gutter.passive {
+  pointer-events: none;
+}
 /* While composing the browser draws them (see .composing above). */
 .composing > .editor-caret,
 .composing > .selection-layer {
