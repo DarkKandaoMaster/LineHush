@@ -14,6 +14,8 @@ export function useUnsavedPrompt() {
     const element = dialog.current!;
     element.returnValue = "";
     element.show();
+    // show() focuses "保存"; the dialog itself takes focus instead (see UnsavedDialog).
+    element.focus({ preventScroll: true });
     return new Promise<UnsavedChoice>((resolve) => {
       pending.current = resolve;
     });

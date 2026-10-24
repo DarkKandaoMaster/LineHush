@@ -536,6 +536,9 @@ input:focus-visible {
   color: inherit;
   box-shadow: 0 8px 24px #0002;
 }
+.unsaved-dialog:focus {
+  outline: none;
+}
 .unsaved-dialog p {
   margin: 0 0 20px;
   font-size: 14px;

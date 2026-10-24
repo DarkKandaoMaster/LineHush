@@ -266,7 +266,9 @@ test("保存询问：Esc 等于取消、点遮罩不关、标题栏 × 等于取
   await page.keyboard.press("Control+w");
   await expect(prompt).toBeVisible();
   expect(await prompt.evaluate((d) => d.matches(":modal"))).toBe(false);
-  // 打开时焦点在第一个按钮“保存”上（show() 同样执行对话框的聚焦步骤）。
+  // 打开时焦点在对话框本身（show() 先聚焦“保存”，随即挪到 dialog），没有按钮带焦点环；按一次 Tab 到“保存”。
+  await expect(prompt).toBeFocused();
+  await page.keyboard.press("Tab");
   await expect(prompt.getByRole("button", { name: "保存", exact: true })).toBeFocused();
   let s = await state(page);
   expect(s).toMatchObject({
@@ -327,6 +329,32 @@ test("保存询问：Esc 等于取消、点遮罩不关、标题栏 × 等于取
   // “取消”按钮。
   await prompt.getByRole("button", { name: "取消" }).click();
   await expect(prompt).toBeHidden();
+  await expect(editorOf(page)).toBeFocused();
+
+  // 焦点在对话框本身时 Enter = “保存”：无标题文档弹出另存为（替身返回空 = 取消），窗口保留。
+  await page.keyboard.press("Control+w");
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toBeFocused();
+  expect(await calls(page, "plugin:dialog|save")).toEqual([]);
+  await page.keyboard.press("Enter");
+  await expect(prompt).toBeHidden();
+  await expect
+    .poll(async () => (await calls(page, "plugin:dialog|save")).length)
+    .toBe(1);
+  expect(await destroyed(page)).toBe(false);
+
+  // Tab 到按钮上时 Enter 激活那个按钮（不拦截）：Tab 三次到“取消”。
+  await page.keyboard.press("Control+w");
+  await expect(prompt).toBeVisible();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(prompt.getByRole("button", { name: "取消" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(prompt).toBeHidden();
+  await page.waitForTimeout(200);
+  expect((await calls(page, "plugin:dialog|save")).length).toBe(1);
+  expect(await destroyed(page)).toBe(false);
   await expect(editorOf(page)).toBeFocused();
 
   // “不保存”：窗口关掉。
