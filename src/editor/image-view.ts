@@ -1274,6 +1274,27 @@ function drawDragSelection(view: EditorView) {
   domSel.setBaseAndExtent(a.node, a.offset, h.node, h.offset);
 }
 
+/**
+ * A press off the selection as drawn (`onSelection`) starts a new one, and the
+ * browser has to see it so too. Chromium asks instead whether the position
+ * under the point is inside the selection, and below the last line (the
+ * editor's bottom padding) or left / right of a line that position is in the
+ * line, at the point's x: a selection reaching there (say, dragged down to the
+ * end) would then be held for a drag of it. The release collapses it only if
+ * the pointer did not move at all; moved a pixel it stays, moved a few it is
+ * dragged (dragstart, then nothing dropped). The DOM selection is collapsed
+ * first, so the browser handles the press as one outside a selection: the
+ * caret goes under the pointer and a drag selects from there. Not with Shift
+ * (that extends the selection), on a double or triple click (those select
+ * words / lines from a caret already put) or while an input method composes.
+ */
+function pressOffSelection(view: EditorView, event: MouseEvent) {
+  if (view.state.selection.empty || event.shiftKey || event.detail > 1 || view.composing)
+    return;
+  const domSel = view.dom.ownerDocument.getSelection();
+  if (domSel?.rangeCount && !domSel.isCollapsed) domSel.collapseToEnd();
+}
+
 /** A primary-button press in the editor (input.ts): starts a drag selection, see `DragSelection`. */
 export function dragPress(view: EditorView, event: MouseEvent) {
   if (event.button !== 0 || (event.target as Element).closest(".image-item"))
@@ -1281,6 +1302,7 @@ export function dragPress(view: EditorView, event: MouseEvent) {
   // A press inside the selection drags it (images with text lines move as a
   // whole, see dropMixed) instead of starting a new one.
   if (!view.state.selection.empty && onSelection(view, event)) return;
+  pressOffSelection(view, event);
   let drag = drags.get(view);
   if (!drag) drags.set(view, (drag = { pointer: null, frame: 0, drawn: false }));
   drag.pointer = { x: event.clientX, y: event.clientY };
