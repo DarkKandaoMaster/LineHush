@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { editorOf, load, selection, setDoc } from "./helpers";
+import { editorOf, frames, load, selection, setDoc } from "./helpers";
 
 test("真实编辑区保留连续末尾换行，撤销重做正常", async ({ page }) => {
   const errors = await load(page);
@@ -164,5 +164,125 @@ test("选区含末尾图片时点下方空白取消选中，光标在图片后",
     dragstarts: 0,
   });
   expect(await selection(page)).toMatchObject({ type: "blockRange", head: 13, side: -1 });
+  expect(errors).toEqual([]);
+});
+
+/** The text position under (x, y), as ProseMirror reads it. */
+const posAt = (page: Page, x: number, y: number) =>
+  editorOf(page).evaluate(
+    (el: any, [x, y]) => el.editor.view.posAtCoords({ left: x, top: y })!.pos as number,
+    [x, y],
+  );
+
+// Chromium holds a range pressed on for a drag of it and collapses it on the
+// release only if the pointer did not move at all; a click often moves it a
+// pixel or two, short of a dragstart (image-view's clickOnSelection).
+test("单击已选中的文字（按下后指针微动）取消选中，光标在按下处；拖出几个像素仍拖动选区", async ({ page }) => {
+  const errors = await load(page);
+  const editor = editorOf(page);
+  await setDoc(page, ["第一行文字内容", "第二行文字内容", "第三行文字内容"]);
+  const second = (await editor.locator(":scope > p").nth(1).boundingBox())!;
+  const middle = second.y + second.height / 2;
+  for (const move of [0, 1, 2]) {
+    await dragSelect(page, second.x + 10, middle, second.x + 90, middle);
+    const at = await posAt(page, second.x + 45, middle);
+    expect(await pressAfter(page, second.x + 45, middle, move), `move ${move}`).toEqual({
+      empty: true,
+      dom: true,
+      dragstarts: 0,
+    });
+    expect(await selection(page)).toMatchObject({ anchor: at, head: at });
+    // The drawn selection is gone.
+    await frames(page);
+    expect(
+      await editor.evaluate((el) => !!el.parentElement!.querySelector(".selection-layer path")!.getAttribute("d")),
+    ).toBe(false);
+    // Away from the press, so the next drag is not a double click.
+    await page.waitForTimeout(600);
+  }
+  await dragSelect(page, second.x + 10, middle, second.x + 90, middle);
+  const before = await selection(page);
+  const moved = await pressAfter(page, second.x + 45, middle, 8);
+  expect(moved.dragstarts).toBe(1);
+  expect(await selection(page)).toEqual(before);
+  expect(errors).toEqual([]);
+});
+
+// A range's client rects hold the border box of every element wholly inside
+// it: a line selected from end to end counted across the editor's width.
+test("选区跨过整行与空行时点这些行右侧空白（按下后指针微动）取消选中", async ({ page }) => {
+  const errors = await load(page);
+  const editor = editorOf(page);
+  await setDoc(page, ["第一行文字内容", "第二行文字内容", "", "第四行文字内容"]);
+  const lines = editor.locator(":scope > p");
+  const first = (await lines.nth(0).boundingBox())!;
+  const second = (await lines.nth(1).boundingBox())!;
+  const blank = (await lines.nth(2).boundingBox())!;
+  const last = (await lines.nth(3).boundingBox())!;
+  const mid = (box: { y: number; height: number }) => box.y + box.height / 2;
+  const presses = [
+    { box: second, move: 1, head: 17 },
+    { box: blank, move: 1, head: 19 },
+    // Moved further it drags a new selection, not the old one.
+    { box: second, move: 8, head: undefined },
+  ];
+  for (const { box, move, head } of presses) {
+    await dragSelect(page, first.x + 30, mid(first), last.x + 30, mid(last));
+    const result = await pressAfter(page, box.x + 400, mid(box), move);
+    expect(result.dragstarts, `move ${move}`).toBe(0);
+    if (head !== undefined) {
+      expect(result).toMatchObject({ empty: true, dom: true });
+      expect(await selection(page)).toMatchObject({ anchor: head, head });
+    } else expect((await selection(page)).anchor).toBe(17);
+    await page.waitForTimeout(600);
+  }
+  expect(errors).toEqual([]);
+});
+
+/** A double click at (x, y) whose second press is `clickCount` 2: the selection after it. */
+async function doublePress(page: Page, x: number, y: number) {
+  await page.mouse.move(x, y);
+  await page.mouse.down({ clickCount: 2 });
+  await page.mouse.up({ clickCount: 2 });
+  await page.waitForTimeout(50);
+  return selection(page);
+}
+
+// With a range selected, Chromium's double click keeps it (no word selected,
+// no caret put): a press the system counts as the second of a double click
+// (a quick one within a couple of pixels of the press before) left the
+// selection in place wherever it was.
+test("有选区时按下被系统记为双击第二下：与从光标开始的双击结果相同（选词或落光标）", async ({ page }) => {
+  const errors = await load(page);
+  const editor = editorOf(page);
+  await setDoc(page, ["第一行文字内容", "第二行文字内容", "", "第四行文字内容", "第五行文字内容"]);
+  const lines = editor.locator(":scope > p");
+  const second = (await lines.nth(1).boundingBox())!;
+  const fourth = (await lines.nth(3).boundingBox())!;
+  const last = (await lines.nth(4).boundingBox())!;
+  const mid = (box: { y: number; height: number }) => box.y + box.height / 2;
+  const points = [
+    { x: fourth.x + 40, y: mid(fourth) }, // unselected text
+    { x: fourth.x + 400, y: mid(fourth) }, // right of a line
+    { x: last.x + 300, y: last.y + last.height + 100 }, // below the last line
+    { x: second.x + 45, y: mid(second) }, // selected text
+  ];
+  for (const { x, y } of points) {
+    // From a caret: the first click puts it, the second selects.
+    await page.mouse.click(x, y);
+    const expected = await doublePress(page, x, y);
+    await page.waitForTimeout(600);
+    await dragSelect(page, second.x + 10, mid(second), second.x + 90, mid(second));
+    await page.waitForTimeout(600);
+    expect(await doublePress(page, x, y), `${x}, ${y}`).toEqual(expected);
+    await page.waitForTimeout(600);
+  }
+  // A triple click still selects the line, and so does one after a word was
+  // selected by a double click.
+  await page.mouse.click(fourth.x + 40, mid(fourth));
+  await doublePress(page, fourth.x + 40, mid(fourth));
+  await page.mouse.down({ clickCount: 3 });
+  await page.mouse.up({ clickCount: 3 });
+  expect(await selection(page)).toMatchObject({ anchor: 21, head: 28 });
   expect(errors).toEqual([]);
 });

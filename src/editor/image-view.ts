@@ -25,6 +25,7 @@ import {
   type Block,
   type Picture,
 } from "../core/document.ts";
+import { pointerInput } from "./input.ts";
 
 /**
  * The side of a position between blocks a caret is on: -1 drawn after the
@@ -1169,15 +1170,37 @@ function spotBeside(
   return spot;
 }
 
-/** Whether a pointer event is over the selection as drawn (where the browser starts dragging it). */
+/**
+ * Whether a pointer event is over the selected text (where a press drags the
+ * selection). Only the text's own boxes count: the range's client rects also
+ * hold the border box of every element wholly inside it, so a text line or an
+ * empty line selected from end to end would count across the editor's width,
+ * right of its text too, where nothing is drawn (the drawn selection ends
+ * 0.5em past the text, caret.ts). Images are pressed on as images (`dragPress`).
+ */
 function onSelection(view: EditorView, event: MouseEvent) {
-  const domSel = view.dom.ownerDocument.getSelection();
+  const doc = view.dom.ownerDocument;
+  const domSel = doc.getSelection();
   if (!domSel?.rangeCount || domSel.isCollapsed) return false;
   const { clientX: x, clientY: y } = event;
-  return Array.from(domSel.getRangeAt(0).getClientRects()).some(
-    (rect) =>
-      x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom,
-  );
+  const over = (range: Range) =>
+    Array.from(range.getClientRects()).some(
+      (rect) =>
+        x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom,
+    );
+  const range = domSel.getRangeAt(0);
+  const root = range.commonAncestorContainer;
+  if (root.nodeType === 3) return over(range);
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const part = doc.createRange();
+  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    if (!range.intersectsNode(text)) continue;
+    part.selectNodeContents(text);
+    if (text === range.startContainer) part.setStart(text, range.startOffset);
+    if (text === range.endContainer) part.setEnd(text, range.endOffset);
+    if (over(part)) return true;
+  }
+  return false;
 }
 
 /**
@@ -1200,6 +1223,12 @@ interface DragSelection {
   frame: number;
   /** The DOM selection is the one drawn here, not the browser's. */
   drawn: boolean;
+  /**
+   * Pressed on the selection (`onSelection`), which the browser then holds for
+   * a drag of it: the point and the selection. Dropped by a dragstart; if the
+   * release comes first, it was a click (see `dragRelease`).
+   */
+  held?: { x: number; y: number; selection: Selection };
 }
 const drags = new WeakMap<EditorView, DragSelection>();
 
@@ -1284,12 +1313,14 @@ function drawDragSelection(view: EditorView) {
  * the pointer did not move at all; moved a pixel it stays, moved a few it is
  * dragged (dragstart, then nothing dropped). The DOM selection is collapsed
  * first, so the browser handles the press as one outside a selection: the
- * caret goes under the pointer and a drag selects from there. Not with Shift
- * (that extends the selection), on a double or triple click (those select
- * words / lines from a caret already put) or while an input method composes.
+ * caret goes under the pointer and a drag selects from there. Also on the
+ * second press of a double click: the browser selects the word there only
+ * from a caret (with a range selected it keeps the range), as after a first
+ * click. Not with Shift (that extends the selection), on a triple click (that
+ * selects the line from the word selected) or while an input method composes.
  */
 function pressOffSelection(view: EditorView, event: MouseEvent) {
-  if (view.state.selection.empty || event.shiftKey || event.detail > 1 || view.composing)
+  if (view.state.selection.empty || event.shiftKey || event.detail > 2 || view.composing)
     return;
   const domSel = view.dom.ownerDocument.getSelection();
   if (domSel?.rangeCount && !domSel.isCollapsed) domSel.collapseToEnd();
@@ -1299,12 +1330,23 @@ function pressOffSelection(view: EditorView, event: MouseEvent) {
 export function dragPress(view: EditorView, event: MouseEvent) {
   if (event.button !== 0 || (event.target as Element).closest(".image-item"))
     return;
-  // A press inside the selection drags it (images with text lines move as a
-  // whole, see dropMixed) instead of starting a new one.
-  if (!view.state.selection.empty && onSelection(view, event)) return;
-  pressOffSelection(view, event);
   let drag = drags.get(view);
   if (!drag) drags.set(view, (drag = { pointer: null, frame: 0, drawn: false }));
+  drag.held = undefined;
+  // A press inside the selection drags it (images with text lines move as a
+  // whole, see dropMixed) instead of starting a new one. Not the second press
+  // of a double click: with a range selected the browser keeps it then (no
+  // word selected, no caret put), so it goes as a press off the selection.
+  if (
+    !view.state.selection.empty &&
+    (event.detail !== 2 || event.shiftKey || view.composing) &&
+    onSelection(view, event)
+  ) {
+    if (event.detail <= 1 && !event.shiftKey && !view.composing)
+      drag.held = { x: event.clientX, y: event.clientY, selection: view.state.selection };
+    return;
+  }
+  pressOffSelection(view, event);
   drag.pointer = { x: event.clientX, y: event.clientY };
   // Shift extends the selection from its anchor; a double click selects words.
   drag.anchor =
@@ -1317,6 +1359,7 @@ const endDrag = (drag: DragSelection) => {
   drag.pointer = null;
   drag.anchor = undefined;
   drag.drawn = false;
+  drag.held = undefined;
 };
 
 /**
@@ -1368,11 +1411,33 @@ export function dragMove(view: EditorView, event: MouseEvent) {
     });
 }
 
+/**
+ * A press on the selection released before the browser started dragging it: a
+ * click, which puts the caret under the press. The browser itself collapses
+ * the selection only if the pointer did not move at all; a click with the
+ * mouse often moves it a pixel or two, short of a drag (dragstart), and the
+ * selection would stay.
+ */
+function clickOnSelection(view: EditorView, held: NonNullable<DragSelection["held"]>) {
+  const { state } = view;
+  if (view.composing || !state.selection.eq(held.selection)) return;
+  const hit = view.posAtCoords({ left: held.x, top: held.y });
+  if (!hit) return;
+  pointerInput(view, held.y);
+  view.dispatch(
+    state.tr
+      .setSelection(Selection.near(state.doc.resolve(hit.pos)))
+      .setMeta("pointer", true),
+  );
+}
+
 /** The button released (input.ts); with `destroyed`, the editor is gone. */
 export function dragRelease(view: EditorView, destroyed = false) {
   const drag = drags.get(view);
   if (!drag) return;
+  const { held } = drag;
   endDrag(drag);
+  if (held && !destroyed) clickOnSelection(view, held);
   if (!destroyed) return;
   view.dom.ownerDocument.defaultView?.cancelAnimationFrame(drag.frame);
   drags.delete(view);
@@ -1563,6 +1628,12 @@ export function imagePlugin(
         dragleave(view, event) {
           if (!view.dom.contains(event.relatedTarget as globalThis.Node | null))
             setDrop(view, null);
+          return false;
+        },
+        // The browser drags the selection pressed on: no click (see `dragRelease`).
+        dragstart(view) {
+          const drag = drags.get(view);
+          if (drag) drag.held = undefined;
           return false;
         },
         dragend(view) {
