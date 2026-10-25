@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { editorOf, frames, load, selection, setDoc } from "./helpers";
+import { clickHalf, editorOf, frames, layout, load, selection, setDoc, tile } from "./helpers";
 
 test("真实编辑区保留连续末尾换行，撤销重做正常", async ({ page }) => {
   const errors = await load(page);
@@ -26,6 +26,31 @@ test("真实编辑区保留连续末尾换行，撤销重做正常", async ({ pa
     "",
     "",
   ]);
+  expect(errors).toEqual([]);
+});
+test("Ctrl+Enter / Ctrl+Shift+Enter 与 Enter 一样换行", async ({ page }) => {
+  const errors = await load(page);
+  const editor = editorOf(page);
+  await setDoc(page, ["今天记录"]);
+  // The caret after "今天".
+  await editor.evaluate((el: any) => el.editor.commands.setTextSelection(3));
+  await page.keyboard.press("Control+Enter");
+  await expect(editor.locator("p")).toHaveText(["今天", "记录"]);
+  expect(await selection(page)).toEqual({ type: "text", anchor: 5, head: 5 });
+  await page.keyboard.press("Control+Shift+Enter");
+  await expect(editor.locator("p")).toHaveText(["今天", "", "记录"]);
+  expect(await selection(page)).toEqual({ type: "text", anchor: 7, head: 7 });
+  expect(errors).toEqual([]);
+});
+test("图片之间按 Ctrl+Enter 与 Enter 一样：后一张另起一行，光标在它前面", async ({ page }) => {
+  const errors = await load(page);
+  // "上面" 0-4, a 4-5, b 5-6 (one row), "下面" 6-10.
+  await setDoc(page, ["上面", { id: "a" }, { id: "b" }, "下面"]);
+  await clickHalf(tile(page, 0), "right");
+  expect(await selection(page)).toMatchObject({ type: "blockRange", anchor: 5, head: 5 });
+  await page.keyboard.press("Control+Enter");
+  expect(await layout(page)).toEqual(["上面", "[a]", "[b]", "下面"]);
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 5, head: 5, side: 1 });
   expect(errors).toEqual([]);
 });
 test("粘贴只接收纯文本且保留全部空行，不解析 Markdown", async ({ page }) => {

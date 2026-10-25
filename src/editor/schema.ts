@@ -3,6 +3,7 @@ import Document from "@tiptap/extension-document";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
 import { UndoRedo } from "@tiptap/extensions";
+import type { EditorView } from "@tiptap/pm/view";
 // With the extension, as the Node tests load this file directly.
 import {
   enterKey,
@@ -16,11 +17,26 @@ import { InputSource } from "./input.ts";
 import { MarginSelect } from "./margin.ts";
 import { Reveal } from "./reveal.ts";
 
+/**
+ * A plain Enter through the keymaps (image-view's enterKey, then the core
+ * one), each dispatching its own transaction. Not `commands.enter()`: that
+ * keeps only Enter's steps and maps the old selection, so the caret could end
+ * up elsewhere (on the wrong side of a new row of images, say).
+ */
+function enter(view: EditorView) {
+  const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  return view.someProp("handleKeyDown", (f) => f(view, event)) ?? false;
+}
+
 const PlainKeys = Extension.create({
   name: "plainKeys",
   addKeyboardShortcuts() {
     return {
-      "Shift-Enter": () => this.editor.commands.enter(),
+      // Exactly as Enter (Ctrl+Enter would otherwise reach the core keymap's
+      // exitCode and do nothing here).
+      "Shift-Enter": () => enter(this.editor.view),
+      "Mod-Enter": () => enter(this.editor.view),
+      "Mod-Shift-Enter": () => enter(this.editor.view),
       Tab: () => {
         const { state, view } = this.editor;
         return (
