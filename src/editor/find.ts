@@ -255,8 +255,10 @@ export const FindHighlight = Extension.create({
 
 /**
  * 选中一个匹配（真实的编辑器选区，由自绘选区层显示），按键盘来源的规则滚动揭示（安全区）。
- * 揭示后若匹配被查找条（`widget`）盖住，再往回滚，让它落到查找条下方一行（VS Code 如此）；
- * 已滚到顶时无法避开。
+ * 揭示后若匹配仍被查找条（`widget`）盖住，再往回滚，让它落到查找条下方一行（VS Code 如此；
+ * 视口放不下这一行时少留一些，匹配本身仍在视口里）。
+ * 安全区（5 行）通常已大于查找条，只在窗口很矮时起作用；文档开头几行靠查找条开着时正文顶部的
+ * 空白（FindWidget.tsx）让开。
  */
 export function selectMatch(view: EditorView, match: Match, widget: HTMLElement | null) {
   keyboardInput(view);
@@ -273,6 +275,9 @@ export function selectMatch(view: EditorView, match: Match, widget: HTMLElement 
   const right = Math.max(a.right, b.right);
   const w = widget.getBoundingClientRect();
   if (bottom <= w.top || top >= w.bottom || right <= w.left || left >= w.right) return;
-  const next = Math.max(0, host.scrollTop - (w.bottom - top + lineHeight(view)));
+  const viewBottom = host.getBoundingClientRect().top + host.clientTop + host.clientHeight;
+  // 少留 1px：scrollTop 按设备像素取整。
+  const gap = Math.max(0, Math.min(lineHeight(view), viewBottom - w.bottom - (bottom - top) - 1));
+  const next = Math.max(0, host.scrollTop - (w.bottom - top + gap));
   if (Math.abs(next - host.scrollTop) >= 0.5) host.scrollTop = next;
 }

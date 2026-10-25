@@ -59,6 +59,15 @@ let config: CaretConfig = {
   corners: "rounded",
 };
 const redraws = new Set<() => void>();
+const relayouts = new Set<() => void>();
+
+/**
+ * 立即重画窗口里每个编辑器的光标与选区：编辑区的布局在绘制前同步变化、根节点内容大小却不变时
+ * 用（查找条在正文顶部加的空白，components/FindWidget.tsx；ResizeObserver 看不到内边距的变化）。
+ */
+export function redrawCarets() {
+  for (const redraw of relayouts) redraw();
+}
 
 /** Applies caret settings (useSettings, useCaretMetrics) to every editor in the window. */
 export function configureCaret(partial: Partial<CaretConfig>) {
@@ -211,6 +220,7 @@ class Drawing {
     this.draw(true);
   };
   private onLayout = () => this.schedule();
+  private onRelayout = () => this.draw(false);
   private onFocus = () => this.draw(true);
   private onCompositionStart = () => {
     clearTimeout(this.composingEnd);
@@ -252,6 +262,7 @@ class Drawing {
     win.addEventListener("mouseup", this.onLayout);
     this.watchScale();
     redraws.add(this.onMedia);
+    relayouts.add(this.onRelayout);
   }
 
   private host() {
@@ -401,6 +412,7 @@ class Drawing {
     this.view.dom.removeEventListener("compositionstart", this.onCompositionStart);
     this.view.dom.removeEventListener("compositionend", this.onCompositionEnd);
     redraws.delete(this.onMedia);
+    relayouts.delete(this.onRelayout);
     this.blink?.cancel();
     this.host()?.classList.remove("composing");
     this.caret.remove();

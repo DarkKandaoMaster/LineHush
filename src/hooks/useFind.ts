@@ -48,6 +48,8 @@ export interface FindCommands {
   prev: () => void;
   /** Alt+C / Alt+W（查找条开着时）。 */
   toggle: (option: FindOption) => void;
+  /** 焦点不在查找条里时的 Esc（查找条开着时），同 ×。 */
+  close: () => void;
   isOpen: () => boolean;
 }
 
@@ -138,8 +140,8 @@ export function useFind(
       const v = view();
       if (!v) return;
       sync(v);
-      // ProseMirror 的 focus：不滚动，选区原样写回 DOM。
-      v.focus();
+      // ProseMirror 的 focus：不滚动，选区原样写回 DOM。焦点已在编辑器里（在编辑器里按 Esc）时不动。
+      if (!v.hasFocus()) v.focus();
     };
     const go = (dir: -1 | 1) => {
       const { open: isOpen, query, caseSensitive, wholeWord } = latest.current;
@@ -198,6 +200,7 @@ export function useFind(
       next: () => go(1),
       prev: () => go(-1),
       toggle,
+      close,
       isOpen: () => latest.current.open,
     };
     return {

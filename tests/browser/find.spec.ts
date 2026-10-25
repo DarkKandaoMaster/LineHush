@@ -315,7 +315,7 @@ test("替换为空串即删除；编辑器以外的输入（查找框里的 Ctrl
   expect(errors).toEqual([]);
 });
 
-test("查找条贴在编辑区右上角、盖在正文与左栏之上，被盖住的匹配滚到它下面", async ({ page }) => {
+test("查找条在编辑区右上角、距顶 4px，盖在正文与左栏之上，被盖住的匹配滚到它下面", async ({ page }) => {
   const errors = await load(page);
   // 很多行，最后一行的末尾是要找的字，长到伸到查找条下面。
   const lines = Array.from({ length: 80 }, (_, i) => `第 ${i + 1} 行`);
@@ -329,9 +329,12 @@ test("查找条贴在编辑区右上角、盖在正文与左栏之上，被盖�
     .locator(".tab-pane:not([hidden]) .editor-host")
     .evaluate((el: HTMLElement) => el.offsetWidth - el.clientWidth);
   const box = (await widget(page).boundingBox())!;
-  expect(Math.abs(box.y - host.y)).toBeLessThan(1);
+  expect(Math.abs(box.y - host.y - 4)).toBeLessThan(1);
   expect(Math.abs(host.x + host.width - scrollbar - 14 - (box.x + box.width))).toBeLessThan(1);
-  expect(Math.round(box.height)).toBe(33);
+  // 一行 32px 加上下边框（缩放 100% 时 34px，同 VS Code；边框按设备像素取整）。
+  const border = await widget(page).evaluate((el) => parseFloat(getComputedStyle(el).borderTopWidth));
+  expect(border).toBeGreaterThan(0);
+  expect(Math.abs(box.height - 32 - 2 * border)).toBeLessThan(0.1);
   // 盖在最上面：查找条中点处的元素是查找条自己。
   const top = await page.evaluate(
     ([x, y]) => !!document.elementFromPoint(x, y)?.closest(".find-widget"),
@@ -374,16 +377,37 @@ test("高亮颜色与当前匹配的选区色", async ({ page }) => {
   const mark = (await marks(page).boundingBox())!;
   const clip = { x: 0, y: mark.y - 4, width: mark.x + mark.width + 4, height: mark.height + 8 };
   const shot = await shoot(page, clip);
-  // 匹配左上角 2px 内侧（避开圆角与字形）是高亮色。
+  // 高亮方角、半透明（VS Code 的 findMatchHighlightBackground 同样不透明度 < 1）。
+  expect(
+    await marks(page).evaluate((el) => {
+      const style = getComputedStyle(el);
+      return [style.borderTopLeftRadius, style.backgroundColor];
+    }),
+  ).toEqual(["0px", "rgba(255, 194, 12, 0.4)"]);
+  // 匹配左上角 2px 内侧（避开字形）：在 #f9f9f9 上合成约 #fbe39a（原先的实色为 #ffe39a）。
   const dpr = await page.evaluate(() => devicePixelRatio);
   const at = (x: number, y: number) =>
     pixel(shot, Math.round((x - clip.x) * dpr), Math.round((y - clip.y) * dpr));
-  expect(near(at(mark.x + 2, mark.y + 2), "#ffe39a", 3)).toBe(true);
+  expect(near(at(mark.x + 2, mark.y + 2), "#fbe39a", 3)).toBe(true);
+  // 方角：紧贴左上角的像素也是高亮色。
+  expect(near(at(mark.x + 0.5, mark.y + 0.5), "#fbe39a", 6)).toBe(true);
   const current = await editorOf(page).evaluate((el: any) => {
     const r = el.editor.view.coordsAtPos(1, 1);
     return { x: r.left, y: r.top };
   });
   expect(near(at(current.x + 2, current.y + 2), "#b7d9f8", 3)).toBe(true);
+  // 选区盖过高亮的匹配：选区色透过高亮（0.4 × 高亮色 + 0.6 × #b7d9f8 ≈ #d4d09a），不是高亮色本身。
+  await caretAt(page, 1, 6);
+  await expect(marks(page)).toHaveCount(2);
+  await frames(page);
+  const both = await shoot(page, clip);
+  const mixed = pixel(
+    both,
+    Math.round((mark.x + 2 - clip.x) * dpr),
+    Math.round((mark.y + 2 - clip.y) * dpr),
+  );
+  expect(near(mixed, "#d4d09a", 4)).toBe(true);
+  await caretAt(page, 1);
   await page.screenshot({ path: test.info().outputPath("find.png") });
   await page.keyboard.press("Control+h");
   await page.screenshot({ path: test.info().outputPath("find-replace.png") });
@@ -426,5 +450,183 @@ test("高亮开着时：单击正文落点、自绘光标、左栏选行照常�
   await page.keyboard.press("Shift+ArrowRight");
   expect(await selection(page)).toEqual({ type: "text", anchor: 10, head: 12 });
   await expect(count(page)).toHaveText("2 / 3");
+  expect(errors).toEqual([]);
+});
+
+/** 编辑区滚动容器。 */
+/** 查找条底边到编辑区顶边：正文顶部空白的高度（缩放 100% 时 4 + 34 = 38px）。 */
+const zoneOf = async (page: Page) => {
+  const box = (await widget(page).boundingBox())!;
+  const area = (await page.locator(".tab-pane:not([hidden]) .editor-area").boundingBox())!;
+  return box.y + box.height - area.y;
+};
+const scrollHost = (page: Page) => page.locator(".tab-pane:not([hidden]) .editor-host");
+const scrollTopOf = (page: Page) => scrollHost(page).evaluate((el) => el.scrollTop);
+const paragraphTop = (page: Page, i: number) =>
+  editorOf(page)
+    .locator("p")
+    .nth(i)
+    .evaluate((el) => el.getBoundingClientRect().top);
+const paddingTop = (page: Page) =>
+  editorOf(page).evaluate((el) => getComputedStyle(el).paddingTop);
+
+test("打开时正文顶部多一块与查找条等高的空白，视口不跳；滚到顶时首行在查找条下方；展开替换、关闭时同步", async ({
+  page,
+}) => {
+  const errors = await load(page);
+  await setDoc(page, Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 行`));
+  await caretAt(page, 1);
+  expect(await paddingTop(page)).toBe("16px");
+  await scrollHost(page).evaluate((el) => (el.scrollTop = 600));
+  await frames(page);
+  const before = await paragraphTop(page, 40);
+  await page.keyboard.press("Control+f");
+  await expect(widget(page)).toBeVisible();
+  await frames(page);
+  // 空白 = 查找条的 top（4px）+ 高（100% 时 34px）；scrollTop 同样加上，视口里的内容不动。
+  const zone = await zoneOf(page);
+  expect(Math.abs(zone - 4 - (await widget(page).boundingBox())!.height)).toBeLessThan(0.1);
+  expect(Math.abs(parseFloat(await paddingTop(page)) - 16 - zone)).toBeLessThan(0.1);
+  expect(Math.abs((await scrollTopOf(page)) - 600 - zone)).toBeLessThan(1);
+  expect(Math.abs((await paragraphTop(page, 40)) - before)).toBeLessThan(1);
+  // 展开替换：查找条多一行（4 + 24px），空白跟着变高，scrollTop 按差值调整，内容仍不动。
+  await page.keyboard.press("Control+h");
+  await expect(replaceBox(page)).toBeVisible();
+  await frames(page);
+  const zone2 = await zoneOf(page);
+  expect(Math.abs(zone2 - zone - 28)).toBeLessThan(0.1);
+  expect(Math.abs(parseFloat(await paddingTop(page)) - 16 - zone2)).toBeLessThan(0.1);
+  expect(Math.abs((await scrollTopOf(page)) - 600 - zone2)).toBeLessThan(1);
+  expect(Math.abs((await paragraphTop(page, 40)) - before)).toBeLessThan(1);
+  // 滚到顶：首行在查找条下方（之间仍是原来的 16px）。
+  await scrollHost(page).evaluate((el) => (el.scrollTop = 0));
+  await frames(page);
+  const box = (await widget(page).boundingBox())!;
+  expect(Math.abs((await paragraphTop(page, 0)) - (box.y + box.height + 16))).toBeLessThan(1);
+  // 收起替换，再回到原处关闭：空白去掉，scrollTop 减回去，内容不动。
+  await widget(page).getByRole("button", { name: "切换替换" }).click();
+  await scrollHost(page).evaluate((el, top) => (el.scrollTop = top), 600 + zone);
+  await frames(page);
+  expect(Math.abs((await paragraphTop(page, 40)) - before)).toBeLessThan(1);
+  await page.keyboard.press("Escape");
+  await expect(widget(page)).toHaveCount(0);
+  await frames(page);
+  expect(await paddingTop(page)).toBe("16px");
+  expect(Math.abs((await scrollTopOf(page)) - 600)).toBeLessThan(1);
+  expect(Math.abs((await paragraphTop(page, 40)) - before)).toBeLessThan(1);
+  // 文档短得滚不动：空白照样加上，内容下移，首行不被盖住。
+  await setDoc(page, LINES);
+  await caretAt(page, 1);
+  await page.keyboard.press("Control+f");
+  await frames(page);
+  const short = (await widget(page).boundingBox())!;
+  expect(await paragraphTop(page, 0)).toBeGreaterThanOrEqual(short.y + short.height);
+  expect(errors).toEqual([]);
+});
+
+test("打开时选区在顶部、会被查找条盖住：scrollTop 不变，正文下移露出选区；否则视口不动", async ({
+  page,
+}) => {
+  const errors = await load(page);
+  // 首行很长，末尾的“目标”（61-63）在查找条左边界右侧。
+  await setDoc(page, [
+    `${"占".repeat(60)}目标`,
+    ...Array.from({ length: 100 }, (_, i) => `第 ${i + 1} 行`),
+  ]);
+  await caretAt(page, 61, 63);
+  await frames(page);
+  const top0 = await paragraphTop(page, 0);
+  await page.keyboard.press("Control+f");
+  await expect(findBox(page)).toHaveValue("目标");
+  await frames(page);
+  const box = (await widget(page).boundingBox())!;
+  const match = await editorOf(page).evaluate((el: any) => {
+    const r = el.editor.view.coordsAtPos(61, 1);
+    return { top: r.top, left: r.left };
+  });
+  expect(match.left).toBeGreaterThan(box.x);
+  expect(await scrollTopOf(page)).toBe(0);
+  const zone = await zoneOf(page);
+  expect(Math.abs((await paragraphTop(page, 0)) - top0 - zone)).toBeLessThan(1);
+  expect(match.top).toBeGreaterThanOrEqual(box.y + box.height);
+  // 自绘选区跟着文字下移（空白是内边距，编辑器大小不变，靠 redrawCarets 重画）。
+  const drawn = await editorOf(page).evaluate(
+    (el: any) => el.parentElement.querySelector(".selection-layer path").getBoundingClientRect().top,
+  );
+  expect(Math.abs(drawn - match.top)).toBeLessThan(3);
+  await page.keyboard.press("Escape");
+  await frames(page);
+  expect(Math.abs((await paragraphTop(page, 0)) - top0)).toBeLessThan(1);
+  // 光标在首行左端（不在查找条下面）：scrollTop 加上空白的高度，视口内容不动（首行可滚上去看）。
+  await caretAt(page, 1);
+  await page.keyboard.press("Control+f");
+  await frames(page);
+  expect(Math.abs((await scrollTopOf(page)) - zone)).toBeLessThan(1);
+  expect(Math.abs((await paragraphTop(page, 0)) - top0)).toBeLessThan(1);
+  expect(errors).toEqual([]);
+});
+
+test("焦点在编辑器里按 Esc 也关闭查找条；对话框开着时 Esc 只关对话框", async ({ page }) => {
+  const errors = await load(page);
+  await setDoc(page, LINES);
+  await caretAt(page, 1);
+  await page.keyboard.press("Control+f");
+  await page.keyboard.type("天气");
+  await page.keyboard.press("Enter");
+  expect(await selection(page)).toEqual({ type: "text", anchor: 10, head: 12 });
+  await editorOf(page).focus();
+  await expect(editorOf(page)).toBeFocused();
+  expect(await prevented(page, "Escape")).toBe(true);
+  await expect(widget(page)).toHaveCount(0);
+  await expect(marks(page)).toHaveCount(0);
+  await expect(editorOf(page)).toBeFocused();
+  expect(await selection(page)).toEqual({ type: "text", anchor: 10, head: 12 });
+  // 空白去掉、文字上移，焦点没变：自绘选区同步重画，仍与文字对齐（redrawCarets）。
+  const aligned = await editorOf(page).evaluate((el: any) => {
+    const path = el.parentElement.querySelector(".selection-layer path").getBoundingClientRect();
+    return Math.abs(path.top - el.editor.view.coordsAtPos(10, 1).top);
+  });
+  expect(aligned).toBeLessThan(3);
+  // 查找条关着时 Esc 什么也不做。
+  await page.keyboard.press("Escape");
+  await expect(widget(page)).toHaveCount(0);
+  await expect(editorOf(page)).toBeFocused();
+  expect(await selection(page)).toEqual({ type: "text", anchor: 10, head: 12 });
+  // 设置对话框开着：Esc 关掉对话框，查找条还在；再按 Esc 才关查找条。
+  await page.keyboard.press("Control+f");
+  await expect(widget(page)).toBeVisible();
+  const dialog = page.locator("dialog.settings-dialog");
+  await page.locator(".settings-button").click();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(widget(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(widget(page)).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("计数区最小 48px，出现过更宽的计数后只增不减", async ({ page }) => {
+  const errors = await load(page);
+  await setDoc(page, [...LINES, "天气".repeat(120)]);
+  await caretAt(page, 1);
+  await page.keyboard.press("Control+f");
+  const width = async () => (await count(page).boundingBox())!.width;
+  expect(Math.abs((await width()) - 48)).toBeLessThan(0.5);
+  await page.keyboard.type("今天");
+  await expect(count(page)).toHaveText("1 / 1");
+  expect(Math.abs((await width()) - 48)).toBeLessThan(0.5);
+  await findBox(page).fill("天气");
+  await caretAt(page, 2);
+  await expect(count(page)).toHaveText("共 123 项");
+  const wide = await width();
+  expect(wide).toBeGreaterThan(48);
+  // 内容变短，宽度保持（输入时不来回抖动）。
+  await findBox(page).fill("今天");
+  await expect(count(page)).toHaveText("1 / 1");
+  expect(Math.abs((await width()) - wide)).toBeLessThan(0.5);
+  await findBox(page).fill("");
+  await expect(count(page)).toHaveText("");
+  expect(Math.abs((await width()) - wide)).toBeLessThan(0.5);
   expect(errors).toEqual([]);
 });

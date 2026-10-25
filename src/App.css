@@ -287,13 +287,15 @@ input:focus-visible {
   flex-direction: column;
 }
 /*
- * 查找条（src/components/FindWidget.tsx）：照 VS Code 的查找小部件，贴在编辑区顶部、
- * 右侧距滚动条 14px（right 由组件按滚动条宽度设置），一行 33px（含 1px 下边框），
- * 下边圆角、略带阴影；盖在左栏覆盖层（z-index 2，在编辑器自己的层叠上下文里）与正文之上。
+ * 查找条（src/components/FindWidget.tsx）：照 VS Code 的查找小部件，浮在编辑区顶部下方 4px
+ * （VS Code 的 margin-top: 4px）、右侧距滚动条 14px（right 由组件按滚动条宽度设置），
+ * 一行 34px（4px 内边距 + 24px 控件 + 上下 1px 边框，同 VS Code 的 height: 34px），
+ * 四角圆角、略带阴影；盖在左栏覆盖层（z-index 2，在编辑器自己的层叠上下文里）与正文之上。
+ * 开着时正文顶部有同样高的空白（--find-zone，见 .tiptap）。
  */
 .find-widget {
   position: absolute;
-  top: 0;
+  top: 4px;
   right: 14px;
   z-index: 5;
   display: flex;
@@ -303,8 +305,7 @@ input:focus-visible {
   max-width: calc(100% - 28px);
   padding: 4px 4px 4px 2px;
   border: 1px solid #e0e0e0;
-  border-top: none;
-  border-radius: 0 0 6px 6px;
+  border-radius: 6px;
   background: #f3f3f3;
   box-shadow: 0 2px 8px #0000001f;
   cursor: default;
@@ -405,9 +406,12 @@ input:focus-visible {
   gap: 2px;
   height: 24px;
 }
+/*
+ * 计数：最小宽度由 FindWidget 设（初值 48px，之后取出现过的最宽，只增不减，照 VS Code 的
+ * MAX_MATCHES_COUNT_WIDTH）；左右各 2px（VS Code 为左 2px、外加 3px 外边距）。
+ */
 .find-count {
-  min-width: 64px;
-  padding: 0 4px;
+  padding: 0 2px;
   color: #555;
   font-size: 12px;
   text-align: center;
@@ -454,6 +458,11 @@ input:focus-visible {
    * The bottom space lets the last line scroll up.
    */
   padding: 16px 16px 40vh;
+  /*
+   * 查找条开着时上面多一块与它等高的空白（FindWidget.tsx 设在 .editor-area 上，VS Code 的
+   * find.addExtraSpaceOnTop），滚到顶时首行在查找条下方。
+   */
+  padding-top: calc(16px + var(--find-zone, 0px));
   /* Set from the settings on <html> (src/core/settings.ts); the fallbacks are the defaults. */
   font-family: var(
     --editor-font-family,
@@ -478,12 +487,13 @@ input:focus-visible {
   background: transparent;
 }
 /*
- * 查找的匹配（src/editor/find.ts 的 inline 装饰）：淡黄色。当前匹配就是选区，不加这层，
- * 由自绘选区层画成选区色。
+ * 查找的匹配（src/editor/find.ts 的 inline 装饰）：淡黄色、方角。半透明（在 #f9f9f9 上合成约
+ * #fbe39a），盖在它下面的自绘选区（z-index -1）照样透出来，像 VS Code 的
+ * editor.findMatchHighlightBackground（#EA5C0055，“must not be opaque”）。当前匹配就是选区，
+ * 不加这层，由自绘选区层画成选区色。
  */
 .tiptap .find-match {
-  background: #ffe39a;
-  border-radius: 2px;
+  background: rgb(255 194 12 / 40%);
 }
 /*
  * While an input method composes, the editor's state lags behind the text, so

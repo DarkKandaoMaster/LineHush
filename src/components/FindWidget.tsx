@@ -1,4 +1,6 @@
-import { useLayoutEffect, type KeyboardEvent, type MouseEvent } from "react";
+import { useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent } from "react";
+import type { EditorView } from "@tiptap/pm/view";
+import { redrawCarets } from "../editor/caret";
 import type { Find } from "../hooks/useFind";
 
 /**
@@ -6,8 +8,41 @@ import type { Find } from "../hooks/useFind";
  * 状态与动作见 hooks/useFind.ts，匹配与高亮见 editor/find.ts）。
  *
  * 第一行：展开 / 收起替换、查找框（内嵌“区分大小写”“全字匹配”）、计数、上一个、下一个、
- * 关闭；第二行（展开时）：替换框、替换、全部替换。焦点在查找条里时 Esc 关闭。
+ * 关闭；第二行（展开时）：替换框、替换、全部替换。焦点在查找条里时 Esc 关闭（焦点在别处时
+ * 由 useWindowGuards 的窗口快捷键关闭）。
+ *
+ * 开着时正文顶部多一块与查找条等高（含它上方的间距）的空白，照 VS Code 的
+ * `find.addExtraSpaceOnTop`（findWidget.ts 的 view zone）：滚到顶时首行不被盖住。
  */
+
+/**
+ * 计数区的最小宽度：出现过的最宽计数（只增不减，输入时不来回抖动），照 VS Code
+ * `MAX_MATCHES_COUNT_WIDTH`（初值 69px，按英文 “No results” / “1 of 3” 定）；这里按本应用
+ * 12px 字体下的 “无结果” “共 n 项” “k / n” 缩为 MIN_COUNT_WIDTH。窗口里所有查找条共用。
+ */
+const MIN_COUNT_WIDTH = 48;
+let maxCountWidth = MIN_COUNT_WIDTH;
+
+/**
+ * 打开时是否把 scrollTop 加上空白的高度（视口内容不动）：VS Code `_reveal` 的
+ * `adjustEditorScrollTop`——选区起点落在视口顶部空白高度以内，且选区跨行、或起点 / 终点横向在
+ * 查找条左边界右侧（会被它盖住）时不加，让内容整体下移、露出选区。
+ */
+function keepsContent(view: EditorView | null, host: HTMLElement, widget: HTMLElement, zone: number) {
+  if (!view) return true;
+  try {
+    const { from, to } = view.state.selection;
+    const a = view.coordsAtPos(from, 1);
+    const b = view.coordsAtPos(to, -1);
+    const top = host.getBoundingClientRect().top + host.clientTop;
+    if (a.bottom <= top || a.top - top >= zone) return true;
+    if (b.top >= a.bottom - 1) return false;
+    const left = widget.getBoundingClientRect().left;
+    return a.left <= left && b.left <= left;
+  } catch {
+    return true;
+  }
+}
 
 const Icon = ({ d }: { d: string }) => (
   <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -31,6 +66,7 @@ const composing = (event: KeyboardEvent) =>
 
 export default function FindWidget({ find }: { find: Find }) {
   const { ui, info, actions, widget, findInput, replaceInput, generation } = find;
+  const countRef = useRef<HTMLSpanElement>(null);
 
   // 右边距 14px 加编辑区滚动条的宽度（滚动条随内容出现 / 消失）。
   useLayoutEffect(() => {
@@ -45,6 +81,51 @@ export default function FindWidget({ find }: { find: Find }) {
     observer.observe(host);
     return () => observer.disconnect();
   }, [widget, generation]);
+
+  // 正文顶部的空白（`.editor-area` 上的 --find-zone，App.css 里加到 .tiptap 的上内边距）：
+  // 高 = 查找条的 top + 高度。出现时 scrollTop 加上同样的高度（视口不动，见 keepsContent），
+  // 高度变化（展开 / 收起替换）按差值同步调整，消失时减回去（VS Code 的 _showViewZone /
+  // _removeViewZone）。在绘制前完成，并立即重画自绘光标与选区（它们按文字的位置画）。
+  useLayoutEffect(() => {
+    const el = widget.current;
+    const area = el?.parentElement;
+    if (!el || !area) return;
+    const host = () => area.querySelector<HTMLElement>(".editor-host");
+    let zone = 0;
+    const apply = (next: number, adjust: boolean) => {
+      if (next === zone) return;
+      const delta = next - zone;
+      zone = next;
+      if (next) area.style.setProperty("--find-zone", `${next}px`);
+      else area.style.removeProperty("--find-zone");
+      const scroller = host();
+      if (scroller && adjust) scroller.scrollTop += delta;
+      redrawCarets();
+    };
+    // 查找条底边到编辑区顶边（不取整：缩放 150% 时 1px 边框是 2/3 CSS 像素）；隐藏的标签页里为 0，不算。
+    const height = () =>
+      el.offsetHeight ? el.getBoundingClientRect().bottom - area.getBoundingClientRect().top : 0;
+    const first = height();
+    const scroller = host();
+    if (first && scroller) apply(first, keepsContent(actions.view(), scroller, el, first));
+    const observer = new ResizeObserver(() => {
+      const next = height();
+      if (next) apply(next, true);
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      apply(0, true);
+    };
+  }, [widget, actions]);
+
+  // 计数区宽度只增不减（VS Code 的 _updateMatchesCount）。
+  useLayoutEffect(() => {
+    const el = countRef.current;
+    if (!el) return;
+    el.style.minWidth = `${maxCountWidth}px`;
+    maxCountWidth = Math.max(maxCountWidth, el.clientWidth);
+  });
 
   const none = !!ui.query && info.count === 0;
   const count = !ui.query
@@ -124,7 +205,11 @@ export default function FindWidget({ find }: { find: Find }) {
           </button>
         </div>
         <div className="find-actions">
-          <span className={`find-count${none ? " none" : ""}`} aria-live="polite">
+          <span
+            ref={countRef}
+            className={`find-count${none ? " none" : ""}`}
+            aria-live="polite"
+          >
             {count}
           </span>
           <button

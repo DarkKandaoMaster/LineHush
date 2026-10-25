@@ -8,7 +8,7 @@ import { findCommandsOf } from "./useFind";
  * Loads the window's tabs, then registers the shortcuts (Ctrl+N new tab,
  * Ctrl+Shift+N new window, Ctrl+O,
  * Ctrl+S / Ctrl+Shift+S, Ctrl+W close tab, Ctrl+Tab / Ctrl+Shift+Tab, Ctrl+1…9;
- * 查找 / 替换：Ctrl+F、Ctrl+H、F3 / Shift+F3，查找条开着时 Alt+C / Alt+W),
+ * 查找 / 替换：Ctrl+F、Ctrl+H、F3 / Shift+F3，查找条开着时 Alt+C / Alt+W 与 Esc),
  * the close guard and the requests from Rust (a file to open, a tab to show).
  * Registration waits for initialize(); `active` makes the StrictMode
  * mount → unmount → mount cycle register each listener exactly once.
@@ -52,6 +52,27 @@ export function useWindowGuards(tabs: Tabs) {
       ) {
         event.preventDefault();
         find.toggle(letter === "c" ? "caseSensitive" : "wholeWord");
+        return true;
+      }
+      // Esc 关闭查找条（VS Code 的 closeFindWidget：编辑器有焦点、查找条开着）。焦点在查找条里时
+      // 由它自己处理（FindWidget 的 onKeyDown），这里不再关一次；对话框开着时 useDialogs 先把它
+      // 关掉并 preventDefault（此刻 dialog[open] 已不在），所以编辑器以外已被 preventDefault 的
+      // Esc 不算（ProseMirror 对编辑器里的每个 Esc 都 preventDefault，那些照常关闭）。
+      // 导出菜单开着时 Esc 只关菜单。
+      const target = event.target instanceof Element ? event.target : null;
+      if (
+        event.key === "Escape" &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.keyCode !== 229 &&
+        !target?.closest(".find-widget") &&
+        (!event.defaultPrevented || !!target?.closest(".ProseMirror")) &&
+        !document.querySelector("details[open]") &&
+        find?.isOpen()
+      ) {
+        event.preventDefault();
+        find.close();
         return true;
       }
       return false;
