@@ -1,6 +1,6 @@
 [package]
 name = "linehush"
-version = "0.6.0"
+version = "0.7.0"
 description = "LineHush：Windows 本地优先图文日记编辑器"
 authors = ["Kandao"]
 edition = "2021"
