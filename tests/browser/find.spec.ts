@@ -395,8 +395,8 @@ test("高亮颜色与当前匹配的选区色", async ({ page }) => {
     const r = el.editor.view.coordsAtPos(1, 1);
     return { x: r.left, y: r.top };
   });
-  expect(near(at(current.x + 2, current.y + 2), "#b7d9f8", 3)).toBe(true);
-  // 选区盖过高亮的匹配：选区色透过高亮（0.4 × 高亮色 + 0.6 × #b7d9f8 ≈ #d4d09a），不是高亮色本身。
+  expect(near(at(current.x + 2, current.y + 2), "#97c6eb", 3)).toBe(true);
+  // 选区盖过高亮的匹配：选区色透过高亮（0.4 × 高亮色 + 0.6 × #97c6eb ≈ #c1c492），不是高亮色本身。
   await caretAt(page, 1, 6);
   await expect(marks(page)).toHaveCount(2);
   await frames(page);
@@ -406,7 +406,7 @@ test("高亮颜色与当前匹配的选区色", async ({ page }) => {
     Math.round((mark.x + 2 - clip.x) * dpr),
     Math.round((mark.y + 2 - clip.y) * dpr),
   );
-  expect(near(mixed, "#d4d09a", 4)).toBe(true);
+  expect(near(mixed, "#c1c492", 4)).toBe(true);
   await caretAt(page, 1);
   await page.screenshot({ path: test.info().outputPath("find.png") });
   await page.keyboard.press("Control+h");

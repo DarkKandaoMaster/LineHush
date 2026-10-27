@@ -56,8 +56,8 @@ input:focus-visible {
   gap: 4px;
   padding: 0 12px;
   border-bottom: 1px solid #e5e5e5;
-  /* 与当前标签同色，像记事本的菜单行接在当前标签下面。 */
-  background: #f9f9f9;
+  /* 记事本菜单行的颜色（2026-10-27 实测 #f8f8f8，比编辑区的 #f9f9f9 略深）。 */
+  background: #f8f8f8;
   flex-wrap: wrap;
 }
 .toolbar button {
@@ -262,16 +262,42 @@ input:focus-visible {
 .settings-button svg {
   display: block;
 }
+/*
+ * 状态栏照 Win11 记事本（2026-10-27 在 150% 缩放下实测）：连 1px 上边线共高 32px，底 #f8f8f8，
+ * 上边线与项间竖线 #e9e9e9（竖线高 16px），字 12px、#5e5e5e（WinUI TextFillColorSecondary
+ * 合成在底色上）；首项文字距窗口左边约 23px，项内左右各 12px。
+ */
 .statusbar {
   display: flex;
   align-items: center;
-  gap: 24px;
-  min-height: 28px;
-  padding: 4px 16px;
-  border-top: 1px solid #e5e5e5;
-  background: #f3f3f3;
-  color: #555;
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 0 0 11px;
+  border-top: 1px solid #e9e9e9;
+  background: #f8f8f8;
+  color: #5e5e5e;
   font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.status-item {
+  position: relative;
+  padding: 0 12px;
+}
+/* 项与项之间（右侧的缩放前也有）一条 1px、16px 高的竖线，像记事本。 */
+.status-item + .status-item::before,
+.status-zoom::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 16px;
+  margin-top: -8px;
+  border-left: 1px solid #e9e9e9;
+}
+/* 位置一项留出常见行列号的宽度，数字变多时后面的竖线不跟着跳。 */
+.status-position {
+  min-width: 140px;
 }
 /* 记事本的缩放一项约 67px 宽（含竖线）。 */
 .status-zoom {
@@ -281,6 +307,56 @@ input:focus-visible {
   flex: 1;
   overflow: auto;
   cursor: text;
+}
+/*
+ * 滚动条近似 Win11 记事本（WinUI ScrollBar；2026-10-27 实测：滑块 #8a8a8a = ControlStrongFillColorDefault
+ * #72000000 合成在 #f9f9f9 上，展开时 6px 宽、圆角、在约 16px 宽的轨道里居中，轨道透明，两端小三角箭头）。
+ * 平时只在轨道右侧画一条 2px 的细线；鼠标在滚动容器上（:hover）时变成 6px 圆角条并显示箭头。
+ * Chromium 不支持滚动条伪元素的过渡，直接切换。全局规则：编辑区、设置对话框等都用这一套
+ * （标签栏 scrollbar-width: none 优先，不受影响）。占位宽度 16px（FindWidget 运行时量 offsetWidth − clientWidth）。
+ */
+::-webkit-scrollbar {
+  width: 16px;
+  height: 16px;
+  background: transparent;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  /* 用透明边框把滑块收成细线：左 10px、右 4px，只剩 2px。 */
+  border: solid transparent;
+  border-width: 0 4px 0 10px;
+  background: #8a8a8a padding-box;
+  min-height: 24px;
+}
+::-webkit-scrollbar-thumb:horizontal {
+  border-width: 10px 0 4px;
+  min-width: 24px;
+}
+::-webkit-scrollbar-button {
+  display: none;
+}
+:hover::-webkit-scrollbar-thumb {
+  /* 居中的 6px 圆角条（外圆角减去 5px 边框后内圆角 3px）。 */
+  border-width: 0 5px;
+  border-radius: 8px / 3px;
+}
+:hover::-webkit-scrollbar-thumb:horizontal {
+  border-width: 5px 0;
+  border-radius: 3px / 8px;
+}
+:hover::-webkit-scrollbar-button:single-button:vertical {
+  display: block;
+  height: 18px;
+  background: no-repeat center;
+}
+:hover::-webkit-scrollbar-button:single-button:vertical:decrement {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='18' viewBox='0 0 16 18'%3E%3Cpath d='M8 6.5L11.5 11H4.5Z' fill='%238a8a8a' stroke='%238a8a8a' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+:hover::-webkit-scrollbar-button:single-button:vertical:increment {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='18' viewBox='0 0 16 18'%3E%3Cpath d='M8 11.5L11.5 7H4.5Z' fill='%238a8a8a' stroke='%238a8a8a' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 /* 编辑区与盖在它右上角的查找条（.find-widget 相对这一层定位，不随正文滚动）。 */
 .editor-area {
@@ -483,6 +559,8 @@ input:focus-visible {
   tab-size: 4;
   /* The editor draws the caret and the selection itself (src/editor/caret.ts). */
   caret-color: transparent;
+  /* Like Notepad: the text is pure black. */
+  color: #000000;
 }
 .tiptap p {
   margin: 0;
@@ -505,10 +583,10 @@ input:focus-visible {
  * the browser draws the caret and the selection (caret.ts adds .composing).
  */
 .composing > .tiptap {
-  caret-color: #151515;
+  caret-color: #060606;
 }
 .composing > .tiptap ::selection {
-  background: #b7d9f8;
+  background: #97c6eb;
 }
 /*
  * The text selection: VS Code's rounded shape (src/editor/selection-shape.ts),
@@ -526,7 +604,7 @@ input:focus-visible {
   pointer-events: none;
 }
 .selection-layer path {
-  fill: #b7d9f8;
+  fill: #97c6eb;
 }
 /*
  * The caret, in the text and between blocks (beside an image, in the middle
@@ -536,7 +614,7 @@ input:focus-visible {
 .editor-caret {
   position: absolute;
   display: none;
-  background: #151515;
+  background: #060606;
   pointer-events: none;
   z-index: 1;
 }
@@ -577,7 +655,7 @@ input:focus-visible {
   content: "";
   position: absolute;
   inset: 0;
-  background: rgb(183 217 248 / 50%);
+  background: rgb(151 198 235 / 50%);
   pointer-events: none;
 }
 .error-banner {
@@ -881,8 +959,13 @@ input:focus-visible {
     padding: 3px 8px;
   }
   .statusbar {
-    gap: 12px;
-    padding: 4px 8px;
+    padding-left: 4px;
+  }
+  .status-item {
+    padding: 0 8px;
+  }
+  .status-position {
+    min-width: 0;
   }
 }
 .dialog-actions {

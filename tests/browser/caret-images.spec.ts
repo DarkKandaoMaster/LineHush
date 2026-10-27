@@ -149,7 +149,7 @@ test("左右键逐停靠点移动，Backspace / Delete 规则，Shift+左右选�
       outline: getComputedStyle(el.parentElement!).outlineStyle,
     };
   });
-  expect(look).toEqual({ background: "rgba(183, 217, 248, 0.5)", outline: "none" });
+  expect(look).toEqual({ background: "rgba(151, 198, 235, 0.5)", outline: "none" });
   // Delete removes the selected image; Backspace at a caret after an image removes it.
   await page.keyboard.press("Delete");
   expect(await content(page)).toEqual(["上面", "[b]", "下面"]);

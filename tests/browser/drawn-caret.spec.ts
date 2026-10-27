@@ -101,11 +101,11 @@ test("选中换行：选区在行末多出半个字宽，空行同样，行高�
   expect(errors).toEqual([]);
 });
 
-/** Each column of the shot: "caret" (#151515 all the way down), "background" (#f9f9f9), or "other". */
+/** Each column of the shot: "caret" (#060606 all the way down), "background" (#f9f9f9), or "other". */
 const columns = (shot: Shot) =>
   Array.from({ length: shot.width }, (_, x) => {
     const column = Array.from({ length: shot.height }, (_, y) => pixel(shot, x, y));
-    if (column.every((rgb) => near(rgb, "#151515"))) return "caret";
+    if (column.every((rgb) => near(rgb, "#060606"))) return "caret";
     if (column.every((rgb) => near(rgb, "#f9f9f9"))) return "background";
     return `other(${column[Math.floor(column.length / 2)]})`;
   });
@@ -162,7 +162,7 @@ test.describe("150% 缩放", () => {
     ["medium", 2],
     ["thick", 3],
   ] as const)
-    test(`光标粗细 ${choice}：自绘光标恰好 ${n} 个屏幕像素宽、#151515，左右没有灰色半透明列；块间光标同宽、在间隙正中`, async ({
+    test(`光标粗细 ${choice}：自绘光标恰好 ${n} 个屏幕像素宽、#060606，左右没有灰色半透明列；块间光标同宽、在间隙正中`, async ({
       page,
     }) => {
       const errors = await load(page, { settings: { caretWidth: choice } });
@@ -170,7 +170,7 @@ test.describe("150% 缩放", () => {
       await caretInEmptyLine(page);
       let caret = await caretOf(page);
       expect(caret.display).toBe("block");
-      expect(caret.color).toBe("rgb(21, 21, 21)");
+      expect(caret.color).toBe("rgb(6, 6, 6)");
       // n screen pixels in layout units (1/64 px), painted as n screen pixels (below).
       expect(caret.width).toBeCloseTo(n / 1.5, 1);
       // The browser's own caret is transparent.
@@ -221,7 +221,7 @@ test.describe("150% 缩放", () => {
     expect(errors).toEqual([]);
   });
 
-  test("选区边角设为“方角”：同一形状直角，外角最外像素为 #b7d9f8、无反向圆角；在设置里改为“圆角”即时变回背景色", async ({
+  test("选区边角设为“方角”：同一形状直角，外角最外像素为 #97c6eb、无反向圆角；在设置里改为“圆角”即时变回背景色", async ({
     page,
   }) => {
     const errors = await load(page, { settings: { selectionCorners: "square" } });
@@ -257,11 +257,11 @@ test.describe("150% 缩放", () => {
       };
     };
     let px = await corners(test.info().outputPath("square-selection-shape.png"));
-    expect(near(px.outer, "#b7d9f8", 1), `outer corner ${px.outer}`).toBe(true);
+    expect(near(px.outer, "#97c6eb", 1), `outer corner ${px.outer}`).toBe(true);
     expect(near(px.above, "#f9f9f9", 1), `above the corner ${px.above}`).toBe(true);
     // No reverse rounding: the inner corner stays background.
     expect(near(px.inner, "#f9f9f9", 1), `inner corner ${px.inner}`).toBe(true);
-    expect(near(px.middle, "#b7d9f8", 1), `middle ${px.middle}`).toBe(true);
+    expect(near(px.middle, "#97c6eb", 1), `middle ${px.middle}`).toBe(true);
     expect(await shapePath(page)).not.toMatch(/A/);
 
     // “圆角” in the settings dialog: applies at once, and is written.
@@ -279,7 +279,7 @@ test.describe("150% 缩放", () => {
     px = await corners(test.info().outputPath("square-to-rounded-selection-shape.png"));
     expect(near(px.outer, "#f9f9f9", 1), `outer corner ${px.outer}`).toBe(true);
     expect(px.inner[0], `inner corner ${px.inner}`).toBeLessThan(215);
-    expect(near(px.middle, "#b7d9f8", 1), `middle ${px.middle}`).toBe(true);
+    expect(near(px.middle, "#97c6eb", 1), `middle ${px.middle}`).toBe(true);
     await expect
       .poll(async () => (await calls(page, "write_settings")).at(-1)?.settings.selectionCorners)
       .toBe("rounded");
@@ -287,7 +287,7 @@ test.describe("150% 缩放", () => {
   });
 });
 
-test("圆角选区：三行参差的文字连成一块，外角圆、内角反向圆，中部为 #b7d9f8；截图", async ({
+test("圆角选区：三行参差的文字连成一块，外角圆、内角反向圆，中部为 #97c6eb；截图", async ({
   page,
 }) => {
   const errors = await load(page);
@@ -317,10 +317,10 @@ test("圆角选区：三行参差的文字连成一块，外角圆、内角反�
   const outer = at(Math.round(first.left), Math.round(first.top));
   expect(outer[0], `outer corner ${outer}`).toBeGreaterThan(240);
   // Inside that corner, the selection colour.
-  expect(near(at(first.left + 4, first.top + 4), "#b7d9f8", 1)).toBe(true);
+  expect(near(at(first.left + 4, first.top + 4), "#97c6eb", 1)).toBe(true);
   // The middle of line 2.
   const middle = at((second.left + second.right) / 2, (second.top + second.bottom) / 2);
-  expect(near(middle, "#b7d9f8", 1), `middle ${middle}`).toBe(true);
+  expect(near(middle, "#97c6eb", 1), `middle ${middle}`).toBe(true);
   // Inner corner where line 2 starts further left than line 1: the pixel just
   // left of line 1's part and just above line 2 is filled by the reverse
   // rounding (it would be background with square corners).
@@ -346,7 +346,7 @@ test("输入法组字期间：自绘光标与选区隐藏，浏览器画光标�
     layer: getComputedStyle(el.parentElement!.querySelector(".selection-layer")!).display,
     native: getComputedStyle(el).caretColor,
   }));
-  expect(during).toEqual({ composing: true, caret: "none", layer: "none", native: "rgb(21, 21, 21)" });
+  expect(during).toEqual({ composing: true, caret: "none", layer: "none", native: "rgb(6, 6, 6)" });
   await cdp.send("Input.insertText", { text: "你" });
   await expect.poll(() => content(page)).toEqual(["上面你", "[a]", "[b]", "下面"]);
   await expect
