@@ -1064,10 +1064,23 @@ function clickImage(
   direct: boolean,
 ) {
   if (!direct || !isImage(node)) return false;
+  // 右键（弹菜单）按在选区里的图片上时选区不变，像浏览器在文字上右键：选中的图片才能“复制”。
+  if (rightInSelection(view, event, pos, pos + node.nodeSize)) return true;
   return setCaretSpot(
     view,
     spotBy(pos, node, event.clientX, imageRect(view, pos)),
   );
+}
+
+/** 右键按在当前（非空）选区里的 [from, to] 上。 */
+function rightInSelection(
+  view: EditorView,
+  event: MouseEvent,
+  from: number,
+  to: number,
+) {
+  const sel = view.state.selection;
+  return event.button === 2 && !sel.empty && sel.from <= from && to <= sel.to;
 }
 
 /** How far above / below rows of images a click beside them still goes to the nearest image. */
@@ -1091,6 +1104,7 @@ function clickBesideImages(view: EditorView, event: MouseEvent) {
     event.clientY,
     event.target as Element | null,
   );
+  if (spot && rightInSelection(view, event, spot.pos, spot.pos)) return true;
   return spot !== null && setCaretSpot(view, spot);
 }
 

@@ -11,6 +11,7 @@ import { stats } from "../core/document";
 import type { Session } from "../core/session";
 import type { Tab } from "../core/tabs";
 import DiaryEditor, { type DiaryEditorHandle } from "../editor/DiaryEditor";
+import { useContextMenuTarget } from "../hooks/useContextMenu";
 import { useFind } from "../hooks/useFind";
 import { useImageImport } from "../hooks/useImageImport";
 import Banners from "./Banners";
@@ -37,6 +38,8 @@ export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
   const images = useImageImport(session, editor);
   // 查找 / 替换：每个标签页一份，切换标签页时各自保留（快捷键经 useWindowGuards 调到当前标签页）。
   const find = useFind(tab.id, editor, generation);
+  // 右键菜单的动作作用在这个编辑器上。
+  useContextMenuTarget(tab.id, editor);
   const preview = useCallback(
     (pic: Picture) => onPreview(session, pic),
     [onPreview, session],

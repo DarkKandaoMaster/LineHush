@@ -5,7 +5,7 @@
 //
 //   node tests/native/native.mjs [--only 名称] [--release]   整套只在发布前跑；--only 只跑一项（名称见文末 `cases`）
 //
-// 注意：会弹出 / 移动 / 最大化 LineHush 窗口，并改写系统剪贴板（“图片复制粘贴”）；
+// 注意：会弹出 / 移动 / 最大化 LineHush 窗口，并改写系统剪贴板（“图片复制粘贴”“右键菜单”）；
 // “对话框挪进屏幕”会移动真实鼠标（按住标题栏拖动）并发送真实 Esc 键，运行时不要动鼠标键盘。
 import { chromium, expect } from "@playwright/test";
 import { execFile, spawn } from "node:child_process";
@@ -1957,6 +1957,77 @@ async function exportCase() {
   return { pdf: target, suggested };
 }
 
+/**
+ * 编辑区的右键菜单（hooks/useContextMenu.ts、src-tauri/src/context_menu.rs）：CDP 的右键同样引起
+ * WebView2 的 ContextMenuRequested，菜单是页面画的；复制走 copy 事件，粘贴交回 WebView2
+ * 执行（菜单请求挂起期间页面照常响应）。左栏、图片上右键也能粘贴；工具栏上不弹菜单。
+ */
+async function contextMenuCase() {
+  const page = await start();
+  const ed = editor(page);
+  const menu = page.getByRole("menu", { name: "编辑" });
+  const item = (name) => menu.getByRole("menuitem", { name });
+  const lines = () =>
+    ed.evaluate((el) => {
+      const out = [];
+      el.editor.state.doc.forEach((n) => out.push(n.type.name === "image" ? "[图]" : n.textContent));
+      return out;
+    });
+  const select = (from, to = from) =>
+    ed.evaluate((el, [from, to]) => el.editor.commands.setTextSelection({ from, to }), [from, to]);
+  /** 右键文字位置 `pos` 后面那个字。 */
+  async function rightAt(pos) {
+    const at = await ed.evaluate((el, pos) => {
+      const a = el.editor.view.coordsAtPos(pos, 1);
+      return { x: a.left + 3, y: (a.top + a.bottom) / 2 };
+    }, pos);
+    await page.mouse.click(at.x, at.y, { button: "right" });
+  }
+  await ed.click();
+  await page.keyboard.type("今天天气好");
+  await select(3, 5);
+  await rightAt(3);
+  await expect(menu).toBeVisible();
+  await expect(item("复制")).toBeEnabled();
+  await item("复制").click();
+  await expect(menu).toHaveCount(0);
+  // 行尾右侧空白里右键：光标到行尾（按在选区外时浏览器把光标移到按下处）。
+  await select(6);
+  const row = await ed.locator("p").first().boundingBox();
+  await page.mouse.click(row.x + 400, row.y + row.height / 2, { button: "right" });
+  await expect(item("粘贴")).toBeEnabled();
+  await item("粘贴").click();
+  await expect.poll(lines).toEqual(["今天天气好天气"]);
+  passed("右键菜单复制、粘贴（粘贴交回 WebView2）");
+  // 图片：选中后经菜单复制（Rust 写剪贴板），左栏右键粘贴到行首。
+  const source = await makeImages(page, [["菜单.png", 120, 80]]);
+  await select(8);
+  await input(page).setInputFiles(source["菜单.png"].file);
+  await expect(ed.locator(".image-tile img")).toHaveCount(1);
+  await thumbnailsLoaded(ed);
+  await clickImageSide(ed.locator(".image-tile"), "after");
+  await page.keyboard.press("Shift+ArrowLeft");
+  const tile = (await ed.locator(".image-tile").boundingBox());
+  await page.mouse.click(tile.x + tile.width / 2, tile.y + tile.height / 2, { button: "right" });
+  await item("复制").click();
+  await sleep(1500);
+  await select(1);
+  const box = await ed.boundingBox();
+  const line = await ed.locator("p").first().boundingBox();
+  await page.mouse.click(box.x + 6, line.y + line.height / 2, { button: "right" });
+  await expect(item("粘贴")).toBeEnabled();
+  await item("粘贴").click();
+  await expect.poll(lines).toEqual(["[图]", "今天天气好天气", "[图]"]);
+  passed("右键菜单复制图片、在左栏右键粘贴");
+  // 工具栏上右键：没有菜单。
+  const bar = await page.locator(".toolbar").boundingBox();
+  await page.mouse.click(bar.x + bar.width / 2, bar.y + bar.height / 2, { button: "right" });
+  await sleep(500);
+  await expect(menu).toHaveCount(0);
+  passed("工具栏上右键不弹菜单");
+  await kill();
+}
+
 // ---------------------------------------------------------------------------
 const cases = {
   启动与窗口: startupCase,
@@ -1977,6 +2048,7 @@ const cases = {
   启动参数打开文件: launchArgumentCase,
   图片复制粘贴: copyPasteCase,
   导出: exportCase,
+  右键菜单: contextMenuCase,
 };
 /** Runs one case in its own folders; whatever happens, no LineHush is left running. */
 async function runCase(name) {

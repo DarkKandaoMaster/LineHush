@@ -3,11 +3,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Session } from "./core/session";
 import { createTabs, displayName, type Tab } from "./core/tabs";
 import { useCaretMetrics } from "./hooks/useCaretMetrics";
+import { useContextMenu } from "./hooks/useContextMenu";
 import { useDialogs } from "./hooks/useDialogs";
 import { useImagePreview } from "./hooks/useImagePreview";
 import { useSettings } from "./hooks/useSettings";
 import { useUnsavedPrompt } from "./hooks/useUnsavedPrompt";
 import { useWindowGuards } from "./hooks/useWindowGuards";
+import ContextMenu from "./components/ContextMenu";
 import ImagePreviewDialog from "./components/ImagePreviewDialog";
 import SettingsDialog, { openSettings } from "./components/SettingsDialog";
 import TabPane from "./components/TabPane";
@@ -48,6 +50,8 @@ export default function App() {
 
   useWindowGuards(tabs);
   useCaretMetrics();
+  // 编辑区的右键菜单（代替 WebView2 自带的）。
+  const contextMenu = useContextMenu(tabs);
   useWindowTitle(current, currentState?.dirty ?? false);
   const fileDisabled =
     !currentState || currentState.busy || currentState.importing;
@@ -86,6 +90,14 @@ export default function App() {
           />
         ))}
         {!ready && <div className="loading">正在打开…</div>}
+        {contextMenu.menu && (
+          <ContextMenu
+            key={contextMenu.menu.serial}
+            menu={contextMenu.menu}
+            onRun={contextMenu.run}
+            onClose={contextMenu.close}
+          />
+        )}
       </div>
       {dimmed && (
         <div

@@ -803,6 +803,67 @@ input:focus-visible {
   width: 100%;
   text-align: left;
 }
+/*
+ * 编辑区的右键菜单（components/ContextMenu.tsx），照 Win11 记事本的 WinUI 菜单：白底、1px 边框、
+ * 圆角、阴影、内边距 4px；每项高 32px、圆角 4px，悬停 / 键盘高亮 #eaeaea，右侧灰色快捷键。
+ */
+.context-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 200px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 8px 16px #00000024;
+  font-size: 14px;
+  user-select: none;
+  cursor: default;
+}
+.context-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  width: 100%;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: default;
+}
+.context-menu button:hover {
+  background: transparent;
+}
+.context-menu button.active {
+  background: #eaeaea;
+}
+.context-menu button:active:not(:disabled) {
+  background: #dedede;
+}
+.context-menu button:disabled {
+  opacity: 1;
+  color: #a0a0a0;
+}
+.context-menu-shortcut {
+  color: #5e5e5e;
+  font-size: 12px;
+}
+.context-menu button:disabled .context-menu-shortcut {
+  color: #a0a0a0;
+}
+/* 右键按在左栏 / 图片上到菜单弹出为止：命中落到下面的正文（hooks/useContextMenu.ts）。 */
+.context-target .margin-gutter,
+.context-target .image-item {
+  pointer-events: none;
+}
+.context-menu-separator {
+  height: 1px;
+  margin: 4px -4px;
+  background: #e5e5e5;
+}
 .export-menu summary:focus-visible {
   outline: 2px solid #0067c0;
 }

@@ -164,8 +164,10 @@ export function headSide(view: EditorView): Affinity {
  * line into the gap before the image (no caret rectangle there; its own
  * scrolling then jumps to the top) or past the images. This does what the
  * pending `selectionchange` would (`DOMObserver.onSelectionChange` → `flush`).
+ * The context menu (hooks/useContextMenu.ts) reads it too: a right press
+ * outside the selection has just moved the browser's caret.
  */
-function readDOMSelection(view: EditorView) {
+export function readDOMSelection(view: EditorView) {
   const internal = view as unknown as {
     domObserver?: { forceFlush(): void; flush(): void };
     input?: { mouseDown: unknown };

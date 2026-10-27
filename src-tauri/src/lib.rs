@@ -1,6 +1,7 @@
 mod caption;
 mod caret;
 mod clipboard;
+mod context_menu;
 mod db;
 mod errors;
 mod fsx;
@@ -883,14 +884,21 @@ fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
         .visible(false)
         // Dropped files are handled by the page (DiaryEditor), not by Tauri.
         .disable_drag_drop_handler()
+        // 右键菜单由前端画、经 Rust 接管 WebView2 的菜单请求（context_menu.rs）；前端据此
+        // 不再自己响应编辑区的 contextmenu 事件（没有 Rust 的浏览器测试里由它弹菜单）。
+        .initialization_script("window.__LINEHUSH_CONTEXT_MENU__ = true;")
         .build()?;
     // 最大化按钮的贴靠布局（Snap layouts），见 caption.rs。
     caption::attach(&window);
+    context_menu::attach(&window);
     let handle = app.clone();
     let name = label.to_owned();
     window.on_window_event(move |event| match event {
         WindowEvent::Focused(true) => window_focused(&handle, &name),
-        WindowEvent::Destroyed => window_destroyed(&handle, &name),
+        WindowEvent::Destroyed => {
+            context_menu::forget(&name);
+            window_destroyed(&handle, &name);
+        }
         _ => {}
     });
     if let Some((position, size)) = cascade {
@@ -1068,6 +1076,9 @@ pub fn run() {
             pdf::export_pdf,
             caption::set_caption_buttons,
             caption::reveal_rect,
+            context_menu::context_menu_command,
+            context_menu::context_menu_dismiss,
+            context_menu::context_menu_native,
             caret::caret_metrics,
             settings::read_settings,
             settings::write_settings

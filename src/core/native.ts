@@ -173,6 +173,33 @@ export const setCaptionButtons = (maximize: PhysicalRect) =>
  */
 export const revealRect = (rect: PhysicalRect) =>
   invoke<void>("reveal_rect", { rect });
+/**
+ * Rust 接管了 WebView2 的右键菜单请求（src-tauri/src/context_menu.rs）：页面让编辑区的
+ * contextmenu 事件通过，Rust 挂起请求后向本窗口发这个事件（`ContextMenuRequested`），
+ * 页面画自己的菜单，再以下面三个命令之一带着 `id` 完成请求。
+ */
+export const CONTEXT_MENU_REQUESTED = "context-menu-requested";
+export interface ContextMenuRequested {
+  /** 请求编号，完成时带回。 */
+  id: number;
+  /** WebView2 自带菜单里的“粘贴”可用（剪贴板里有能粘贴的内容）。 */
+  canPaste: boolean;
+}
+/**
+ * 本窗口的右键菜单请求由 Rust 接管（真实的 LineHush 窗口，Rust 在页面加载前设好标记）；
+ * 否则（浏览器测试的替身）页面自己响应 contextmenu 事件，没有粘贴。
+ */
+export const nativeContextMenu = () =>
+  (globalThis as { __LINEHUSH_CONTEXT_MENU__?: unknown }).__LINEHUSH_CONTEXT_MENU__ === true;
+/** 由 WebView2 执行它自带菜单里的这个命令（剪贴板操作，如 "paste"），完成请求 `id`。 */
+export const contextMenuCommand = (id: number, command: "cut" | "copy" | "paste") =>
+  invoke<void>("context_menu_command", { id, command });
+/** 不执行命令、不弹菜单地完成请求 `id`（页面的菜单关掉了，或选了页面自己处理的项）。 */
+export const contextMenuDismiss = (id: number) =>
+  invoke<void>("context_menu_dismiss", { id });
+/** 弹出 WebView2 自带的菜单来完成请求 `id`（在输入框里右键）。 */
+export const contextMenuNative = (id: number) =>
+  invoke<void>("context_menu_native", { id });
 /** The stored settings, or the defaults when the file is missing or damaged; normalize before use. */
 export const readSettings = () => invoke<Settings>("read_settings");
 export const writeSettings = (settings: Settings) =>

@@ -58,7 +58,7 @@ export function useWindowGuards(tabs: Tabs) {
       // 由它自己处理（FindWidget 的 onKeyDown），这里不再关一次；对话框开着时 useDialogs 先把它
       // 关掉并 preventDefault（此刻 dialog[open] 已不在），所以编辑器以外已被 preventDefault 的
       // Esc 不算（ProseMirror 对编辑器里的每个 Esc 都 preventDefault，那些照常关闭）。
-      // 导出菜单开着时 Esc 只关菜单。
+      // 导出菜单、右键菜单开着时 Esc 只关菜单。
       const target = event.target instanceof Element ? event.target : null;
       if (
         event.key === "Escape" &&
@@ -68,7 +68,7 @@ export function useWindowGuards(tabs: Tabs) {
         event.keyCode !== 229 &&
         !target?.closest(".find-widget") &&
         (!event.defaultPrevented || !!target?.closest(".ProseMirror")) &&
-        !document.querySelector("details[open]") &&
+        !document.querySelector("details[open], .context-menu") &&
         find?.isOpen()
       ) {
         event.preventDefault();
