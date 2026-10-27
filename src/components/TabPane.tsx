@@ -24,11 +24,13 @@ interface Props {
   hidden: boolean;
   /** Bumped by the window to move the keyboard focus into the current editor. */
   focus: number;
+  /** The window's text zoom in percent (hooks/useZoom.ts), shown in the status bar. */
+  zoom: number;
   onPreview: (session: Session, pic: Picture) => void;
 }
 
 /** One tab: its banners, editor and status bar. */
-export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
+export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) {
   const { session } = tab;
   const { document, generation, busy, error, notice, saveFailed } =
     useSyncExternalStore(session.subscribe, session.getSnapshot);
@@ -81,6 +83,7 @@ export default function TabPane({ tab, hidden, focus, onPreview }: Props) {
         column={position.column}
         characters={counts.characters}
         images={counts.images}
+        zoom={zoom}
       />
       {/* 工具栏已无“插入图片”按钮，界面上无法打开此选择框；保留它只因 tests/native/native.mjs 经它导入图片。 */}
       <input

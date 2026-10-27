@@ -273,6 +273,10 @@ input:focus-visible {
   color: #555;
   font-size: 12px;
 }
+/* 记事本的缩放一项约 67px 宽（含竖线）。 */
+.status-zoom {
+  min-width: 67px;
+}
 .editor-host {
   flex: 1;
   overflow: auto;
@@ -471,7 +475,8 @@ input:focus-visible {
     "Segoe UI",
     sans-serif
   );
-  font-size: var(--editor-font-size, 10pt);
+  /* 缩放（hooks/useZoom.ts，每个窗口一个值）只乘在文字上，图片缩略图不变。 */
+  font-size: calc(var(--editor-font-size, 10pt) * var(--editor-zoom, 1));
   line-height: normal;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

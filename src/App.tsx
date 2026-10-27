@@ -9,6 +9,7 @@ import { useImagePreview } from "./hooks/useImagePreview";
 import { useSettings } from "./hooks/useSettings";
 import { useUnsavedPrompt } from "./hooks/useUnsavedPrompt";
 import { useWindowGuards } from "./hooks/useWindowGuards";
+import { useZoom } from "./hooks/useZoom";
 import ContextMenu from "./components/ContextMenu";
 import ImagePreviewDialog from "./components/ImagePreviewDialog";
 import SettingsDialog, { openSettings } from "./components/SettingsDialog";
@@ -52,6 +53,8 @@ export default function App() {
   useCaretMetrics();
   // 编辑区的右键菜单（代替 WebView2 自带的）。
   const contextMenu = useContextMenu(tabs);
+  // 正文缩放：每个窗口一个值，状态栏显示百分比。
+  const zoom = useZoom();
   useWindowTitle(current, currentState?.dirty ?? false);
   const fileDisabled =
     !currentState || currentState.busy || currentState.importing;
@@ -86,6 +89,7 @@ export default function App() {
             tab={tab}
             hidden={tab.id !== active}
             focus={focus}
+            zoom={zoom}
             onPreview={preview.show}
           />
         ))}
