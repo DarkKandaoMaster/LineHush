@@ -128,7 +128,7 @@ function expectUniformDim(values: number[], alpha: number) {
   const title = Math.round(0xec * (1 - alpha));
   const toolbar = Math.round(0xf9 * (1 - alpha));
   values.forEach((v, y) => {
-    // 拖动区这一列上没有文字与按钮；工具栏下边线在 y = 72，不在这 60 行里。
+    // 拖动区这一列上没有文字与按钮；工具栏下边线在 y = 72–73，不在这 60 行里。
     const want = y < 40 ? title : toolbar;
     expect(Math.abs(v - want), `y=${y}: ${values.join(",")}`).toBeLessThanOrEqual(2);
   });

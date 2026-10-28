@@ -343,8 +343,8 @@ class Drawing {
         ? { top: band.top - origin.top, bottom: band.bottom - origin.top }
         : null;
     // Chromium paints an SVG's content from its origin rounded to a whole
-    // screen pixel (the parent at 73 CSS px is 109.5 screen pixels at 150%,
-    // painted from 110); measured from the unrounded origin every horizontal
+    // screen pixel (the parent at 74 CSS px is 92.5 screen pixels at 125%,
+    // painted from 93); measured from the unrounded origin every horizontal
     // edge would be half a pixel off and blended. (The caret, a div, has its
     // own edges rounded instead, so caretBox uses `origin`.)
     const layer = { left: px(origin.left), top: px(origin.top) };

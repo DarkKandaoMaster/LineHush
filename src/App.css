@@ -49,13 +49,13 @@ input:focus-visible {
   display: contents;
 }
 .toolbar {
-  /* 内容高 32px 与记事本菜单栏相同（border-box，含 1px 分隔线共 33px）；窄窗口换行时 min-height 仍能撑开。 */
-  min-height: 33px;
+  /* 内容高 32px 与记事本菜单栏相同（border-box，含 2px 分隔线共 34px）；窄窗口换行时 min-height 仍能撑开。 */
+  min-height: 34px;
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 0 12px;
-  border-bottom: 1px solid #e5e5e5;
+  border-bottom: 2px solid #eaeaea;
   /* 记事本菜单行的颜色（2026-10-27 实测 #f8f8f8，比编辑区的 #f9f9f9 略深）。 */
   background: #f8f8f8;
   flex-wrap: wrap;
