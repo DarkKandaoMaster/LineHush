@@ -321,9 +321,9 @@ input:focus-visible {
 }
 /*
  * 滚动条近似 Win11 记事本（WinUI ScrollBar；2026-10-27 实测：滑块 #8a8a8a = ControlStrongFillColorDefault
- * #72000000 合成在 #f9f9f9 上，展开时 6px 宽、圆角、在约 16px 宽的轨道里居中，轨道透明，两端小三角箭头）。
- * 平时只在轨道右侧画一条 2px 的细线；鼠标在滚动容器上（:hover）时变成 6px 圆角条并显示箭头。
- * Chromium 不支持滚动条伪元素的过渡，直接切换。全局规则：编辑区、设置对话框等都用这一套
+ * #72000000 合成在 #f9f9f9 上，6px 宽、圆角、在约 16px 宽的轨道里居中，轨道透明，两端小三角箭头）。
+ * 照系统设置“始终显示滚动条”开启后的效果常驻展开（2026-10-29）：滑块始终是 6px 圆角条、竖向上下箭头常驻，
+ * 不再有平时的 2px 细线态与悬停差异；横向不显示箭头。全局规则：编辑区、设置对话框等都用这一套
  * （标签栏 scrollbar-width: none 优先，不受影响）。占位宽度 16px（FindWidget 运行时量 offsetWidth − clientWidth）。
  */
 ::-webkit-scrollbar {
@@ -336,37 +336,30 @@ input:focus-visible {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  /* 用透明边框把滑块收成细线：左 10px、右 4px，只剩 2px。 */
+  /* 居中的 6px 圆角条（外圆角减去 5px 边框后内圆角 3px）。 */
   border: solid transparent;
-  border-width: 0 4px 0 10px;
+  border-width: 0 5px;
+  border-radius: 8px / 3px;
   background: #8a8a8a padding-box;
   min-height: 24px;
 }
 ::-webkit-scrollbar-thumb:horizontal {
-  border-width: 10px 0 4px;
+  border-width: 5px 0;
+  border-radius: 3px / 8px;
   min-width: 24px;
 }
 ::-webkit-scrollbar-button {
   display: none;
 }
-:hover::-webkit-scrollbar-thumb {
-  /* 居中的 6px 圆角条（外圆角减去 5px 边框后内圆角 3px）。 */
-  border-width: 0 5px;
-  border-radius: 8px / 3px;
-}
-:hover::-webkit-scrollbar-thumb:horizontal {
-  border-width: 5px 0;
-  border-radius: 3px / 8px;
-}
-:hover::-webkit-scrollbar-button:single-button:vertical {
+::-webkit-scrollbar-button:single-button:vertical {
   display: block;
   height: 18px;
   background: no-repeat center;
 }
-:hover::-webkit-scrollbar-button:single-button:vertical:decrement {
+::-webkit-scrollbar-button:single-button:vertical:decrement {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='18' viewBox='0 0 16 18'%3E%3Cpath d='M8 6.5L11.5 11H4.5Z' fill='%238a8a8a' stroke='%238a8a8a' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
-:hover::-webkit-scrollbar-button:single-button:vertical:increment {
+::-webkit-scrollbar-button:single-button:vertical:increment {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='18' viewBox='0 0 16 18'%3E%3Cpath d='M8 11.5L11.5 7H4.5Z' fill='%238a8a8a' stroke='%238a8a8a' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 /* 编辑区与盖在它右上角的查找条（.find-widget 相对这一层定位，不随正文滚动）。 */
