@@ -124,11 +124,15 @@ async function caretInEmptyLine(page: Page) {
     el.editor.commands.setTextSelection(5);
   });
 }
-/** Around the caret, narrow enough to stay inside the 8px gap between images. */
-const caretClip = (c: { x: number; y: number; height: number }, n: number) => ({
-  x: Math.floor(c.x) - 2,
+/**
+ * Around the caret; `beside` an image from the caret's left edge (on the
+ * image's right edge, a screen pixel), narrow enough to stay inside the 8px
+ * gap after the image.
+ */
+const caretClip = (c: { x: number; y: number; height: number }, n: number, beside = false) => ({
+  x: beside ? c.x : Math.floor(c.x) - 2,
   y: Math.ceil(c.y) + 2,
-  width: n === 1 ? 5 : 6,
+  width: (n === 1 ? 5 : 6) - (beside ? 2 : 0),
   height: Math.floor(c.height) - 4,
 });
 /**
@@ -173,7 +177,7 @@ test.describe("150% 缩放", () => {
     ["medium", 2],
     ["thick", 3],
   ] as const)
-    test(`光标粗细 ${choice}：自绘光标恰好 ${n} 个屏幕像素宽、#060606，左右没有灰色半透明列；块间光标同宽、在间隙正中`, async ({
+    test(`光标粗细 ${choice}：自绘光标恰好 ${n} 个屏幕像素宽、#060606，左右没有灰色半透明列；块间光标同宽、左边缘贴图片右边缘`, async ({
       page,
     }) => {
       const errors = await load(page, { settings: { caretWidth: choice } });
@@ -193,16 +197,16 @@ test.describe("150% 缩放", () => {
         n,
       );
 
-      // Between the two images: as tall as the image, the same columns, in the gap's middle.
+      // Between the two images: as tall as the image, the same columns, its left edge on the first's right edge.
       await clickHalf(tile(page, 0), "right");
       caret = await caretOf(page);
       const image = (await tile(page, 0).boundingBox())!;
       expect(caret.display).toBe("block");
       expect(Math.abs(caret.height - image.height)).toBeLessThan(1);
       expect(caret.width).toBeCloseTo(n / 1.5, 1);
-      expect(Math.abs(caret.x + caret.width / 2 - (image.x + image.width + 4))).toBeLessThan(1);
+      expect(Math.abs(caret.x - (image.x + image.width))).toBeLessThan(1 / 1.5);
       expectColumns(
-        columns(await shoot(page, caretClip(caret, n), test.info().outputPath(`caret-150-${choice}-gap.png`))),
+        columns(await shoot(page, caretClip(caret, n, true), test.info().outputPath(`caret-150-${choice}-gap.png`))),
         n,
       );
       expect(errors).toEqual([]);

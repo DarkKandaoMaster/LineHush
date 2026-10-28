@@ -1,9 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   caretBeside,
+  caretOf,
   clickHalf,
   content,
   editorOf,
+  itemBox,
+  load,
   loadSample,
   selection,
   setDoc,
@@ -34,7 +37,7 @@ test("单击图片左右半区：光标停在图片前 / 后，画成与图片�
   await expect(editorOf(page).locator(".ProseMirror-selectednode")).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).selections)).not.toContain("node");
   // The caret line is drawn (by caret.ts) at the image's full height while
-  // the editor has focus, in the middle of the 8px gap after the image.
+  // the editor has focus, its left edge on the image's right edge.
   const drawn = await editorOf(page)
     .locator(".image-item")
     .nth(1)
@@ -46,18 +49,62 @@ test("单击图片左右半区：光标停在图片前 / 后，画成与图片�
         display: getComputedStyle(caret).display,
         height: c.height,
         image: r.height,
-        middle: (c.left + c.right) / 2 - r.right,
+        left: c.left - r.right,
       };
     });
   expect(drawn.display).toBe("block");
   expect(Math.abs(drawn.height - drawn.image)).toBeLessThan(1.5);
-  expect(Math.abs(drawn.middle - 4)).toBeLessThan(1);
+  expect(Math.abs(drawn.left)).toBeLessThan(1);
   // The browser's own caret is hidden meanwhile.
   await expect(editorOf(page)).toHaveClass(/ProseMirror-hideselection/);
   // A double click keeps the caret where the first click put it.
   await tile(page, 0).dblclick({ position: { x: 190, y: 50 } });
   expect((await selection(page)).type).toBe("blockRange");
   await expect(editorOf(page).locator(".ProseMirror-selectednode")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("块间光标的横向位置：行首图片之前与文字行首同一 x；两图之间不论 side 都贴第一张图右边缘", async ({
+  page,
+}) => {
+  const errors = await load(page);
+  // The first node an image, an empty line below it.
+  await setDoc(page, [{ id: "a" }, ""]);
+  const editor = editorOf(page);
+  await editor.evaluate((el: any) => {
+    el.editor.commands.focus();
+    el.editor.commands.setTextSelection(2);
+  });
+  const text = await caretOf(page);
+  const padding = await editor.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return r.left + el.clientLeft + parseFloat(getComputedStyle(el).paddingLeft);
+  });
+  expect(Math.abs(text.x - padding)).toBeLessThan(1);
+  await clickHalf(tile(page, 0), "left");
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 0, head: 0, side: 1 });
+  const first = await caretOf(page);
+  expect(first.display).toBe("block");
+  expect(Math.abs(first.x - text.x)).toBeLessThan(1);
+  expect(Math.abs(first.x - (await itemBox(page, 0)).x)).toBeLessThan(1);
+
+  // Two images in one row, the caret between them from either side.
+  await setDoc(page, ["上面", { id: "a" }, { id: "b" }, "下面"]);
+  const a = await itemBox(page, 0);
+  const b = await itemBox(page, 1);
+  expect(Math.abs(a.y - b.y)).toBeLessThan(1);
+  await clickHalf(tile(page, 0), "right");
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 5, head: 5, side: -1 });
+  const after = await caretOf(page);
+  await clickHalf(tile(page, 1), "left");
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 5, head: 5, side: 1 });
+  const before = await caretOf(page);
+  for (const caret of [after, before]) {
+    expect(caret.display).toBe("block");
+    expect(Math.abs(caret.x - (a.x + a.width))).toBeLessThan(1);
+    expect(Math.abs(caret.y - a.y)).toBeLessThan(1);
+    expect(Math.abs(caret.height - a.height)).toBeLessThan(1);
+  }
   expect(errors).toEqual([]);
 });
 

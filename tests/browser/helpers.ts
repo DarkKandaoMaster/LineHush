@@ -257,20 +257,20 @@ export const caretOf = (page: Page) =>
 
 /**
  * Per image, where the drawn caret is: "after" it or "before" it (as tall as
- * the image, in the middle of the 8px gap beside it), else "". Between two
- * images of a row the gap is both; it counts for the first.
+ * the image, its left edge on the image's right / left edge), else "". Between
+ * two images of a row the caret is on the first one's right edge either way,
+ * so it counts as "after" the first.
  */
 export const caretBeside = (page: Page) =>
   editorOf(page).evaluate((el: any) => {
     const caret = el.parentElement.querySelector(".editor-caret").getBoundingClientRect();
-    const middle = (caret.left + caret.right) / 2;
     let found = false;
     return Array.from(el.querySelectorAll(".image-item") as NodeListOf<HTMLElement>).map((item) => {
       const r = item.getBoundingClientRect();
       if (found || Math.abs(caret.top - r.top) >= 1 || Math.abs(caret.bottom - r.bottom) >= 1)
         return "";
       const side =
-        Math.abs(middle - (r.right + 4)) < 1 ? "after" : Math.abs(middle - (r.left - 4)) < 1 ? "before" : "";
+        Math.abs(caret.left - r.right) < 1 ? "after" : Math.abs(caret.left - r.left) < 1 ? "before" : "";
       found = !!side;
       return side;
     });

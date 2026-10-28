@@ -28,12 +28,3 @@ test("闪烁次数：默认 5000 / 1060 次后停住；不闪烁为 0；无超�
   assert.equal(blinkIterations({ width: 1, blinkMs: 0, timeoutMs: 5000 }), 0);
   assert.equal(blinkIterations({ width: 1, blinkMs: 500, timeoutMs: 0 }), Infinity);
 });
-
-test("块间光标以 x 为中线：宽度取整后居中，边仍在屏幕像素上", () => {
-  // At 150% one screen pixel is 2/3 CSS px: the caret's left edge is half of that left of x.
-  const box = caretBox({ x: 20, top: 0, bottom: 10, centered: true }, { left: 0, top: 0 }, 1, 1.5);
-  assert.equal(box.left, toDevicePixel(20 - 1 / 3, 1.5));
-  assert.ok(Math.abs(box.width - 1 / 1.5) < 1e-9);
-  // Three screen pixels wide, centred on x = 20 at 100%.
-  assert.equal(caretBox({ x: 20, top: 0, bottom: 10, centered: true }, { left: 0, top: 0 }, 3, 1).left, 19);
-});

@@ -28,10 +28,13 @@ export function textCaret(view: EditorView, pos: number, side: -1 | 1 = 1): Care
  * The caret at the selection's head (also for a range, as in Notepad and
  * VS Code), `side` being the head's side at a soft wrap (`headSide`). Between
  * blocks it is drawn beside the image `caretImage` gives for the BlockRange's
- * side (a range's too, 2026-10-28): as tall as the image, its middle in the
- * middle of the gap beside it (the image's right margin). A range ending
- * between two text lines: at the end of the one before. A selected image
- * (NodeSelection) has no caret.
+ * side (a range's too, 2026-10-28), as tall as that image, its left edge on a
+ * boundary as in text: after an image, on the image's right edge; before one,
+ * on the right edge of the image before it on the same visual line, so both
+ * sides of a spot between two images draw one caret; before the first image
+ * of a visual line, on that image's left edge (its 1px border), where a text
+ * line's caret starts. A range ending between two text lines: at the end of
+ * the one before. A selected image (NodeSelection) has no caret.
  */
 export function drawnCaret(view: EditorView, side: -1 | 1): CaretSpot | null {
   const sel = view.state.selection;
@@ -40,16 +43,19 @@ export function drawnCaret(view: EditorView, side: -1 | 1): CaretSpot | null {
   if ($head.parent.inlineContent) return textCaret(view, sel.head, side);
   const image = caretImage(view, $head, sel instanceof BlockRange ? sel.side : -1);
   if (image) {
-    const item = view.nodeDOM(image.pos) as HTMLElement | null;
-    const rect = item?.getBoundingClientRect();
-    if (!item || !rect?.height) return null;
-    const gap = parseFloat(getComputedStyle(item).marginRight) || 0;
-    return {
-      x: image.after ? rect.right + gap / 2 : rect.left - gap / 2,
-      top: rect.top,
-      bottom: rect.bottom,
-      centered: true,
-    };
+    const rect = (view.nodeDOM(image.pos) as HTMLElement | null)?.getBoundingClientRect();
+    if (!rect?.height) return null;
+    if (image.after) return { x: rect.right, top: rect.top, bottom: rect.bottom };
+    const before = view.state.doc.resolve(image.pos).nodeBefore;
+    if (before?.type.name === "image") {
+      const prev = (
+        view.nodeDOM(image.pos - before.nodeSize) as HTMLElement | null
+      )?.getBoundingClientRect();
+      if (prev?.height && Math.abs(prev.top - rect.top) < 1) {
+        return { x: prev.right, top: prev.top, bottom: prev.bottom };
+      }
+    }
+    return { x: rect.left, top: rect.top, bottom: rect.bottom };
   }
   if ($head.nodeBefore?.isTextblock) return textCaret(view, sel.head - 1);
   if ($head.nodeAfter?.isTextblock) return textCaret(view, sel.head + 1);

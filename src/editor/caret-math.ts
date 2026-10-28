@@ -38,14 +38,12 @@ export const caretWidth = (metrics: CaretMetrics, choice: CaretWidth) =>
 
 /**
  * Where the caret goes, in client coordinates: across at `x`, its left edge
- * (in text) or, with `centered`, its middle (between blocks, in the gap beside
- * an image); down from `top` to `bottom`.
+ * (in text and between blocks alike); down from `top` to `bottom`.
  */
 export interface CaretSpot {
   x: number;
   top: number;
   bottom: number;
-  centered?: boolean;
 }
 
 /** The caret's box in CSS pixels relative to `origin` (its positioned container). */
@@ -74,7 +72,7 @@ export function caretBox(
   dpr: number,
 ): CaretBox {
   const across = Math.max(1, Math.round(width)) / dpr;
-  const left = toDevicePixel(spot.centered ? spot.x - across / 2 : spot.x, dpr);
+  const left = toDevicePixel(spot.x, dpr);
   const top = toDevicePixel(spot.top, dpr);
   const bottom = Math.max(toDevicePixel(spot.bottom, dpr), top + 1 / dpr);
   return {
