@@ -8,6 +8,12 @@
 }
 * {
   box-sizing: border-box;
+  /*
+   * 触控板双指滑到边界时不回弹、不露白边，也不把滚动传给外层（Chromium 的弹性 overscroll）。
+   * 对 html / body 与编辑区、标签栏、对话框等所有滚动容器都生效；none 只去掉边界效果，
+   * 正常滚到边界照样停住。双指左右滑的前进 / 后退手势由 wry 建 WebView2 时已关（见 lib.rs create_window 注释）。
+   */
+  overscroll-behavior: none;
 }
 body {
   margin: 0;
@@ -76,7 +82,7 @@ input:focus-visible {
   display: flex;
   flex-shrink: 0;
   height: 40px;
-  background: #ececec;
+  background: #e8e8e8;
   user-select: none;
 }
 .titlebar-drag {

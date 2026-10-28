@@ -123,9 +123,9 @@ async function column(page: Page, file: string) {
     { data: shot.toString("base64"), x },
   );
 }
-/** 标题栏 #ececec、工具栏 #f9f9f9 叠上透明度 `alpha` 的黑色后的灰度：0…39 为前者，40 起为后者。 */
+/** 标题栏 #e8e8e8、工具栏 #f9f9f9 叠上透明度 `alpha` 的黑色后的灰度：0…39 为前者，40 起为后者。 */
 function expectUniformDim(values: number[], alpha: number) {
-  const title = Math.round(0xec * (1 - alpha));
+  const title = Math.round(0xe8 * (1 - alpha));
   const toolbar = Math.round(0xf9 * (1 - alpha));
   values.forEach((v, y) => {
     // 拖动区这一列上没有文字与按钮；工具栏下边线在 y = 72–73，不在这 60 行里。

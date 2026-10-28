@@ -884,6 +884,11 @@ fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
         .visible(false)
         // Dropped files are handled by the page (DiaryEditor), not by Tauri.
         .disable_drag_drop_handler()
+        // 触控板 / 触屏左右滑动的前进 / 后退（与下拉刷新）手势不用另关：wry 建 WebView2 时按
+        // back_forward_navigation_gestures（默认 false，Tauri 2 不暴露这个选项）调用
+        // ICoreWebView2Settings6::SetIsSwipeNavigationEnabled(false)，见 wry src/webview2/mod.rs
+        // 的 set_webview_settings。滑到边界露白边的弹性 overscroll 由 App.css 的
+        // overscroll-behavior: none 去掉。
         // 右键菜单由前端画、经 Rust 接管 WebView2 的菜单请求（context_menu.rs）；前端据此
         // 不再自己响应编辑区的 contextmenu 事件（没有 Rust 的浏览器测试里由它弹菜单）。
         .initialization_script("window.__LINEHUSH_CONTEXT_MENU__ = true;")
