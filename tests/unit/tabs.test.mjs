@@ -7,6 +7,7 @@ import {
   displayName,
   neighbourAfterClose,
   nextUntitled,
+  tabsToClose,
 } from "../../src/core/tabs.ts";
 import { fromText } from "../../src/core/document.ts";
 
@@ -80,6 +81,7 @@ function setup({
     if (cmd === "close_tab") return null;
     if (cmd === "is_last_window") return fake.last;
     if (cmd === "stash_document" && fake.failStash) throw fake.failStash;
+    if (cmd === "reveal_in_explorer" && fake.failReveal) throw fake.failReveal;
     if (cmd === "new_window") {
       if (fake.failWindow) throw fake.failWindow;
       return null;
@@ -708,6 +710,89 @@ test("启动时为“打开新窗口”：关闭最后一个窗口也询问，�
     assert.deepEqual(
       fake.args.filter(([cmd]) => cmd === "close_tab").map(([, a]) => a.tab),
       ["a"],
+    );
+  } finally {
+    await teardown(tabs);
+  }
+});
+
+test("纯函数：标签页菜单“关闭其他 / 关闭右侧”要关的标签页", () => {
+  const tabs = ["a", "b", "c", "d"].map((id) => ({ id }));
+  const ids = (list) => list.map((tab) => tab.id);
+  assert.deepEqual(ids(tabsToClose(tabs, "b", "others")), ["a", "c", "d"]);
+  assert.deepEqual(ids(tabsToClose(tabs, "b", "right")), ["c", "d"]);
+  assert.deepEqual(ids(tabsToClose(tabs, "d", "right")), []);
+  assert.deepEqual(ids(tabsToClose([{ id: "a" }], "a", "others")), []);
+  assert.deepEqual(ids(tabsToClose(tabs, "x", "others")), []);
+});
+
+test("标签页菜单：关闭其他 / 关闭右侧逐个关闭，有修改的切过去询问，取消则停下；关掉当前的由右键的那个接替", async () => {
+  const { tabs, fake, state } = setup({
+    restored: ["a", "b", "c", "d", "e"].map((id) => [id, blank()]),
+    active: "e",
+    answers: ["cancel", "discard"],
+  });
+  const ids = () => state().tabs.map((t) => t.id);
+  const closed = () =>
+    fake.args.filter(([cmd]) => cmd === "close_tab").map(([, a]) => a.tab);
+  try {
+    await tabs.initialize();
+    state().tabs.find((t) => t.id === "d").session.update(fromText("改丁"));
+    // 右侧：c 直接关，d 有修改，询问时取消，e 保留。
+    await tabs.closeTabs("b", "right");
+    assert.deepEqual(fake.asked, ["无标题 4"]);
+    assert.deepEqual(ids(), ["a", "b", "d", "e"]);
+    assert.equal(state().active, "d");
+    assert.deepEqual(closed(), ["c"]);
+    // 其他：a 直接关，d 不保存后关掉（它是当前的，由 b 接替），e 也关。
+    await tabs.closeTabs("b", "others");
+    assert.deepEqual(ids(), ["b"]);
+    assert.equal(state().active, "b");
+    assert.deepEqual(closed(), ["c", "a", "d", "e"]);
+    // 只剩一个：什么也不关，窗口不关。
+    await tabs.closeTabs("b", "others");
+    assert.deepEqual(ids(), ["b"]);
+    assert.ok(!fake.calls.includes("plugin:window|close"));
+  } finally {
+    await teardown(tabs);
+  }
+});
+
+test("标签页菜单：关闭右侧时当前标签页在左边则保持不变", async () => {
+  const { tabs, state } = setup({
+    restored: ["a", "b", "c"].map((id) => [id, blank()]),
+    active: "a",
+  });
+  try {
+    await tabs.initialize();
+    await tabs.closeTabs("b", "right");
+    assert.deepEqual(state().tabs.map((t) => t.id), ["a", "b"]);
+    assert.equal(state().active, "a");
+  } finally {
+    await teardown(tabs);
+  }
+});
+
+test("标签页菜单：打开文件所在位置把该标签页的路径交给 Rust，无标题不调用，失败显示在当前标签页", async () => {
+  const { tabs, fake, tab } = setup({
+    restored: [
+      ["a", blank()],
+      ["b", named("D:/笔记/乙.hush")],
+    ],
+  });
+  try {
+    await tabs.initialize();
+    await tabs.revealTab("a");
+    await tabs.revealTab("b");
+    assert.deepEqual(
+      fake.args.filter(([cmd]) => cmd === "reveal_in_explorer").map(([, a]) => a),
+      [{ path: "D:/笔记/乙.hush" }],
+    );
+    fake.failReveal = "文件不存在：D:/笔记/乙.hush";
+    await tabs.revealTab("b");
+    assert.equal(
+      tab("a").session.getSnapshot().error,
+      "无法打开文件所在位置：文件不存在：D:/笔记/乙.hush",
     );
   } finally {
     await teardown(tabs);

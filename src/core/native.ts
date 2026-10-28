@@ -200,6 +200,9 @@ export const contextMenuDismiss = (id: number) =>
 /** 弹出 WebView2 自带的菜单来完成请求 `id`（在输入框里右键）。 */
 export const contextMenuNative = (id: number) =>
   invoke<void>("context_menu_native", { id });
+/** 在资源管理器里打开 `path` 所在的文件夹并选中它（标签页菜单“打开文件所在位置”）；文件不存在时失败。 */
+export const revealInExplorer = (path: string) =>
+  invoke<void>("reveal_in_explorer", { path });
 /** The stored settings, or the defaults when the file is missing or damaged; normalize before use. */
 export const readSettings = () => invoke<Settings>("read_settings");
 export const writeSettings = (settings: Settings) =>

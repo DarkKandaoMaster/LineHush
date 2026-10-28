@@ -8,9 +8,9 @@ interface Props {
   onClose: () => void;
 }
 
-type Item = { command: MenuCommand; label: string; shortcut: string } | "separator";
+type Item = { command: MenuCommand; label: string; shortcut?: string } | "separator";
 /** 照 Win11 记事本编辑区的右键菜单（去掉了本应用没有的项）。 */
-const ITEMS: Item[] = [
+const EDITOR_ITEMS: Item[] = [
   { command: "undo", label: "撤消", shortcut: "Ctrl+Z" },
   { command: "redo", label: "重做", shortcut: "Ctrl+Y" },
   "separator",
@@ -24,9 +24,25 @@ const ITEMS: Item[] = [
   { command: "find", label: "查找", shortcut: "Ctrl+F" },
   { command: "replace", label: "替换", shortcut: "Ctrl+H" },
 ];
-const COMMANDS = ITEMS.flatMap((item) => (item === "separator" ? [] : [item.command]));
+/** 照 Win11 记事本标签页的右键菜单。 */
+const TAB_ITEMS: Item[] = [
+  { command: "newTab", label: "新建标签页", shortcut: "Ctrl+N" },
+  { command: "closeTab", label: "关闭标签页", shortcut: "Ctrl+W" },
+  { command: "closeOthers", label: "关闭其他标签页" },
+  { command: "closeRight", label: "关闭右侧标签页" },
+  "separator",
+  { command: "reveal", label: "打开文件所在位置" },
+];
+const commandsOf = (items: Item[]) =>
+  items.flatMap((item) => (item === "separator" ? [] : [item.command]));
 
 function enabled(menu: ContextMenuState, command: MenuCommand) {
+  if (menu.kind === "tab") {
+    if (command === "closeOthers") return menu.canCloseOthers;
+    if (command === "closeRight") return menu.canCloseRight;
+    if (command === "reveal") return menu.canReveal;
+    return true;
+  }
   if (!menu.editable && !["copy", "selectAll", "find"].includes(command)) return false;
   switch (command) {
     case "undo":
@@ -47,7 +63,7 @@ function enabled(menu: ContextMenuState, command: MenuCommand) {
 const EDGE = 4;
 
 /**
- * 编辑区的右键菜单（状态与动作见 hooks/useContextMenu.ts）：左上角在指针（或光标）处，
+ * 编辑区与标签页的右键菜单（状态与动作见 hooks/useContextMenu.ts）：左上角在指针（或光标）处，
  * 右边 / 下边放不下时向左 / 向上翻，再夹在视口内。点菜单外、Esc、窗口失焦、滚动、
  * 改变窗口大小时关闭。焦点一直留在编辑器里（各项在 mousedown 上 preventDefault），
  * 菜单开着时 ↑ ↓ / Home / End 移动高亮、Enter / 空格执行，其余按键关掉菜单后照常生效。
@@ -55,7 +71,8 @@ const EDGE = 4;
 export default function ContextMenu({ menu, onRun, onClose }: Props) {
   const element = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
-  const usable = COMMANDS.filter((command) => enabled(menu, command));
+  const items = menu.kind === "tab" ? TAB_ITEMS : EDITOR_ITEMS;
+  const usable = commandsOf(items).filter((command) => enabled(menu, command));
   const [active, setActive] = useState<MenuCommand | null>(
     menu.keyboard ? (usable[0] ?? null) : null,
   );
@@ -133,7 +150,7 @@ export default function ContextMenu({ menu, onRun, onClose }: Props) {
       ref={element}
       className="context-menu"
       role="menu"
-      aria-label="编辑"
+      aria-label={menu.kind === "tab" ? "标签页" : "编辑"}
       style={
         place
           ? { left: place.left, top: place.top }
@@ -143,7 +160,7 @@ export default function ContextMenu({ menu, onRun, onClose }: Props) {
       onMouseDown={(event) => event.preventDefault()}
       onContextMenu={(event) => event.preventDefault()}
     >
-      {ITEMS.map((item, i) =>
+      {items.map((item, i) =>
         item === "separator" ? (
           <div key={i} className="context-menu-separator" role="separator" />
         ) : (
@@ -159,7 +176,7 @@ export default function ContextMenu({ menu, onRun, onClose }: Props) {
             onClick={() => onRun(item.command)}
           >
             <span className="context-menu-label">{item.label}</span>
-            <span className="context-menu-shortcut">{item.shortcut}</span>
+            {item.shortcut && <span className="context-menu-shortcut">{item.shortcut}</span>}
           </button>
         ),
       )}

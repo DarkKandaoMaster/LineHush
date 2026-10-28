@@ -51,7 +51,7 @@ export default function App() {
 
   useWindowGuards(tabs);
   useCaretMetrics();
-  // 编辑区的右键菜单（代替 WebView2 自带的）。
+  // 编辑区与标签页的右键菜单（代替 WebView2 自带的）。
   const contextMenu = useContextMenu(tabs);
   // 正文缩放：每个窗口一个值，状态栏显示百分比。
   const zoom = useZoom();

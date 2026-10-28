@@ -8,6 +8,7 @@ mod fsx;
 mod images;
 mod model;
 mod pdf;
+mod explorer;
 mod session;
 mod settings;
 mod store;
@@ -1085,6 +1086,7 @@ pub fn run() {
             context_menu::context_menu_command,
             context_menu::context_menu_dismiss,
             context_menu::context_menu_native,
+            explorer::reveal_in_explorer,
             caret::caret_metrics,
             settings::read_settings,
             settings::write_settings

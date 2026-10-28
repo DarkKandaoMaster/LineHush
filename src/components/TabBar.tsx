@@ -17,6 +17,7 @@ const keepFocus = (event: MouseEvent) => event.preventDefault();
 /**
  * 标签栏：参照 Win11 记事本，位于自绘标题栏（TitleBar）左侧，末尾“+”新建标签页。
  * 标签之间与上方的空白可拖动窗口（标签与按钮本身不是拖动区）。
+ * 标签页上右键弹出标签页菜单（hooks/useContextMenu.ts，按 `data-tab` 认标签页）。
  */
 export default function TabBar(props: Props) {
   return (
@@ -65,6 +66,8 @@ function TabItem(props: {
   return (
     <div
       role="tab"
+      // 右键菜单按它找出右键的是哪个标签页（hooks/useContextMenu.ts）。
+      data-tab={tab.id}
       aria-selected={active}
       className={`tab${active ? " active" : ""}`}
       title={path?.replace(/^\\\\\?\\/, "") ?? name}

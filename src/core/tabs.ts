@@ -52,6 +52,21 @@ export function neighbourAfterClose<T>(
 ): T | undefined {
   return tabs[index + 1] ?? tabs[index - 1];
 }
+/**
+ * 标签页菜单“关闭其他标签页” / “关闭右侧标签页”要关的标签页（从左到右）：除 `id` 以外的全部，
+ * 或它右边的全部。不认识的 `id` 不关任何标签页。
+ */
+export function tabsToClose<T extends { id: string }>(
+  tabs: readonly T[],
+  id: string,
+  which: "others" | "right",
+): T[] {
+  const index = tabs.findIndex((tab) => tab.id === id);
+  if (index < 0) return [];
+  return which === "right"
+    ? tabs.slice(index + 1)
+    : tabs.filter((tab) => tab.id !== id);
+}
 /** A document with nothing in it: one empty line. */
 function isBlank(doc: Diary) {
   const [first] = doc.blocks;
@@ -306,6 +321,36 @@ export function createTabs(
     if (next) activate(next.id);
   }
   /**
+   * 标签页菜单的“关闭其他标签页” / “关闭右侧标签页”（`id` 是右键的那个标签页）：从左到右
+   * 逐个关闭，没有修改的直接关，有修改的先切过去照常询问；取消（或保存失败）就停下，其余保留。
+   * 关掉的是当前标签页时由 `id` 那个接替。
+   */
+  async function closeTabs(id: string, which: "others" | "right") {
+    for (const tab of tabsToClose(state.tabs, id, which)) {
+      if (closingWindow) return;
+      if (!state.tabs.includes(tab)) continue;
+      if (tab.session.getSnapshot().dirty) activate(tab.id);
+      if (!(await tab.session.closeTab((e) => `${e}，标签页未关闭。`))) return;
+      set({ tabs: state.tabs.filter((other) => other !== tab) });
+      if (state.active === tab.id) {
+        const keep = state.tabs.find((other) => other.id === id) ?? state.tabs[0];
+        if (keep) activate(keep.id);
+      }
+    }
+  }
+  /** 标签页菜单的“打开文件所在位置”：在资源管理器里选中该标签页的文件；失败显示在当前标签页。 */
+  async function revealTab(id: string) {
+    const path = state.tabs
+      .find((tab) => tab.id === id)
+      ?.session.getSnapshot().path;
+    if (!path) return;
+    try {
+      await native.revealInExplorer(path);
+    } catch (e) {
+      report(`无法打开文件所在位置：${e}`);
+    }
+  }
+  /**
    * Closing the window asks about each tab with unsaved changes in turn, like
    * Notepad; cancelling or a failed save keeps the window. Then every tab is
    * released and the window closes.
@@ -379,6 +424,8 @@ export function createTabs(
     cycle,
     activateIndex,
     closeTab,
+    closeTabs,
+    revealTab,
     closeWindow,
     /** Moves the keyboard focus back into the current tab's editor. */
     focus: () => set({ focus: state.focus + 1 }),

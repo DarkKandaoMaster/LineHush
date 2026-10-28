@@ -17,8 +17,8 @@ import { removeNear } from "../editor/image-view";
 import { headSide, keyboardInput, readDOMSelection } from "../editor/input";
 import { findCommandsOf } from "./useFind";
 
-/** 右键菜单的项（照 Win11 记事本的编辑区菜单）。 */
-export type MenuCommand =
+/** 编辑区右键菜单的项（照 Win11 记事本的编辑区菜单）。 */
+export type EditorCommand =
   | "undo"
   | "redo"
   | "cut"
@@ -28,16 +28,26 @@ export type MenuCommand =
   | "selectAll"
   | "find"
   | "replace";
+/** 标签页右键菜单的项（照 Win11 记事本的标签页菜单）。 */
+export type TabCommand = "newTab" | "closeTab" | "closeOthers" | "closeRight" | "reveal";
+export type MenuCommand = EditorCommand | TabCommand;
 
 /** 一个打开着的右键菜单：位置（视口 CSS 像素，菜单左上角）、所属标签页与各项是否可用。 */
-export interface ContextMenuState {
+interface MenuBase {
   /** 第几次打开（换一个就重建菜单）。 */
   serial: number;
   x: number;
   y: number;
+  /** 编辑区菜单：当前标签页；标签页菜单：右键的那个标签页（不一定是当前的）。 */
   tab: string;
   /** 用键盘（Shift+F10 / 菜单键）打开：先高亮第一个可用项。 */
   keyboard: boolean;
+  /** Rust 挂起的菜单请求（没有 Rust 时为 null），关菜单时以它完成。 */
+  request: number | null;
+}
+/** 编辑区的菜单。 */
+export interface EditorMenuState extends MenuBase {
+  kind: "editor";
   canUndo: boolean;
   canRedo: boolean;
   /** 有选区：剪切、复制、删除可用。 */
@@ -45,9 +55,18 @@ export interface ContextMenuState {
   canPaste: boolean;
   /** 编辑器可编辑（保存等进行中时不可）：否则只有复制、全选、查找可用。 */
   editable: boolean;
-  /** Rust 挂起的菜单请求（没有 Rust 时为 null），关菜单时以它完成。 */
-  request: number | null;
 }
+/** 标签栏里某个标签页的菜单。 */
+export interface TabMenuState extends MenuBase {
+  kind: "tab";
+  /** 窗口里还有别的标签页：“关闭其他标签页”可用。 */
+  canCloseOthers: boolean;
+  /** 它右边还有标签页：“关闭右侧标签页”可用。 */
+  canCloseRight: boolean;
+  /** 它有文件（不是“无标题”）：“打开文件所在位置”可用。 */
+  canReveal: boolean;
+}
+export type ContextMenuState = EditorMenuState | TabMenuState;
 
 /** 各标签页的编辑器（TabPane 登记），菜单的动作作用在打开菜单的那个标签页上。 */
 const editors = new Map<string, RefObject<DiaryEditorHandle | null>>();
@@ -75,14 +94,24 @@ export const isMenuKey = (event: KeyboardEvent) =>
   !event.metaKey &&
   (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey));
 
-/** 右键或菜单键落在哪：编辑区（自绘菜单）、输入框（WebView2 自带的菜单）、别处（不弹菜单）。 */
-function placeOf(target: EventTarget | null, tabs: Tabs): "editor" | "input" | "none" {
-  const element =
-    target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+const elementOf = (target: EventTarget | null) =>
+  target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+/** 右键落在标签栏的哪个标签页上（含它的 × 按钮）；不在标签页上为 undefined。 */
+const tabAt = (target: EventTarget | null) =>
+  elementOf(target)?.closest<HTMLElement>(".tabbar .tab[data-tab]")?.dataset.tab;
+
+/**
+ * 右键或菜单键落在哪：编辑区（自绘菜单）、标签栏的标签页（自绘的标签页菜单）、
+ * 输入框（WebView2 自带的菜单）、别处（不弹菜单）。
+ */
+function placeOf(target: EventTarget | null, tabs: Tabs): "editor" | "tab" | "input" | "none" {
+  const element = elementOf(target);
   if (!element) return "none";
   if (element.closest("input, textarea")) return "input";
   // 对话框开着时页面其余部分 inert（useDialogs），不弹菜单。
   if (document.querySelector("dialog[open]")) return "none";
+  // 标签栏里的标签页（标签之间与 + 按钮等空白处不算）。
+  if (tabAt(element) !== undefined) return "tab";
   const tab = tabs.activeTab()?.id;
   if (tab === undefined || !editorOf(tab)) return "none";
   // 当前标签页的编辑区：正文、图片、左栏、下方空白；查找条（输入框以外）不算。
@@ -97,7 +126,10 @@ function placeOf(target: EventTarget | null, tabs: Tabs): "editor" | "input" | "
  *   菜单请求由 Rust 挂起后发来 `context-menu-requested`（src-tauri/src/context_menu.rs），
  *   这时按刚才的 contextmenu 事件弹出菜单；“粘贴”交回 WebView2 执行（网页脚本粘贴不了），
  *   关菜单或选别的项时以“不选命令”完成请求。没有 Rust 时（浏览器测试）直接响应 contextmenu。
- * - 输入框里（查找条、设置）：WebView2 自带的菜单。其余地方（标题栏、工具栏、状态栏、
+ * - 标签栏的标签页上右键：标签页菜单（新建 / 关闭 / 关闭其他 / 关闭右侧 / 打开文件所在位置），
+ *   作用在右键的那个标签页上，不切换标签页；与编辑区菜单同样经 Rust 的请求弹出。标签页不可聚焦，
+ *   没有键盘打开的方式。
+ * - 输入框里（查找条、设置）：WebView2 自带的菜单。其余地方（标签栏空白、工具栏、状态栏、
  *   对话框……）：什么菜单也不弹。
  * - 用键盘打开时菜单在光标处，否则在指针处。
  */
@@ -114,6 +146,7 @@ export function useContextMenu(tabs: Tabs) {
     /** 刚才那个通过了的 contextmenu 事件，等 Rust 的请求来了按它弹菜单。 */
     let waiting:
       | { place: "editor"; x: number; y: number; keyboard: boolean }
+      | { place: "tab"; tab: string; x: number; y: number; keyboard: boolean }
       | { place: "input" }
       | null = null;
     /** 刚按过 Shift+F10 / 菜单键：接下来的 contextmenu 由键盘引起。 */
@@ -158,6 +191,7 @@ export function useContextMenu(tabs: Tabs) {
       }
       // 还开着的上一个菜单就此换掉（它挂起的请求已由 Rust 在新请求到来时了结）。
       show({
+        kind: "editor",
         serial: ++serial,
         x,
         y,
@@ -169,6 +203,30 @@ export function useContextMenu(tabs: Tabs) {
         canPaste,
         editable: view.editable,
         request,
+      });
+    }
+    /** 标签页 `at.tab` 的菜单（不切换标签页）。 */
+    function openTab(
+      at: { tab: string; x: number; y: number; keyboard: boolean },
+      request: number | null,
+    ) {
+      const list = tabs.getSnapshot().tabs;
+      const index = list.findIndex((tab) => tab.id === at.tab);
+      if (index < 0 || document.querySelector("dialog[open]")) {
+        if (request !== null) void contextMenuDismiss(request).catch(console.error);
+        return;
+      }
+      show({
+        kind: "tab",
+        serial: ++serial,
+        x: at.x,
+        y: at.y,
+        tab: at.tab,
+        keyboard: at.keyboard,
+        request,
+        canCloseOthers: list.length > 1,
+        canCloseRight: index < list.length - 1,
+        canReveal: list[index].session.getSnapshot().path !== null,
       });
     }
 
@@ -191,6 +249,15 @@ export function useContextMenu(tabs: Tabs) {
         return;
       }
       const at = { x: event.clientX, y: event.clientY, keyboard };
+      if (place === "tab") {
+        const tab = tabAt(event.target)!;
+        if (native) waiting = { place, tab, ...at };
+        else {
+          event.preventDefault();
+          openTab({ tab, ...at }, null);
+        }
+        return;
+      }
       if (native) waiting = { place, ...at };
       else {
         event.preventDefault();
@@ -233,6 +300,7 @@ export function useContextMenu(tabs: Tabs) {
           const at = waiting;
           waiting = null;
           if (at?.place === "editor") open(at, payload.canPaste, payload.id);
+          else if (at?.place === "tab") openTab(at, payload.id);
           else if (at?.place === "input") void contextMenuNative(payload.id).catch(console.error);
           else void contextMenuDismiss(payload.id).catch(console.error);
         })
@@ -271,6 +339,16 @@ export function useContextMenu(tabs: Tabs) {
     const finish = () => {
       if (open.request !== null) void contextMenuDismiss(open.request).catch(console.error);
     };
+    if (open.kind === "tab") {
+      finish();
+      // 关闭类走现有的关闭流程（有修改时照常询问）。
+      if (command === "newTab") void tabs.newTab();
+      else if (command === "closeTab") void tabs.closeTab(open.tab);
+      else if (command === "closeOthers") void tabs.closeTabs(open.tab, "others");
+      else if (command === "closeRight") void tabs.closeTabs(open.tab, "right");
+      else if (command === "reveal") void tabs.revealTab(open.tab);
+      return;
+    }
     const editor = editorOf(open.tab);
     if (!editor) return finish();
     const { view } = editor;
@@ -301,7 +379,7 @@ export function useContextMenu(tabs: Tabs) {
     // Delete 键：选中的图片 / 块间范围走图片的删除规则，文字选区照常删除。
     else if (command === "delete")
       removeNear(1)(view.state, view.dispatch, view) || editor.commands.deleteSelection();
-  }, []);
+  }, [tabs]);
 
   return { menu, close, run };
 }

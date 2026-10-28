@@ -1,4 +1,4 @@
-//! 编辑区的右键菜单（照 Win11 记事本）由前端自己画（components/ContextMenu.tsx），
+//! 编辑区与标签页的右键菜单（照 Win11 记事本）由前端自己画（components/ContextMenu.tsx），
 //! 这里接管 WebView2 的 `ContextMenuRequested`，不让它弹出自带的菜单。
 //!
 //! 网页脚本粘贴不了（`execCommand("paste")` 无效，`navigator.clipboard` 读不到文件与

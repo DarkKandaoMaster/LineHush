@@ -21,10 +21,16 @@ export interface DesktopOptions {
    * default) rejects, so tiles show their placeholder at the picture's size.
    */
   images?: "png" | "fail";
+  /**
+   * restore_window 交出的标签页（代替只有一个无标题 t1）：各自的 id 与文件路径（null 为无标题），
+   * 正文为一个空行；当前标签页为第一个。
+   */
+  tabs?: { id: string; path: string | null }[];
 }
 
 /**
- * The desktop app's native side: one window win-1 with one untitled tab t1.
+ * The desktop app's native side: one window win-1 with one untitled tab t1
+ * (or `options.tabs`); new_tab hands out untitled tabs n1, n2, ….
  * Every call is recorded in `window.testNative.calls` (see `calls`); `close`
  * emits close-requested as Tauri does, `destroy` sets `destroyed`.
  */
@@ -37,6 +43,13 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       listeners: new Map<string, number[]>(),
       destroyed: false,
       settings: options.settings ?? {},
+      newTabs: 0,
+    });
+    const opened = (path: string | null, blocks?: Block[]) => ({
+      document: { blocks: blocks ?? [{ type: "line", text: "" }] },
+      path,
+      recovered: false,
+      notice: null,
     });
     const emit = (event: string, payload: unknown) => {
       for (const id of state.listeners.get(event) ?? [])
@@ -58,22 +71,19 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       invoke: async (cmd: string, args: any) => {
         state.calls.push({ cmd, args });
         switch (cmd) {
-          case "restore_window":
+          case "restore_window": {
+            const tabs = options.tabs ?? [{ id: "t1", path: null }];
             return {
-              tabs: [
-                {
-                  tab: "t1",
-                  opened: {
-                    document: { blocks: options.blocks ?? [{ type: "line", text: "" }] },
-                    path: null,
-                    recovered: false,
-                    notice: null,
-                  },
-                  error: null,
-                },
-              ],
-              active: "t1",
+              tabs: tabs.map((tab, i) => ({
+                tab: tab.id,
+                opened: opened(tab.path, i === 0 ? options.blocks : undefined),
+                error: null,
+              })),
+              active: tabs[0].id,
             };
+          }
+          case "new_tab":
+            return { tab: `n${++state.newTabs}`, opened: opened(null), error: null };
           case "read_settings":
             return state.settings;
           case "write_settings":
@@ -85,6 +95,10 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
             return true;
           case "paste_images":
             return [];
+          // 路径里带“已删除”的文件当作不存在（Rust 的中文原因）。
+          case "reveal_in_explorer":
+            if (String(args.path).includes("已删除")) throw `文件不存在：${args.path}`;
+            return;
           case "read_image": {
             if (options.images !== "png") throw "测试：没有缩略图";
             // A real picture: the preview grows once the original has loaded.
