@@ -1023,8 +1023,9 @@ pub fn run() {
                 HashSet::new()
             };
             // “启动时”为“打开新窗口”（默认）时像记事本：一个新窗口、一个新的无标题
-            // 标签页，只有程序意外退出时留下的未保存修改回到这个窗口；为“打开上一
-            // 会话中的内容”时重开上次的全部窗口与标签页（见 Session::plan_launch）。
+            // 标签页；程序意外退出时留下的未保存修改则按原窗口分组恢复（原来几个窗口
+            // 就开几个）；为“打开上一会话中的内容”时重开上次的全部窗口与标签页
+            // （见 Session::plan_launch）。
             let mut session = Session::load(root);
             let plan = session.plan_launch(preferences.startup, preferences.open_file, launch);
             save_session(&session);

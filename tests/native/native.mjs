@@ -874,35 +874,51 @@ async function crashTabsCase() {
   await stashed(changed, (doc) => lines(doc)[0] === "乙原文改乙");
   await stashed(draft, (doc) => lines(doc)[0] === "二");
   await stashed(other, (doc) => lines(doc)[0] === "三");
+  // win-2 was used last; both windows keep tabs with unsaved changes.
+  await expect.poll(() => sessionData().focused).toBe("win-2");
+  const focusedBefore = sessionData().focused;
   const saved = await fingerprint(file);
   await kill();
   expect(await fingerprint(file)).toEqual(saved);
   const again = await start();
-  await expect
-    .poll(() => tabNames(again))
-    .toEqual(["● 乙.hush", "● 无标题", "● 无标题 2"]);
-  expect(await windowCount()).toBe(1);
+  const second2 = await pageOf("win-2");
+  await expect.poll(() => tabNames(again)).toEqual(["● 乙.hush", "● 无标题"]);
+  await expect.poll(() => tabNames(second2)).toEqual(["● 无标题"]);
+  expect(await windowCount()).toBe(2);
   expect(await activeName(again)).toBe("● 乙.hush");
   await expect(editor(again)).toHaveText("乙原文改乙");
   await expect(pane(again).getByText("已恢复未保存的修改。")).toBeVisible();
   await dirty(again, true);
+  await expect(editor(second2)).toHaveText("三");
+  await expect(pane(second2).getByText("已恢复未保存的修改。")).toBeVisible();
+  await dirty(second2, true);
+  // The window that had the focus gets it back.
+  await expect.poll(() => sessionData().focused).toBe(focusedBefore);
+  await expect
+    .poll(() =>
+      call(second2, "plugin:window|is_focused", { label: focusedBefore }),
+    )
+    .toBe(true);
+  await editor(again).click();
   await again.keyboard.press("Control+2");
   await expect(editor(again)).toHaveText("二");
-  await again.keyboard.press("Control+3");
-  await expect(editor(again)).toHaveText("三");
+  await expect.poll(() => activeId()).toBe(draft);
   const session = sessionData();
-  expect(session.windows.map((w) => w.label)).toEqual(["win-1"]);
-  expect(tabIds()).toEqual([changed, draft, other]);
+  expect(session.windows.map((w) => w.label)).toEqual(["win-1", "win-2"]);
+  expect(tabIds()).toEqual([changed, draft]);
+  expect(tabIds("win-2")).toEqual([other]);
   expect(await tabFiles()).toEqual(
     [changed, draft, other].map((id) => `${id}.hush`).sort(),
   );
   expect(existsSync(workOf(untouched))).toBe(false);
   expect(await fingerprint(file)).toEqual(saved);
-  passed("崩溃后多个标签页恢复到一个窗口");
+  passed("崩溃后多个标签页按原窗口恢复成多个窗口");
+  await requestClose(second2);
+  await answer(second2, "无标题", "不保存");
+  await expect.poll(() => windowCount()).toBe(1);
   await requestClose(again);
   await answer(again, "乙.hush", "不保存");
   await answer(again, "无标题", "不保存");
-  await answer(again, "无标题 2", "不保存");
   await exited();
   expect(await fingerprint(file)).toEqual(saved);
   expect(await tabFiles()).toEqual([]);
@@ -1890,7 +1906,7 @@ async function exportCase() {
     await page.getByText("导出", { exact: true }).click();
     await page.getByRole("button", { name: item, exact: true }).click();
     const suggested = await answerSaveDialog(target, {
-      title: "导出日记",
+      title: "导出笔记",
       replace,
     });
     // 导出期间文件按钮不可用，结束后恢复。

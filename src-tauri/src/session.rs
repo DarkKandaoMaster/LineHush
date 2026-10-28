@@ -263,9 +263,11 @@ impl Session {
         (left, changed)
     }
     /// 启动时决定开哪些窗口（结果尚未写回，由调用方 `save()`）：
-    /// - “打开新窗口”，或会话中没有窗口：一个新窗口，标签页是程序意外退出时
-    ///   留下的未保存修改（`leftover_tabs`），没有就是一个新的空标签页；启动参数里的
-    ///   文件交给这个窗口，按“打开”的规则处理。
+    /// - “打开新窗口”，或会话中没有窗口：只恢复程序意外退出时留下的未保存修改
+    ///   （`leftover_tabs`），按原窗口分组，原来几个窗口就开几个窗口（沿用原标签，
+    ///   窗口内顺序与当前标签页不变，没有残留的窗口不开）；原焦点窗口有残留则聚焦它，
+    ///   否则第一个窗口。一个残留都没有时开一个窗口、一个新的空标签页。启动参数里的
+    ///   文件交给焦点窗口，按“打开”的规则处理。
     /// - “打开上一会话中的内容”：会话中的窗口按顺序全部重开，标签页与当前标签页
     ///   不变（各窗口载入时有暂存接上暂存，否则重新打开文件，见 `Store::load`），
     ///   焦点回到上次最后使用的窗口。启动参数里的文件已在某个标签页
@@ -278,27 +280,41 @@ impl Session {
         launch: Option<PathBuf>,
     ) -> Launch {
         if startup == Startup::NewWindow || self.data.windows.is_empty() {
-            let leftovers = self.leftover_tabs();
-            let label = self.new_label(&[]);
-            let tabs = if leftovers.is_empty() {
-                vec![TabEntry {
-                    id: self.new_id(),
-                    path: None,
-                }]
-            } else {
-                leftovers
-            };
-            let first = tabs[0].id.clone();
-            self.add_window(&label);
-            for tab in tabs {
-                self.add_tab(&label, tab, None);
+            let focused = self.data.focused.clone();
+            let mut groups = self.leftover_tabs();
+            // 原来的焦点窗口有残留就聚焦它，否则第一个恢复的窗口。
+            let focus_index = groups
+                .iter()
+                .position(|w| focused.as_deref() == Some(w.label.as_str()))
+                .unwrap_or(0);
+            if groups.is_empty() {
+                let id = self.new_id();
+                groups.push(WindowEntry {
+                    label: self.new_label(&[]),
+                    active: Some(id.clone()),
+                    tabs: vec![TabEntry { id, path: None }],
+                });
             }
-            self.set_active(&label, &first);
-            self.set_focused(&label);
+            let mut windows = Vec::with_capacity(groups.len());
+            for group in groups {
+                // 沿用原窗口的标签：window-state 按标签记大小与位置，恢复的窗口回到原位。
+                // 会话中的窗口已全部移除，不会冲突。
+                let label = group.label;
+                self.add_window(&label);
+                for tab in group.tabs {
+                    self.add_tab(&label, tab, None);
+                }
+                if let Some(active) = group.active {
+                    self.set_active(&label, &active);
+                }
+                windows.push(label);
+            }
+            let focus = windows[focus_index].clone();
+            self.set_focused(&focus);
             return Launch {
-                windows: vec![label.clone()],
-                request: launch.map(|path| (label.clone(), path)),
-                focus: label,
+                windows,
+                request: launch.map(|path| (focus.clone(), path)),
+                focus,
             };
         }
         let mut windows: Vec<String> = self.data.windows.iter().map(|w| w.label.clone()).collect();
@@ -329,21 +345,38 @@ impl Session {
             request,
         }
     }
-    /// 启动时（“打开新窗口”）：所有窗口从会话中移除，只留下工作副本里有未保存
-    /// 修改的标签页（`Store::has_stash`），按原窗口顺序返回；其余标签页的工作副本删除。
-    pub fn leftover_tabs(&mut self) -> Vec<TabEntry> {
+    /// 启动时（“打开新窗口”）：所有窗口与焦点记录从会话中移除，只留下工作副本里
+    /// 有未保存修改的标签页（`Store::has_stash`），其余标签页的工作副本删除。
+    /// 按原窗口分组返回（窗口顺序、窗口内标签页顺序不变，`label` 为原标签）；
+    /// 没有残留的窗口不返回。`active` 为原当前标签页（若保留），否则该窗口第一个保留的标签页。
+    pub fn leftover_tabs(&mut self) -> Vec<WindowEntry> {
         let windows = std::mem::take(&mut self.data.windows);
         self.data.focused = None;
-        let mut kept = Vec::new();
-        for tab in windows.into_iter().flat_map(|w| w.tabs) {
-            let work = self.work_file(&tab.id);
-            if Store::has_stash(&work, tab.path.is_some()) {
-                kept.push(tab);
-            } else if let Err(e) = remove_if_exists(&work) {
-                eprintln!("{e}");
+        let mut groups = Vec::new();
+        for window in windows {
+            let mut kept = Vec::new();
+            for tab in window.tabs {
+                let work = self.work_file(&tab.id);
+                if Store::has_stash(&work, tab.path.is_some()) {
+                    kept.push(tab);
+                } else if let Err(e) = remove_if_exists(&work) {
+                    eprintln!("{e}");
+                }
             }
+            let Some(first) = kept.first() else {
+                continue;
+            };
+            let active = window
+                .active
+                .filter(|id| kept.iter().any(|t| t.id == *id))
+                .unwrap_or_else(|| first.id.clone());
+            groups.push(WindowEntry {
+                label: window.label,
+                active: Some(active),
+                tabs: kept,
+            });
         }
-        kept
+        groups
     }
 }
 
@@ -540,8 +573,25 @@ mod tests {
         // bbbb 有工作副本但没有暂存，dddd 连工作副本都没有。
         Store::create(session.work_file("bbbb")).unwrap();
         stashed_copy(&session.work_file("cccc"), "草稿");
+        session.set_active("win-1", "bbbb");
+        session.set_active("win-2", "cccc");
         let left = session.leftover_tabs();
-        assert_eq!(left, vec![tab("aaaa", Some("a.hush")), tab("cccc", None)]);
+        // 按原窗口分组；原当前标签页没保留时改为该窗口第一个保留的。
+        assert_eq!(
+            left,
+            vec![
+                WindowEntry {
+                    label: "win-1".into(),
+                    active: Some("aaaa".into()),
+                    tabs: vec![tab("aaaa", Some("a.hush"))],
+                },
+                WindowEntry {
+                    label: "win-2".into(),
+                    active: Some("cccc".into()),
+                    tabs: vec![tab("cccc", None)],
+                },
+            ]
+        );
         assert!(session.window("win-1").is_none() && session.window("win-2").is_none());
         assert_eq!(session.focused(), None);
         assert!(!session.work_file("bbbb").exists());
@@ -559,7 +609,8 @@ mod tests {
         stashed_copy(&session.work_file("aaaa"), "");
         stashed_copy(&session.work_file("bbbb"), "");
         let left = session.leftover_tabs();
-        assert_eq!(left, vec![tab("bbbb", Some("b.hush"))]);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].tabs, vec![tab("bbbb", Some("b.hush"))]);
         assert!(!session.work_file("aaaa").exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -584,27 +635,78 @@ mod tests {
             OpenFile::Window,
             Some(PathBuf::from("e.hush")),
         );
+        // 两个窗口各有残留：恢复成两个窗口（沿用原标签），原焦点窗口仍获得焦点，
+        // 启动参数里的文件交给它。
+        assert_eq!(
+            launch,
+            Launch {
+                windows: vec!["win-1".into(), "win-3".into()],
+                focus: "win-3".into(),
+                request: Some(("win-3".into(), PathBuf::from("e.hush"))),
+            }
+        );
+        assert_eq!(ids(&session, "win-1"), ["bbbb"]);
+        assert_eq!(session.window("win-1").unwrap().active.as_deref(), Some("bbbb"));
+        assert_eq!(ids(&session, "win-3"), ["dddd"]);
+        assert_eq!(session.window("win-3").unwrap().active.as_deref(), Some("dddd"));
+        assert!(session.window("win-2").is_none());
+        assert_eq!(session.focused(), Some("win-3"));
+        assert!(!session.work_file("aaaa").exists() && !session.work_file("cccc").exists());
+
+        // 没有残留：一个窗口、一个新的空标签页。
+        let mut session = Session::load(root.clone());
+        let launch = session.plan_launch(Startup::NewWindow, OpenFile::Tab, None);
         assert_eq!(
             launch,
             Launch {
                 windows: vec!["win-1".into()],
                 focus: "win-1".into(),
-                request: Some(("win-1".into(), PathBuf::from("e.hush"))),
+                request: None,
             }
         );
-        assert_eq!(ids(&session, "win-1"), ["bbbb", "dddd"]);
-        assert_eq!(session.window("win-1").unwrap().active.as_deref(), Some("bbbb"));
-        assert!(session.window("win-3").is_none());
-        assert_eq!(session.focused(), Some("win-1"));
-        assert!(!session.work_file("aaaa").exists() && !session.work_file("cccc").exists());
-
-        // 没有残留：一个新的空标签页。
-        let mut session = Session::load(root.clone());
-        let launch = session.plan_launch(Startup::NewWindow, OpenFile::Tab, None);
-        assert_eq!((launch.windows, launch.request), (vec!["win-1".to_string()], None));
         let tabs = session.window_tabs("win-1");
         assert_eq!(tabs.len(), 1);
         assert_eq!(tabs[0].path, None);
+        assert_eq!(session.window("win-1").unwrap().active, Some(tabs[0].id.clone()));
+        assert_eq!(session.focused(), Some("win-1"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn new_window_launch_keeps_leftovers_of_one_window_together() {
+        // 一个窗口有两个残留标签页，另一个窗口（原焦点）没有残留：只恢复一个窗口、两个标签页。
+        let root = temp("launch-group");
+        let mut session = Session::load(root.clone());
+        session.add_tab("win-1", tab("aaaa", None), None);
+        session.add_tab("win-2", tab("bbbb", None), None);
+        session.add_tab("win-2", tab("cccc", Some("c.hush")), None);
+        session.add_tab("win-2", tab("dddd", None), None);
+        session.set_active("win-2", "cccc");
+        session.set_focused("win-1");
+        Store::create(session.work_file("aaaa")).unwrap();
+        stashed_copy(&session.work_file("bbbb"), "草稿");
+        Store::create(session.work_file("cccc")).unwrap();
+        stashed_copy(&session.work_file("dddd"), "改过");
+        let launch = session.plan_launch(
+            Startup::NewWindow,
+            OpenFile::Tab,
+            Some(PathBuf::from("e.hush")),
+        );
+        // 沿用原标签 win-2；原焦点 win-1 没有残留，焦点给第一个恢复的窗口。
+        assert_eq!(
+            launch,
+            Launch {
+                windows: vec!["win-2".into()],
+                focus: "win-2".into(),
+                request: Some(("win-2".into(), PathBuf::from("e.hush"))),
+            }
+        );
+        assert_eq!(ids(&session, "win-2"), ["bbbb", "dddd"]);
+        // 原当前标签页 cccc 没保留：当前改为第一个保留的。
+        assert_eq!(session.window("win-2").unwrap().active.as_deref(), Some("bbbb"));
+        assert!(session.window("win-1").is_none());
+        assert_eq!(session.focused(), Some("win-2"));
+        assert!(!session.work_file("aaaa").exists() && !session.work_file("cccc").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
