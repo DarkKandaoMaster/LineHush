@@ -1066,6 +1066,25 @@ function setCaretSpot(view: EditorView, spot: Spot) {
 }
 
 /**
+ * Below the last block, a text line (the editor's bottom padding, also out of
+ * the window below it): its end. A press there is at the document's end
+ * whatever its x, as in Notepad and VS Code; left to the browser it would put
+ * the caret in the last line under the pointer. Below a final image
+ * `spotBeside` already gives the end. Not for PageUp / PageDown (reveal.ts),
+ * which go to the end past the last block themselves. The left margin is
+ * margin.ts's: presses there never reach the editor. While an input method
+ * composes, the browser's own placing stays.
+ */
+function belowLastLine(view: EditorView, y: number): Spot | null {
+  const { doc } = view.state;
+  const last = doc.lastChild;
+  if (!last || isImage(last) || view.composing) return null;
+  const dom = view.nodeDOM(doc.content.size - last.nodeSize) as HTMLElement | null;
+  if (!dom || !(y > dom.getBoundingClientRect().bottom)) return null;
+  return { pos: doc.content.size - 1, side: -1 };
+}
+
+/**
  * A click on an image puts the caret before or after it (by the half clicked)
  * instead of selecting it. The node stays selectable, which ProseMirror needs
  * to drag it.
@@ -1101,7 +1120,8 @@ function rightInSelection(
 const ROW_REACH = 12;
 
 /**
- * A click beside images rather than on one. Level with a row of images (in a
+ * A click beside images rather than on one, or below the last text line (to
+ * its end, `belowLastLine`). Level with a row of images (in a
  * gap, or the empty space left / right of the row) the caret goes to the near
  * side of the nearest image in that row; below a final image (above a first
  * one), to the document's end (start). Between rows (the spacer of a line
@@ -1119,7 +1139,16 @@ function clickBesideImages(view: EditorView, event: MouseEvent) {
     event.target as Element | null,
   );
   if (spot && rightInSelection(view, event, spot.pos, spot.pos)) return true;
-  return spot !== null && setCaretSpot(view, spot);
+  if (spot) return setCaretSpot(view, spot);
+  const end = belowLastLine(view, event.clientY);
+  if (!end) return false;
+  if (rightInSelection(view, event, end.pos, end.pos)) return true;
+  view.dispatch(
+    view.state.tr
+      .setSelection(TextSelection.create(view.state.doc, end.pos))
+      .setMeta("pointer", true),
+  );
+  return true;
 }
 
 /**
@@ -1244,9 +1273,16 @@ interface DragSelection {
    * Pressed beside images (see `spotBeside`): the anchor, as for a click
    * there. The browser's own anchor is its canonical position, which skips
    * over a non-editable image: pressed before a row's first image it is after
-   * that image.
+   * that image. Pressed below the last text line: its end (`belowLastLine`),
+   * where the browser's anchor would be in the line under the pointer.
    */
   anchor?: number;
+  /**
+   * The press was the second or third of a double / triple click: the browser
+   * selects words / lines from the point pressed, and the pointer below the
+   * last text line is not taken as the document's end (`belowLastLine`).
+   */
+  words?: boolean;
   /** The animation frame that draws the DOM selection (`drawDragSelection`). */
   frame: number;
   /** The DOM selection is the one drawn here, not the browser's. */
@@ -1297,10 +1333,19 @@ function dragBeside(view: EditorView, x: number, y: number): Spot | null {
 export const pointSpot = (view: EditorView, x: number, y: number) =>
   overImage(view, x, y) ?? dragBeside(view, x, y);
 
-/** During a drag selection, the end set by the pointer on or beside images, if it is there. */
+/**
+ * During a drag selection, the end set by the pointer on or beside images, or
+ * below the last text line (its end, `belowLastLine`; not after a double /
+ * triple click), if it is there.
+ */
 function dragHead(view: EditorView): Spot | null {
-  const pointer = drags.get(view)?.pointer;
-  return pointer ? pointSpot(view, pointer.x, pointer.y) : null;
+  const drag = drags.get(view);
+  const pointer = drag?.pointer;
+  if (!pointer) return null;
+  return (
+    pointSpot(view, pointer.x, pointer.y) ??
+    (drag.words ? null : belowLastLine(view, pointer.y))
+  );
 }
 
 /**
@@ -1376,16 +1421,19 @@ export function dragPress(view: EditorView, event: MouseEvent) {
   }
   pressOffSelection(view, event);
   drag.pointer = { x: event.clientX, y: event.clientY };
+  drag.words = event.detail > 1;
   // Shift extends the selection from its anchor; a double click selects words.
   drag.anchor =
     event.shiftKey || event.detail > 1
       ? undefined
-      : dragBeside(view, event.clientX, event.clientY)?.pos;
+      : (dragBeside(view, event.clientX, event.clientY) ??
+          belowLastLine(view, event.clientY))?.pos;
 }
 
 const endDrag = (drag: DragSelection) => {
   drag.pointer = null;
   drag.anchor = undefined;
+  drag.words = false;
   drag.drawn = false;
   drag.held = undefined;
 };
@@ -1464,6 +1512,11 @@ export function dragRelease(view: EditorView, destroyed = false) {
   const drag = drags.get(view);
   if (!drag) return;
   const { held } = drag;
+  // A selection change of this press the browser has not reported yet (its
+  // selectionchange can come after the release, a Shift+click's often does)
+  // is read while the press still decides its ends (createSelectionBetween).
+  if (drag.pointer && !destroyed)
+    (view as unknown as { domObserver?: { flush(): void } }).domObserver?.flush();
   endDrag(drag);
   if (held && !destroyed) clickOnSelection(view, held);
   if (!destroyed) return;
@@ -1591,10 +1644,16 @@ export function imagePlugin(
             1,
             head.side,
           );
-        const sel = selectionBetween(
-          anchor === undefined ? $anchor : view.state.doc.resolve(anchor),
-          $head,
-        );
+        // Pressed below the last text line, both ends in text: the browser's
+        // anchor is in the line under the press, the drag's is the line's end.
+        const sel =
+          selectionBetween(
+            anchor === undefined ? $anchor : view.state.doc.resolve(anchor),
+            $head,
+          ) ??
+          (anchor !== undefined && $head.parent.inlineContent
+            ? rangeSelection(view.state.doc, anchor, $head.pos)
+            : null);
         // The DOM cannot tell the two sides of a line break between rows
         // apart: the caret keeps the side it is on.
         const current = view.state.selection;
