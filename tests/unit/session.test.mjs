@@ -16,6 +16,7 @@ function setup({
   notice = null,
   answers = [],
   name = "测试.hush",
+  fileNameMode = "date",
 } = {}) {
   globalThis.window = {};
   const fake = {
@@ -42,6 +43,7 @@ function setup({
     }
     if (cmd === "save_as")
       return { document: args.document, path: args.path, recovered: false };
+    if (cmd === "suggest_save_path") return `D:/笔记/${args.base}.hush`;
   });
   mockWindows("win-1");
   const session = createSession(
@@ -51,6 +53,7 @@ function setup({
       return answers.shift();
     },
     () => name,
+    () => fileNameMode,
   );
   session.adopt({ document: fromText("旧日记\n\n"), path, recovered, notice });
   return { session, fake, state: () => session.getSnapshot() };
@@ -208,7 +211,12 @@ test("未命名文档保存走另存为（默认文件名为日期），取消�
     assert.equal(state().saveFailed, false);
     session.update(fromText("草稿"));
     await session.saveDocument(); // dialog cancelled
-    assert.match(fake.dialog.defaultPath, /^\d{4}-\d{2}-\d{2}\.hush$/);
+    // Rust picks the folder and a free name (suggest_save_path) for the date.
+    const [base] = fake.args
+      .filter(([cmd]) => cmd === "suggest_save_path")
+      .map(([, args]) => args.base);
+    assert.match(base, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(fake.dialog.defaultPath, `D:/笔记/${base}.hush`);
     assert.equal(state().dirty, true);
     assert.equal(state().path, null);
     fake.savePath = "D:/新文件.hush";
@@ -217,6 +225,34 @@ test("未命名文档保存走另存为（默认文件名为日期），取消�
     assert.equal(state().path, "D:/新文件.hush");
     assert.ok(!fake.calls.includes("save_document"));
     assert.equal(fake.calls.filter((cmd) => cmd === "save_as").length, 1);
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("默认文件名为首行文字：取第一行有字的文字，没有时退回日期；已命名的另存为不问 Rust", async () => {
+  const { session, fake } = setup({ path: null, fileNameMode: "firstLine" });
+  const bases = () =>
+    fake.args
+      .filter(([cmd]) => cmd === "suggest_save_path")
+      .map(([, args]) => args.base);
+  try {
+    session.update(fromText("\n  \n  十月: 一日 \n第二行"));
+    await session.saveDocument(); // dialog cancelled
+    assert.deepEqual(bases(), ["十月 一日"]);
+    assert.equal(fake.dialog.defaultPath, "D:/笔记/十月 一日.hush");
+    session.update(fromText("  \n"));
+    await session.saveDocumentAs();
+    assert.match(bases()[1], /^\d{4}-\d{2}-\d{2}$/);
+    fake.savePath = "D:/笔记/十月 一日.hush";
+    session.update(fromText("十月"));
+    await session.saveDocument();
+    assert.equal(bases().length, 3);
+    // A named document's Save As starts at its own path.
+    fake.savePath = null;
+    await session.saveDocumentAs();
+    assert.equal(bases().length, 3);
+    assert.equal(fake.dialog.defaultPath, "D:/笔记/十月 一日.hush");
   } finally {
     await teardown(session);
   }

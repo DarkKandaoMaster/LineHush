@@ -10,6 +10,8 @@ import {
   fileName,
   exportFile,
   exportImages,
+  firstLineName,
+  suggestedName,
 } from "../../src/core/document.ts";
 
 const idA = "a".repeat(12) + "0".repeat(52);
@@ -234,4 +236,49 @@ test("文件名只取路径最后一段，无路径时为“无标题”并按�
   assert.equal(fileName(null, 1), "无标题");
   assert.equal(fileName(null, 2), "无标题 2");
   assert.equal(fileName(null, 12), "无标题 12");
+});
+
+test("首行文件名：跳过图片与空白行，去掉非法与控制字符，压缩空白，去掉末尾点与空格", () => {
+  const pic = { id: idA, name: "图.png", width: 20, height: 10 };
+  const name = (...blocks) =>
+    firstLineName({
+      blocks: blocks.map((b) =>
+        typeof b === "string" ? { type: "line", text: b } : b,
+      ),
+    });
+  assert.equal(name(""), "");
+  assert.equal(name("", " \t ", "\u3000"), "");
+  assert.equal(name({ type: "images", images: [pic] }), "");
+  assert.equal(name("", { type: "images", images: [pic] }, "  十月 一日  ", "第二行"), "十月 一日");
+  assert.equal(name('a\\b/c:d*e?f"g<h>i|j'), "abcdefghij");
+  assert.equal(name("a\u0001b\u007fc\u0085d"), "abcd");
+  assert.equal(name("a\t\tb   c\u3000\u3000d"), "a b c d");
+  assert.equal(name("a : b"), "a b");
+  assert.equal(name("结尾. . ."), "结尾");
+  assert.equal(name("version 1.0..."), "version 1.0");
+  assert.equal(name("...前导点保留"), "...前导点保留");
+  // 只剩非法字符：为空（调用方退回日期），不往下找。
+  assert.equal(name("???", "第二行"), "");
+});
+
+test("首行文件名最多 30 个码点，不截断代理对，截断后再去末尾空格", () => {
+  const line = (text) => firstLineName({ blocks: [{ type: "line", text }] });
+  assert.equal(line("一".repeat(40)), "一".repeat(30));
+  // 😀 是代理对：按码点数，不留半个。
+  const emoji = "😀".repeat(31);
+  assert.equal(line(emoji), "😀".repeat(30));
+  assert.equal(Array.from(line("a😀".repeat(20))).length, 30);
+  assert.ok(!/[\uD800-\uDBFF]$/.test(line("a" + "😀".repeat(40))));
+  assert.equal(line("a".repeat(29) + " b"), "a".repeat(29));
+  assert.equal(line("a".repeat(29) + ".b"), "a".repeat(29));
+});
+
+test("建议文件名：日期为 YYYY-MM-DD，首行文字为空时退回日期", () => {
+  const now = new Date(2026, 9, 8, 23, 59);
+  const doc = fromText("\n今天 / 下雨\n");
+  assert.equal(suggestedName(doc, "date", now), "2026-10-08");
+  assert.equal(suggestedName(doc, "firstLine", now), "今天 下雨");
+  assert.equal(suggestedName(fromText("\n\n"), "firstLine", now), "2026-10-08");
+  assert.equal(suggestedName(fromText("<>"), "firstLine", now), "2026-10-08");
+  assert.match(suggestedName(doc, "date"), /^\d{4}-\d{2}-\d{2}$/);
 });

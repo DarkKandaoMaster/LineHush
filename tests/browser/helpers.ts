@@ -95,6 +95,9 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
             return true;
           case "paste_images":
             return [];
+          // 无标题笔记保存对话框的默认路径：没有文件夹，名字原样。
+          case "suggest_save_path":
+            return `${args.base}.hush`;
           // 路径里带“已删除”的文件当作不存在（Rust 的中文原因）。
           case "reveal_in_explorer":
             if (String(args.path).includes("已删除")) throw `文件不存在：${args.path}`;

@@ -46,6 +46,10 @@ struct Data {
     focused: Option<String>,
     #[serde(default)]
     windows: Vec<WindowEntry>,
+    /// 最近打开或另存为的文件所在的文件夹（无 `\\?\` 前缀），无标题笔记的保存对话框从这里开始。
+    /// 旧的 session.json 没有这一项。
+    #[serde(default, rename = "lastDir", skip_serializing_if = "Option::is_none")]
+    last_dir: Option<PathBuf>,
 }
 /// 启动时要做的事（`Session::plan_launch` 的结果）。
 #[derive(Debug, PartialEq)]
@@ -90,6 +94,7 @@ impl Session {
             version: VERSION,
             focused: self.data.focused.clone(),
             windows: self.data.windows.clone(),
+            last_dir: self.data.last_dir.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?;
         let path = self.root.join(SESSION_FILE);
@@ -243,6 +248,22 @@ impl Session {
     }
     pub fn focused(&self) -> Option<&str> {
         self.data.focused.as_deref()
+    }
+    /// 记下 `file`（刚打开或另存为的文件）所在的文件夹；有变化时返回 true。
+    pub fn set_last_dir(&mut self, file: &Path) -> bool {
+        let Some(dir) = file.parent().filter(|dir| !dir.as_os_str().is_empty()) else {
+            return false;
+        };
+        let dir = PathBuf::from(shown(dir));
+        if self.data.last_dir.as_ref() == Some(&dir) {
+            return false;
+        }
+        self.data.last_dir = Some(dir);
+        true
+    }
+    /// 最近打开或另存为的文件所在的文件夹（可能已不存在）。
+    pub fn last_dir(&self) -> Option<&Path> {
+        self.data.last_dir.as_deref()
     }
     /// 打开着 `path` 的标签页：`(窗口, 标签页)`。
     pub fn find_path(&self, path: &Path) -> Option<(String, String)> {
@@ -443,6 +464,35 @@ mod tests {
             Some(("win-1".into(), "a".into()))
         );
         assert_eq!(loaded.find_path(Path::new(r"D:\日记\b.hush")), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn last_dir_is_saved_and_old_files_read_without_it() {
+        let root = temp("last-dir");
+        // 旧的 session.json 没有 lastDir：照样读出窗口，lastDir 为空，写回时也不写这一项。
+        fs::write(
+            root.join(SESSION_FILE),
+            r#"{"version":1,"focused":"win-1","windows":[{"label":"win-1","active":null,"tabs":[]}]}"#,
+        )
+        .unwrap();
+        let mut session = Session::load(root.clone());
+        assert!(session.window("win-1").is_some());
+        assert_eq!(session.last_dir(), None);
+        session.save().unwrap();
+        assert!(!fs::read_to_string(root.join(SESSION_FILE)).unwrap().contains("lastDir"));
+
+        // 记文件所在的文件夹，去掉 canonicalize 加的 `\\?\`；没有文件夹的路径不记。
+        assert!(!session.set_last_dir(Path::new("a.hush")));
+        assert!(session.set_last_dir(Path::new(r"\\?\D:\日记\甲.hush")));
+        assert_eq!(session.last_dir(), Some(Path::new(r"D:\日记")));
+        assert!(!session.set_last_dir(Path::new(r"D:\日记\乙.hush")));
+        session.save().unwrap();
+        let text = fs::read_to_string(root.join(SESSION_FILE)).unwrap();
+        assert!(text.contains("\"lastDir\""));
+        let loaded = Session::load(root.clone());
+        assert_eq!(loaded.last_dir(), Some(Path::new(r"D:\日记")));
+        assert_eq!(loaded.focused(), Some("win-1"));
         fs::remove_dir_all(root).unwrap();
     }
 

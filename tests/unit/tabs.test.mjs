@@ -88,6 +88,7 @@ function setup({
     }
     if (cmd === "plugin:dialog|open") return fake.openPath;
     if (cmd === "plugin:dialog|save") return fake.savePath ?? null;
+    if (cmd === "suggest_save_path") return `${args.base}.hush`;
     if (cmd === "save_as")
       return { document: args.document, path: args.path, recovered: false };
   }, { shouldMockEvents: true });

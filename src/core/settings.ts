@@ -38,6 +38,13 @@ export interface Settings {
    * 都包含行尾的换行；见 src/editor/margin.ts。
    */
   marginSelection: MarginSelection;
+  /**
+   * 默认文件名：无标题笔记第一次保存（及另存为）时保存对话框里预填的名字。“日期”为
+   * YYYY-MM-DD，“首行文字”取正文第一行有字的文字（去掉文件名不允许的字符，最多 30 个字，
+   * 为空时退回日期）；见 src/core/document.ts 的 `suggestedName`。名字已被占用时由 Rust
+   * 加 “ (2)”“ (3)”…（`suggest_save_path`）。
+   */
+  defaultFileName: DefaultFileName;
 }
 export type CaretWidth = "thin" | "medium" | "thick";
 const CARET_WIDTH_VALUES: readonly CaretWidth[] = ["thin", "medium", "thick"];
@@ -45,6 +52,8 @@ export type SelectionCorners = "square" | "rounded";
 const SELECTION_CORNERS_VALUES: readonly SelectionCorners[] = ["square", "rounded"];
 export type MarginSelection = "line" | "visualLine";
 const MARGIN_SELECTION_VALUES: readonly MarginSelection[] = ["line", "visualLine"];
+export type DefaultFileName = "date" | "firstLine";
+const DEFAULT_FILE_NAME_VALUES: readonly DefaultFileName[] = ["date", "firstLine"];
 export type OpenFile = "tab" | "window";
 const OPEN_FILE_VALUES: readonly OpenFile[] = ["tab", "window"];
 export type Startup = "newWindow" | "lastSession";
@@ -64,6 +73,7 @@ export const DEFAULT_SETTINGS: Settings = {
   caretWidth: "thin",
   selectionCorners: "rounded",
   marginSelection: "line",
+  defaultFileName: "date",
 };
 /** In pt. */
 export const MIN_FONT_SIZE = 6;
@@ -79,7 +89,7 @@ const FALLBACK_FONTS = [
 /**
  * Any stored or typed value made valid: size rounded to 0.1 and clamped, an
  * empty font is the default, an unknown `openFile`, `startup`, `caretWidth`,
- * `selectionCorners` or `marginSelection` is the default.
+ * `selectionCorners`, `marginSelection` or `defaultFileName` is the default.
  */
 export function normalizeSettings(value: unknown): Settings {
   const input = (typeof value === "object" && value !== null ? value : {}) as {
@@ -90,6 +100,7 @@ export function normalizeSettings(value: unknown): Settings {
     caretWidth?: unknown;
     selectionCorners?: unknown;
     marginSelection?: unknown;
+    defaultFileName?: unknown;
   };
   const family =
     typeof input.fontFamily === "string" ? input.fontFamily.trim() : "";
@@ -111,6 +122,9 @@ export function normalizeSettings(value: unknown): Settings {
     marginSelection:
       MARGIN_SELECTION_VALUES.find((value) => value === input.marginSelection) ??
       DEFAULT_SETTINGS.marginSelection,
+    defaultFileName:
+      DEFAULT_FILE_NAME_VALUES.find((value) => value === input.defaultFileName) ??
+      DEFAULT_SETTINGS.defaultFileName,
   };
 }
 

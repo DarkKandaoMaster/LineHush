@@ -2,6 +2,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import {
   exportImages,
   fromText,
+  suggestedName,
   toHtml,
   toPrintHtml,
   toText,
@@ -10,7 +11,11 @@ import {
 import * as native from "./native.ts";
 import type { Opened } from "./native.ts";
 import { SaveQueue } from "./save-queue.ts";
-import { cssFontFamily, type Settings } from "./settings.ts";
+import {
+  cssFontFamily,
+  type DefaultFileName,
+  type Settings,
+} from "./settings.ts";
 
 /** File dialog filter for `.hush` documents. */
 export const HUSH_FILTER = [{ name: "LineHush 笔记", extensions: ["hush"] }];
@@ -37,13 +42,15 @@ export type Session = ReturnType<typeof createSession>;
 /**
  * The document of one tab. It owns its stash queue; React only subscribes to
  * snapshots. `confirmUnsaved` asks the user what to do with unsaved changes to
- * the named document; `displayName` names this tab ("x.hush", "无标题 2").
- * The caller loads the first document with `adopt`.
+ * the named document; `displayName` names this tab ("x.hush", "无标题 2");
+ * `defaultFileName` gives the “默认文件名” setting when an untitled document is
+ * saved. The caller loads the first document with `adopt`.
  */
 export function createSession(
   tab: string,
   confirmUnsaved: (name: string) => Promise<UnsavedChoice>,
   displayName: () => string,
+  defaultFileName: () => DefaultFileName = () => "date",
 ) {
   let state: SessionState = {
     document: fromText(""),
@@ -144,7 +151,11 @@ export function createSession(
       set({ busy: false });
     }
   }
-  /** Writes the user's file; an untitled document (or `dialog`) asks for a target. False if that is cancelled. */
+  /**
+   * Writes the user's file; an untitled document (or `dialog`) asks for a target.
+   * False if that is cancelled. An untitled document's dialog starts at a free
+   * name (`suggestedName`) in the folder last opened or saved to (Rust).
+   */
   async function saveFile(dialog: boolean) {
     let path = state.path;
     const pick = dialog || !path;
@@ -153,7 +164,10 @@ export function createSession(
         title: "保存笔记",
         filters: HUSH_FILTER,
         defaultPath:
-          state.path ?? `${new Date().toLocaleDateString("sv-SE")}.hush`,
+          state.path ??
+          (await native.suggestSavePath(
+            suggestedName(state.document, defaultFileName()),
+          )),
       });
       if (!path) return false;
     }

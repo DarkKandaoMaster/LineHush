@@ -26,10 +26,14 @@ export default function App() {
   // 关窗时按当时的“启动时”设置决定是否询问（见 tabs.closeWindow）；设置还没读完
   // 就关窗时等它读完，不按默认值处理。
   const [tabs] = useState(() =>
-    createTabs(unsaved.ask, async () => {
-      await settings.loaded;
-      return settings.current.current.startup;
-    }),
+    createTabs(
+      unsaved.ask,
+      async () => {
+        await settings.loaded;
+        return settings.current.current.startup;
+      },
+      () => settings.current.current.defaultFileName,
+    ),
   );
   const { tabs: list, active, ready, error, focus } = useSyncExternalStore(
     tabs.subscribe,

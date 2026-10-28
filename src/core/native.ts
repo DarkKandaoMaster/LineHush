@@ -91,6 +91,12 @@ export const saveDocument = (tab: string, document: Diary) =>
   invoke<void>("save_document", { tab, document });
 export const saveAs = (tab: string, path: string, document: Diary) =>
   invoke<Opened>("save_as", { tab, path, document });
+/**
+ * 无标题笔记保存对话框的默认路径：`<上次打开 / 另存为的文件夹，没有则“文档”>\<base>.hush`，
+ * 名字已被占用时照资源管理器改为 `<base> (2).hush`、`<base> (3).hush`…
+ */
+export const suggestSavePath = (base: string) =>
+  invoke<string>("suggest_save_path", { base });
 /** Writes `content` to `path` and each original to `<its folder>/附件/<file>`. */
 export const exportDocument = (
   tab: string,

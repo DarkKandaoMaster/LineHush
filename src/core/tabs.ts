@@ -9,7 +9,7 @@ import {
   type Session,
   type UnsavedChoice,
 } from "./session.ts";
-import type { Startup } from "./settings.ts";
+import type { DefaultFileName, Startup } from "./settings.ts";
 
 /** One tab of the window: its document session and, while unnamed, its number. */
 export interface Tab {
@@ -79,11 +79,13 @@ function isBlank(doc: Diary) {
  * The tabs of this window, each with its own document session and editor.
  * `confirmUnsaved` (the window's "save changes?" dialog) is shared by all tabs.
  * `startup` gives the “启动时” setting when the window closes, once the
- * settings are read (never the default in their place).
+ * settings are read (never the default in their place). `defaultFileName`
+ * gives the “默认文件名” setting when an untitled tab is saved.
  */
 export function createTabs(
   confirmUnsaved: (name: string) => Promise<UnsavedChoice>,
   startup: () => Startup | Promise<Startup> = () => "newWindow",
+  defaultFileName: () => DefaultFileName = () => "date",
 ) {
   let state: TabsState = {
     tabs: [],
@@ -120,8 +122,11 @@ export function createTabs(
       id: result.tab,
       untitled: result.opened.path === null ? nextUntitled(others) : null,
     } as Tab;
-    tab.session = createSession(result.tab, confirmUnsaved, () =>
-      displayName(tab),
+    tab.session = createSession(
+      result.tab,
+      confirmUnsaved,
+      () => displayName(tab),
+      defaultFileName,
     );
     tab.session.adopt(result.opened);
     if (result.error) tab.session.setError(result.error);

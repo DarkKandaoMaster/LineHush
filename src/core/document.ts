@@ -1,4 +1,5 @@
 import type { JSONContent } from "@tiptap/core";
+import type { DefaultFileName } from "./settings.ts";
 
 export interface Picture {
   /** SHA-256 of the original bytes, which the .hush file stores unchanged. */
@@ -98,6 +99,43 @@ export function fileName(path: string | null, untitled = 1): string {
     path?.split(/[\\/]/).pop() ??
     (untitled === 1 ? "无标题" : `无标题 ${untitled}`)
   );
+}
+/** Longest name `firstLineName` gives, in code points. */
+export const FIRST_LINE_NAME_LENGTH = 30;
+/**
+ * The first text line with anything but whitespace, made a Windows file name:
+ * whitespace runs become one space, `\ / : * ? " < > |` and control characters
+ * are dropped, at most `FIRST_LINE_NAME_LENGTH` code points are kept (never half
+ * a surrogate pair), and trailing dots and spaces go. Image rows are skipped.
+ * Empty when there is no such line or nothing of it is left.
+ */
+export function firstLineName(doc: Diary): string {
+  const line = doc.blocks.find(
+    (block) => block.type === "line" && /\S/u.test(block.text),
+  );
+  if (line?.type !== "line") return "";
+  const name = line.text
+    .replace(/\s+/gu, " ")
+    .replace(/[\\/:*?"<>|\p{Cc}]/gu, "")
+    .replace(/ {2,}/g, " ")
+    .trim();
+  return Array.from(name)
+    .slice(0, FIRST_LINE_NAME_LENGTH)
+    .join("")
+    .replace(/[. ]+$/, "");
+}
+/**
+ * The name (without `.hush`) an untitled document is first saved under, per the
+ * “默认文件名” setting: the date as YYYY-MM-DD, or `firstLineName` and the date
+ * when that is empty.
+ */
+export function suggestedName(
+  doc: Diary,
+  mode: DefaultFileName,
+  now: Date = new Date(),
+): string {
+  const date = now.toLocaleDateString("sv-SE");
+  return mode === "firstLine" ? firstLineName(doc) || date : date;
 }
 function escapeHtml(text: string): string {
   return text.replace(

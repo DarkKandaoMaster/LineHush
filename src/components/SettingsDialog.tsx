@@ -3,6 +3,7 @@ import {
   MAX_FONT_SIZE,
   MIN_FONT_SIZE,
   type CaretWidth,
+  type DefaultFileName,
   type MarginSelection,
   type OpenFile,
   type SelectionCorners,
@@ -85,6 +86,11 @@ const SELECTION_CORNERS: { value: SelectionCorners; label: string }[] = [
 const MARGIN_SELECTION: { value: MarginSelection; label: string }[] = [
   { value: "line", label: "整行" },
   { value: "visualLine", label: "视觉行" },
+];
+/** 无标题笔记保存时预填的文件名：日期（YYYY-MM-DD），或正文第一行有字的文字。 */
+const DEFAULT_FILE_NAME: { value: DefaultFileName; label: string }[] = [
+  { value: "date", label: "日期" },
+  { value: "firstLine", label: "首行文字" },
 ];
 /** 文案照 Win11 记事本。 */
 const OPEN_FILE: { value: OpenFile; label: string }[] = [
@@ -232,6 +238,13 @@ export default function SettingsDialog(props: Props) {
             choices={MARGIN_SELECTION}
             value={settings.marginSelection}
             onChange={(marginSelection) => onChange({ marginSelection })}
+          />
+          <Choices
+            name="settings-default-file-name"
+            label="默认文件名"
+            choices={DEFAULT_FILE_NAME}
+            value={settings.defaultFileName}
+            onChange={(defaultFileName) => onChange({ defaultFileName })}
           />
           <Choices
             name="settings-open-file"
