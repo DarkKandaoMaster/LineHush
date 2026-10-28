@@ -2,13 +2,22 @@ import { test, expect, type Page } from "@playwright/test";
 import { calls, editorOf, frames, load, near, pixel, selection, setDoc, shoot } from "./helpers";
 
 // 查找 / 替换（src/editor/find.ts、src/hooks/useFind.ts、src/components/FindWidget.tsx）：
-// Ctrl+F / Ctrl+H 打开右上角的查找条，所有匹配淡黄色高亮，当前匹配是真实选区。
+// Ctrl+F / Ctrl+H 打开右上角的查找条，其余匹配半透明橙色高亮（.find-match），当前匹配是真实选区、
+// 另加不透明的灰橄榄色装饰（.find-match-current），颜色照 VS Code 浅色主题。
 
 const widget = (page: Page) => page.getByRole("search", { name: "查找与替换" });
 const findBox = (page: Page) => page.getByRole("textbox", { name: "查找", exact: true });
 const replaceBox = (page: Page) => page.getByRole("textbox", { name: "替换", exact: true });
 const count = (page: Page) => widget(page).locator(".find-count");
 const marks = (page: Page) => editorOf(page).locator(".find-match");
+const currentMark = (page: Page) => editorOf(page).locator(".find-match-current");
+/** 自绘选区路径的填充色（computed）。 */
+const selectionFill = (page: Page) =>
+  editorOf(page).evaluate(
+    (el: any) => getComputedStyle(el.parentElement.querySelector(".selection-layer path")).fill,
+  );
+const ACTIVE = "rgb(151, 198, 235)"; // #97c6eb
+const INACTIVE = "rgb(213, 221, 230)"; // #d5dde6
 const caretAt = (page: Page, from: number, to = from) =>
   editorOf(page).evaluate(
     (el: any, [from, to]) => el.editor.commands.setTextSelection({ from, to }),
@@ -43,9 +52,18 @@ test("Ctrl+F 打开查找条，输入即高亮并选中，Enter / Shift+Enter �
   await page.keyboard.type("天气");
   await expect(count(page)).toHaveText("1 / 3");
   expect(await selection(page)).toEqual({ type: "text", anchor: 3, head: 5 });
-  // 当前匹配是选区（不加高亮），其余两个高亮。
+  // 当前匹配是选区，另加 .find-match-current；其余两个 .find-match。
   await expect(marks(page)).toHaveCount(2);
   await expect(marks(page)).toHaveText(["天气", "天气"]);
+  await expect(currentMark(page)).toHaveCount(1);
+  const currentIn = () =>
+    editorOf(page).evaluate((el: any) => {
+      const span = el.querySelector(".find-match-current");
+      if (!span) return null;
+      const view = el.editor.view;
+      return [view.posAtDOM(span, 0), view.posAtDOM(span, span.childNodes.length)];
+    });
+  expect(await currentIn()).toEqual([3, 5]);
   // 选区层画出了当前匹配（编辑器失焦也照常显示）。
   const drawn = await editorOf(page).evaluate(
     (el: any) => el.parentElement.querySelector(".selection-layer path")?.getAttribute("d") ?? "",
@@ -54,6 +72,9 @@ test("Ctrl+F 打开查找条，输入即高亮并选中，Enter / Shift+Enter �
   await page.keyboard.press("Enter");
   await expect(count(page)).toHaveText("2 / 3");
   expect(await selection(page)).toEqual({ type: "text", anchor: 10, head: 12 });
+  // 当前装饰随选区换到第二个匹配。
+  expect(await currentIn()).toEqual([10, 12]);
+  await expect(marks(page)).toHaveText(["天气", "天气"]);
   await page.keyboard.press("Enter");
   await expect(count(page)).toHaveText("3 / 3");
   await page.keyboard.press("Enter");
@@ -72,10 +93,20 @@ test("Ctrl+F 打开查找条，输入即高亮并选中，Enter / Shift+Enter �
     "title",
     "下一个匹配项 (Enter)",
   );
-  // 选区不是匹配时显示“共 n 项”。
+  // 选区不是匹配时显示“共 n 项”，没有当前装饰。
   await caretAt(page, 2);
   await expect(count(page)).toHaveText("共 3 项");
   await expect(marks(page)).toHaveCount(3);
+  await expect(currentMark(page)).toHaveCount(0);
+  // 选区比匹配大（盖过第一个匹配）：仍是 .find-match，没有当前装饰。
+  await caretAt(page, 1, 6);
+  await expect(marks(page)).toHaveCount(3);
+  await expect(currentMark(page)).toHaveCount(0);
+  // 选区恰好等于某个匹配（不经查找条）：它成为当前。
+  await caretAt(page, 16, 18);
+  await expect(count(page)).toHaveText("3 / 3");
+  expect(await currentIn()).toEqual([16, 18]);
+  await caretAt(page, 2);
   // 在编辑器里改动，匹配随之重算。
   await editorOf(page).evaluate((el: any) => el.editor.commands.insertContentAt(19, "天气"));
   await expect(count(page)).toHaveText("共 4 项");
@@ -366,51 +397,133 @@ test("查找条在编辑区右上角、距顶 4px，盖在正文与左栏之上�
   expect(errors).toEqual([]);
 });
 
-test("高亮颜色与当前匹配的选区色", async ({ page }) => {
+test("高亮颜色（VS Code 浅色）、当前匹配盖住选区、失焦时为非活动选区色；截图", async ({ page }) => {
   const errors = await load(page);
-  await setDoc(page, ["苹果 苹果"]);
+  await setDoc(page, ["苹果 苹果", "第二行文字"]);
   await caretAt(page, 1);
   await page.keyboard.press("Control+f");
   await page.keyboard.type("苹果");
   await expect(marks(page)).toHaveCount(1);
+  await expect(currentMark(page)).toHaveCount(1);
   await frames(page);
   const mark = (await marks(page).boundingBox())!;
+  const cur = (await currentMark(page).boundingBox())!;
   const clip = { x: 0, y: mark.y - 4, width: mark.x + mark.width + 4, height: mark.height + 8 };
-  const shot = await shoot(page, clip);
-  // 高亮方角、半透明（VS Code 的 findMatchHighlightBackground 同样不透明度 < 1）。
-  expect(
-    await marks(page).evaluate((el) => {
+  // 方角；其余匹配 #EA5C0055（半透明），当前匹配 #A8AC94（不透明）。
+  const look = (loc: ReturnType<typeof marks>) =>
+    loc.evaluate((el) => {
       const style = getComputedStyle(el);
       return [style.borderTopLeftRadius, style.backgroundColor];
-    }),
-  ).toEqual(["0px", "rgba(255, 194, 12, 0.4)"]);
-  // 匹配左上角 2px 内侧（避开字形）：在 #f9f9f9 上合成约 #fbe39a（原先的实色为 #ffe39a）。
+    });
+  expect(await look(marks(page))).toEqual(["0px", "rgba(234, 92, 0, 0.333)"]);
+  expect(await look(currentMark(page))).toEqual(["0px", "rgb(168, 172, 148)"]);
   const dpr = await page.evaluate(() => devicePixelRatio);
-  const at = (x: number, y: number) =>
-    pixel(shot, Math.round((x - clip.x) * dpr), Math.round((y - clip.y) * dpr));
-  expect(near(at(mark.x + 2, mark.y + 2), "#fbe39a", 3)).toBe(true);
-  // 方角：紧贴左上角的像素也是高亮色。
-  expect(near(at(mark.x + 0.5, mark.y + 0.5), "#fbe39a", 6)).toBe(true);
-  const current = await editorOf(page).evaluate((el: any) => {
-    const r = el.editor.view.coordsAtPos(1, 1);
-    return { x: r.left, y: r.top };
-  });
-  expect(near(at(current.x + 2, current.y + 2), "#97c6eb", 3)).toBe(true);
-  // 选区盖过高亮的匹配：选区色透过高亮（0.4 × 高亮色 + 0.6 × #97c6eb ≈ #c1c492），不是高亮色本身。
+  type Shot = Awaited<ReturnType<typeof shoot>>;
+  const at = (shot: Shot, box: { y: number }, x: number, y: number) =>
+    pixel(shot, Math.round(x * dpr), Math.round((y - box.y) * dpr));
+  // 焦点在查找框：选区为非活动色；当前匹配左上角 2px 内侧（避开字形）为 #a8ac94，盖住选区；
+  // 其余匹配在 #f9f9f9 上合成约 #f4c5a6，方角（紧贴左上角的像素也是高亮色）。
+  await expect(findBox(page)).toBeFocused();
+  expect(await selectionFill(page)).toBe(INACTIVE);
+  let shot = await shoot(page, clip);
+  expect(near(at(shot, clip, cur.x + 2, cur.y + 2), "#a8ac94", 3)).toBe(true);
+  expect(near(at(shot, clip, mark.x + 2, mark.y + 2), "#f4c5a6", 3)).toBe(true);
+  expect(near(at(shot, clip, mark.x + 0.5, mark.y + 0.5), "#f4c5a6", 6)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath("find-visual-findbox-focused.png") });
+  // 编辑器有焦点：当前匹配仍是 #a8ac94（选区色被盖住）。
+  await editorOf(page).evaluate((el: any) => el.editor.view.focus());
+  await expect(editorOf(page)).toBeFocused();
+  expect(await selectionFill(page)).toBe(ACTIVE);
+  await frames(page);
+  shot = await shoot(page, clip);
+  expect(near(at(shot, clip, cur.x + 2, cur.y + 2), "#a8ac94", 3)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath("find-visual-editor-focused.png") });
+  // 选区盖过两个匹配（1-6）：都是 .find-match，选区色透过高亮。
+  // 编辑器有焦点：1/3 × #ea5c00 + 2/3 × #97c6eb ≈ #b3a39d；中间的空格（不是匹配）是选区色本身。
   await caretAt(page, 1, 6);
   await expect(marks(page)).toHaveCount(2);
+  await expect(currentMark(page)).toHaveCount(0);
   await frames(page);
-  const both = await shoot(page, clip);
-  const mixed = pixel(
-    both,
-    Math.round((mark.x + 2 - clip.x) * dpr),
-    Math.round((mark.y + 2 - clip.y) * dpr),
-  );
-  expect(near(mixed, "#c1c492", 4)).toBe(true);
+  const space = await editorOf(page).evaluate((el: any) => {
+    const a = el.editor.view.coordsAtPos(3, 1);
+    const b = el.editor.view.coordsAtPos(4, -1);
+    return { x: (a.left + b.right) / 2, y: a.top + 2 };
+  });
+  shot = await shoot(page, clip);
+  expect(near(at(shot, clip, cur.x + 2, cur.y + 2), "#b3a39d", 4)).toBe(true);
+  expect(near(at(shot, clip, space.x, space.y), "#97c6eb", 3)).toBe(true);
+  // 焦点回查找框：1/3 × #ea5c00 + 2/3 × #d5dde6 ≈ #dcb299；空格处为 #d5dde6。
+  await findBox(page).focus();
+  expect(await selectionFill(page)).toBe(INACTIVE);
+  await frames(page);
+  shot = await shoot(page, clip);
+  expect(near(at(shot, clip, cur.x + 2, cur.y + 2), "#dcb299", 4)).toBe(true);
+  expect(near(at(shot, clip, space.x, space.y), "#d5dde6", 3)).toBe(true);
   await caretAt(page, 1);
-  await page.screenshot({ path: test.info().outputPath("find.png") });
   await page.keyboard.press("Control+h");
   await page.screenshot({ path: test.info().outputPath("find-replace.png") });
+  // 关掉查找条、选第二行的一段后让编辑器失焦（焦点到别处）：非活动色；回来恢复。
+  await page.keyboard.press("Escape");
+  await expect(widget(page)).toHaveCount(0);
+  await caretAt(page, 8, 12);
+  expect(await selectionFill(page)).toBe(ACTIVE);
+  await editorOf(page).evaluate((el: HTMLElement) => el.blur());
+  expect(await selectionFill(page)).toBe(INACTIVE);
+  await frames(page);
+  const line2 = await editorOf(page).evaluate((el: any) => {
+    const r = el.editor.view.coordsAtPos(9, 1);
+    return { x: r.left + 2, y: r.top + 2, top: r.top };
+  });
+  const band = { x: 0, y: line2.top - 4, width: line2.x + 40, height: 40 };
+  shot = await shoot(page, band);
+  expect(near(at(shot, band, line2.x, line2.y), "#d5dde6", 3)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath("find-visual-blurred-no-widget.png") });
+  await editorOf(page).evaluate((el: any) => el.editor.view.focus());
+  expect(await selectionFill(page)).toBe(ACTIVE);
+  expect(errors).toEqual([]);
+});
+
+test("选中图片的蒙层随编辑器焦点换成非活动色；组字时仍由浏览器画原生选区", async ({ page }) => {
+  const errors = await load(page);
+  await setDoc(page, ["上面", { id: "a" }, "下面"]);
+  await editorOf(page).evaluate((el: any) => {
+    el.editor.view.focus();
+    el.editor.commands.setTextSelection({ from: 1, to: 8 });
+  });
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(1);
+  const overlay = () =>
+    editorOf(page)
+      .locator(".image-tile")
+      .first()
+      .evaluate((el) => {
+        const after = getComputedStyle(el, "::after");
+        return [after.backgroundColor, after.opacity];
+      });
+  expect(await overlay()).toEqual([ACTIVE, "0.5"]);
+  expect(await selectionFill(page)).toBe(ACTIVE);
+  // 打开查找条：焦点到查找框，文字选区与图片蒙层都是非活动色。
+  await page.keyboard.press("Control+f");
+  await expect(findBox(page)).toBeFocused();
+  expect(await overlay()).toEqual([INACTIVE, "0.5"]);
+  expect(await selectionFill(page)).toBe(INACTIVE);
+  // Esc 关闭、焦点回编辑器：恢复活动色。
+  await page.keyboard.press("Escape");
+  await expect(editorOf(page)).toBeFocused();
+  expect(await overlay()).toEqual([ACTIVE, "0.5"]);
+  expect(await selectionFill(page)).toBe(ACTIVE);
+  // 组字期间仍隐藏自绘选区、用浏览器的原生选区色（.composing 的规则不受非活动色影响）。
+  const composing = await editorOf(page).evaluate((el: any) => {
+    el.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+    const host = el.parentElement;
+    const out = {
+      composing: host.classList.contains("composing"),
+      layer: getComputedStyle(host.querySelector(".selection-layer")).display,
+      native: getComputedStyle(el.querySelector("p"), "::selection").backgroundColor,
+    };
+    el.dispatchEvent(new CompositionEvent("compositionend", { data: "" }));
+    return out;
+  });
+  expect(composing).toEqual({ composing: true, layer: "none", native: ACTIVE });
   expect(errors).toEqual([]);
 });
 

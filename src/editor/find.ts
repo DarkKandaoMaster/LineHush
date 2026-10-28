@@ -21,9 +21,10 @@ import { lineHeight, revealSelection, scroller } from "./reveal.ts";
  *   转换后长度不同的字符保持原样），位置与原文一一对应。全字匹配照 VS Code：匹配左端是词
  *   边界（前面没有字符、前一个字符不是词字符，或匹配的首字符本身不是词字符），右端同理；
  *   词字符 = 字母（含中文）、数字、下划线。
- * - 所有匹配用淡黄色的 inline 装饰（`.find-match`）标出；与当前选区正好相同的那一个不加
- *   装饰，由自绘选区层（caret.ts）照常画成选区色。插件状态的 query 为空（查找条关着）时
- *   没有匹配也没有装饰。
+ * - 照 VS Code：其余匹配用半透明的 inline 装饰（`.find-match`）标出，下面的自绘选区
+ *   （caret.ts）透得出来；与当前选区正好相同的那一个是“当前匹配”，换成不透明的
+ *   `.find-match-current`，盖住它下面的选区色。当前匹配仍是真实选区，装饰只是多一层颜色，
+ *   随选区每个事务重算。插件状态的 query 为空（查找条关着）时没有匹配也没有装饰。
  *
  * 上半部分是纯函数（Node 单元测试直接加载），下半部分是插件与 DOM。
  */
@@ -202,7 +203,8 @@ function decorate(doc: PmNode, matches: readonly Match[], current: number) {
   if (!matches.length) return DecorationSet.empty;
   const list: Decoration[] = [];
   matches.forEach((m, i) => {
-    if (i !== current) list.push(Decoration.inline(m.from, m.to, { class: "find-match" }));
+    const name = i === current ? "find-match-current" : "find-match";
+    list.push(Decoration.inline(m.from, m.to, { class: name }));
   });
   return DecorationSet.create(doc, list);
 }

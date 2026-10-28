@@ -537,6 +537,18 @@ input:focus-visible {
    */
   position: relative;
   isolation: isolate;
+  /*
+   * 选区色（自绘选区 .selection-layer 与选中图片的蒙层共用）：编辑器有焦点时为活动色，
+   * 失焦（焦点在查找框、对话框里，或窗口不在前台）时为非活动色，照 VS Code 的
+   * editor.selectionBackground / editor.inactiveSelectionBackground。VS Code 浅色的非活动色
+   * #E5EBF1 在 #f9f9f9 上太淡，这里调深一些；要调就改这两个变量。
+   */
+  --selection-active: #97c6eb;
+  --selection-inactive: #d5dde6;
+  --selection: var(--selection-inactive);
+}
+.editor-host > div:has(> .ProseMirror-focused) {
+  --selection: var(--selection-active);
 }
 .tiptap {
   flex: 1 0 auto;
@@ -581,13 +593,17 @@ input:focus-visible {
   background: transparent;
 }
 /*
- * 查找的匹配（src/editor/find.ts 的 inline 装饰）：淡黄色、方角。半透明（在 #f9f9f9 上合成约
- * #fbe39a），盖在它下面的自绘选区（z-index -1）照样透出来，像 VS Code 的
- * editor.findMatchHighlightBackground（#EA5C0055，“must not be opaque”）。当前匹配就是选区，
- * 不加这层，由自绘选区层画成选区色。
+ * 查找的匹配（src/editor/find.ts 的 inline 装饰），方角，颜色照 VS Code 浅色主题：
+ * 其余匹配为 editor.findMatchHighlightBackground #EA5C0055（半透明，“must not be opaque”，
+ * 盖在它下面的自绘选区 z-index -1 照样透出来；在 #f9f9f9 上合成约 #f4c5a6）；
+ * 当前匹配（与选区正好相同的那个）为 editor.findMatchBackground #A8AC94，不透明，
+ * 把它下面的选区色盖住，编辑器有没有焦点都一样。
  */
 .tiptap .find-match {
-  background: rgb(255 194 12 / 40%);
+  background: #ea5c0055;
+}
+.tiptap .find-match-current {
+  background: #a8ac94;
 }
 /*
  * While an input method composes, the editor's state lags behind the text, so
@@ -615,7 +631,7 @@ input:focus-visible {
   pointer-events: none;
 }
 .selection-layer path {
-  fill: #97c6eb;
+  fill: var(--selection);
 }
 /*
  * The caret, in the text and between blocks (beside an image, in the middle
@@ -658,15 +674,17 @@ input:focus-visible {
 }
 /*
  * Images inside a selection: a translucent layer in the text selection's
- * colour, no frame. A click never selects an image; a NodeSelection can still
- * come from ProseMirror itself and looks the same.
+ * colour (--selection, active or inactive like the text's), no frame. A click
+ * never selects an image; a NodeSelection can still come from ProseMirror
+ * itself and looks the same.
  */
 .tiptap .ProseMirror-selectednode .image-tile::after,
 .tiptap .image-selected .image-tile::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: rgb(151 198 235 / 50%);
+  background: var(--selection);
+  opacity: 0.5;
   pointer-events: none;
 }
 .error-banner {

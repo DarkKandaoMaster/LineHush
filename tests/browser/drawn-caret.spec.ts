@@ -142,10 +142,21 @@ const SHAPE_LINES = [
   "中等长度的一行文字",
   "后面",
 ];
+/**
+ * Selects the shape with the editor focused, so the selection has the active
+ * colour (#97c6eb; blurred it is the inactive one), and hides the caret drawn
+ * at its end.
+ */
 const selectShape = (page: Page) =>
   editorOf(page).evaluate((el: any) => {
+    el.editor.view.focus();
     el.editor.commands.setTextSelection({ from: 3, to: 37 });
-    el.blur();
+    if (!document.getElementById("hide-caret")) {
+      const style = document.createElement("style");
+      style.id = "hide-caret";
+      style.textContent = ".editor-caret { display: none !important; }";
+      document.head.append(style);
+    }
   });
 /** The selection's path data. */
 const shapePath = (page: Page) =>
@@ -273,7 +284,6 @@ test.describe("150% 缩放", () => {
     await group.getByRole("radio", { name: "圆角" }).check();
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
-    // The dialog gives the focus back to the editor; blur again so no caret is drawn.
     await selectShape(page);
     expect(await shapePath(page)).toMatch(/A/);
     px = await corners(test.info().outputPath("square-to-rounded-selection-shape.png"));
@@ -328,6 +338,16 @@ test("圆角选区：三行参差的文字连成一块，外角圆、内角反�
   expect(inner[0], `inner corner ${inner}`).toBeLessThan(215);
   // Below line 3's part (line 4, not selected): background.
   expect(at(third.right - 1, third.bottom + 3)[0]).toBeGreaterThan(240);
+  // The editor blurred (the focus elsewhere): the same shape in the inactive colour.
+  await editorOf(page).evaluate((el: HTMLElement) => el.blur());
+  await frames(page);
+  const blurred = await shoot(page, region);
+  const still = pixel(
+    blurred,
+    Math.floor((second.left + second.right) / 2 - region.x),
+    Math.floor((second.top + second.bottom) / 2 - region.y),
+  );
+  expect(near(still, "#d5dde6", 1), `blurred middle ${still}`).toBe(true);
   expect(errors).toEqual([]);
 });
 

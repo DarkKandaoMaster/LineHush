@@ -190,7 +190,7 @@ test("全部替换：一个事务，各段落都换，选区折叠到映射后�
   assert.equal(tr.selection.head, 10);
 });
 
-test("插件：meta 设查询后高亮除当前选区以外的匹配，文档变化时重算，null 清掉", () => {
+test("插件：meta 设查询后高亮匹配、当前匹配另一类装饰，随选区与文档变化重算，null 清掉", () => {
   const d = doc("猫和猫", "猫");
   let state = stateOf(d, 1, 2);
   const apply = (tr) => (state = state.apply(tr));
@@ -198,8 +198,33 @@ test("插件：meta 设查询后高亮除当前选区以外的匹配，文档变
   let find = findKey.getState(state);
   assert.equal(find.matches.length, 3);
   assert.equal(find.current, 0);
-  // 当前匹配就是选区，不加装饰。
-  assert.equal(find.decorations.find().length, 2);
+  // 当前匹配（与选区相同）是 find-match-current，其余是 find-match。
+  const classes = () =>
+    findKey
+      .getState(state)
+      .decorations.find()
+      .map((d) => [d.from, d.to, d.type.attrs.class]);
+  assert.deepEqual(classes(), [
+    [1, 2, "find-match-current"],
+    [3, 4, "find-match"],
+    [6, 7, "find-match"],
+  ]);
+  // 选区换到另一个匹配，当前装饰跟着换。
+  apply(state.tr.setSelection(TextSelection.create(state.doc, 3, 4)));
+  assert.equal(findKey.getState(state).current, 1);
+  assert.deepEqual(classes(), [
+    [1, 2, "find-match"],
+    [3, 4, "find-match-current"],
+    [6, 7, "find-match"],
+  ]);
+  // 选区比匹配大：没有当前匹配，全是 find-match。
+  apply(state.tr.setSelection(TextSelection.create(state.doc, 1, 4)));
+  assert.equal(findKey.getState(state).current, -1);
+  assert.deepEqual(
+    classes().map((c) => c[2]),
+    ["find-match", "find-match", "find-match"],
+  );
+  apply(state.tr.setSelection(TextSelection.create(state.doc, 1, 2)));
   apply(state.tr.insertText("猫", 6));
   find = findKey.getState(state);
   assert.equal(find.matches.length, 4);
@@ -207,6 +232,7 @@ test("插件：meta 设查询后高亮除当前选区以外的匹配，文档变
   find = findKey.getState(state);
   assert.equal(find.current, -1);
   assert.equal(find.decorations.find().length, 4);
+  assert.ok(classes().every((c) => c[2] === "find-match"));
   apply(state.tr.setMeta(findKey, null));
   find = findKey.getState(state);
   assert.equal(find.matches.length, 0);
