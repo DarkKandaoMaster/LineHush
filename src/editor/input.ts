@@ -2,7 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Plugin, type Selection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { drawnCaret } from "./caret-geometry.ts";
-import { dragMove, dragPress, dragRelease } from "./image-view.ts";
+import { dragCancel, dragMove, dragPress, dragRelease } from "./image-view.ts";
 
 /**
  * Where each selection change comes from: one set of listeners per editor
@@ -68,6 +68,13 @@ const inputOf = (view: EditorView) => {
 
 /** Where the last selection change came from. */
 export const sourceOf = (view: EditorView) => inputOf(view).source;
+
+/**
+ * Whether the primary button is held since a press in the editor: from the
+ * press to the release, a move without the button, or the end of the press
+ * without a release (see `inputPlugin`).
+ */
+export const pressedIn = (view: EditorView) => inputOf(view).pressed;
 
 /**
  * The caret is being put at the point `y` (client coordinates): the line
@@ -179,15 +186,25 @@ export function readDOMSelection(view: EditorView) {
 }
 
 const MODIFIERS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Process"]);
+/** Keys that leave a press going (pressed with the button held, they change how it extends). */
+const HELD = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
 
 function inputPlugin() {
   return new Plugin({
     view(view) {
       const win = view.dom.ownerDocument.defaultView!;
       const input = inputOf(view);
+      // A press whose release never reaches the page (the window loses the
+      // mouse capture: Alt+Tab, an input method's window) ends with the first
+      // key, input, blur, hiding or HTML5 drag instead (image-view's dragCancel).
+      const cancel = (ownPress = true) => {
+        dragCancel(view, ownPress);
+        input.pressed = false;
+      };
       // In the capture phase on the editor, ahead of ProseMirror's handlers and
       // the keymaps (handleKeyDown).
       const key = (event: KeyboardEvent) => {
+        if (!HELD.has(event.key)) cancel();
         input.source = "keyboard";
         // The pending change belongs to the key before, with its cause.
         if (!event.isComposing && event.keyCode !== 229) readDOMSelection(view);
@@ -206,7 +223,9 @@ function inputPlugin() {
         else if (event.key !== "PageUp" && event.key !== "PageDown")
           input.cause = { kind: "default" };
       };
+      // Text put in without a key (an input method's commit, the emoji panel), a paste, a drop.
       const typed = () => {
+        cancel();
         input.source = "keyboard";
         input.cause = { kind: "default" };
       };
@@ -226,16 +245,27 @@ function inputPlugin() {
         }
         dragMove(view, event);
       };
+      // The press still counts while its last selection change is read (dragRelease).
       const up = () => {
-        input.pressed = false;
         dragRelease(view);
+        input.pressed = false;
       };
+      const blur = () => cancel();
+      const hidden = () => {
+        if (view.dom.ownerDocument.visibilityState === "hidden") cancel();
+      };
+      // ProseMirror ends its own press on dragstart after reading it.
+      const dragged = () => cancel(false);
       const others = ["beforeinput", "compositionstart", "paste", "drop"];
       view.dom.addEventListener("keydown", key, true);
       view.dom.addEventListener("mousedown", down, true);
       for (const type of others) view.dom.addEventListener(type, typed, true);
       win.addEventListener("mousemove", move);
       win.addEventListener("mouseup", up, true);
+      win.addEventListener("blur", blur);
+      win.addEventListener("dragstart", dragged);
+      win.addEventListener("dragend", dragged);
+      view.dom.ownerDocument.addEventListener("visibilitychange", hidden);
       return {
         destroy() {
           view.dom.removeEventListener("keydown", key, true);
@@ -243,6 +273,10 @@ function inputPlugin() {
           for (const type of others) view.dom.removeEventListener(type, typed, true);
           win.removeEventListener("mousemove", move);
           win.removeEventListener("mouseup", up, true);
+          win.removeEventListener("blur", blur);
+          win.removeEventListener("dragstart", dragged);
+          win.removeEventListener("dragend", dragged);
+          view.dom.ownerDocument.removeEventListener("visibilitychange", hidden);
           dragRelease(view, true);
           inputs.delete(view);
         },

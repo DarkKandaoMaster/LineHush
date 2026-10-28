@@ -379,8 +379,9 @@ test.describe("滚动：安全区与连按", () => {
         if ($h.parent.inlineContent) r = view.coordsAtPos(sel.head, 1);
         else {
           // Between blocks: the block inside the range at the head, an image
-          // whole, a text line at its near end.
-          const forward = sel.head > sel.anchor;
+          // whole, a text line at its near end. A head at the start of a row
+          // of images (side 1, 2026-10-28) is drawn before the row's first image.
+          const forward = sel.head > sel.anchor && !(sel.side === 1 && $h.nodeAfter?.type.name === "image");
           const node = forward ? $h.nodeBefore : $h.nodeAfter;
           // (An empty line: its box; with its line break selected coordsAtPos
           // has no line to measure.)

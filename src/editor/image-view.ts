@@ -25,13 +25,15 @@ import {
   type Block,
   type Picture,
 } from "../core/document.ts";
-import { pointerInput } from "./input.ts";
+import { pointerInput, pressedIn } from "./input.ts";
+import { foldStarts } from "./margin.ts";
 
 /**
  * The side of a position between blocks a caret is on: -1 drawn after the
  * image before it, 1 before the image after it. It only shows at a line break
  * between two rows of images (see `rowBreak`): -1 is the end of the upper row,
- * 1 the start of the lower one.
+ * 1 the start of the lower one; and, measured, where a row of images wraps
+ * (`caretImage`).
  */
 type Side = -1 | 1;
 
@@ -44,7 +46,8 @@ type Side = -1 | 1;
  * drawn beside the image at its full height (caret.ts, `besideImage`), so the
  * browser's own caret is hidden (`visible`). At a line break between two rows
  * of images it has two places, the end of the upper row and the start of the
- * lower one, told apart by `side` (meaningless for a range).
+ * lower one, told apart by `side`. A range keeps the side of its head, where
+ * its caret is drawn (2026-10-28; `eq` and `toJSON` still ignore it there).
  */
 export class BlockRange extends Selection {
   readonly side: Side;
@@ -164,8 +167,8 @@ const caretBetween = (state: EditorState) => {
 
 /**
  * The selection between two positions: a caret, a text range or a block range.
- * A caret between blocks is on `side`, by default the side it is reached from
- * when moving toward `dir`.
+ * A caret between blocks (or the head of a block range) is on `side`, by
+ * default the side it is reached from when moving toward `dir`.
  */
 export function rangeSelection(
   doc: PmNode,
@@ -179,7 +182,7 @@ export function rangeSelection(
   if (anchor === head) return caretAt(doc, head, dir, side);
   if ($anchor.parent.inlineContent && $head.parent.inlineContent)
     return new TextSelection($anchor, $head);
-  return new BlockRange($anchor, $head);
+  return new BlockRange($anchor, $head, side);
 }
 
 /**
@@ -430,9 +433,18 @@ export function moveCaret(dir: -1 | 1): Command {
   };
 }
 
-/** Shift+Left / Shift+Right extend the selection by one whole image. */
-export function extendByImage(dir: -1 | 1): Command {
-  return (state, dispatch) => {
+/**
+ * Shift+Left / Shift+Right extend the selection by one whole image. With
+ * `word` (Ctrl+Shift+Left / Right), a step inside a text line from a range
+ * that starts between blocks goes to the position it gives instead of one
+ * character (the browser's word move, see `wordStep`); next to an image the
+ * image is one word.
+ */
+export function extendByImage(
+  dir: -1 | 1,
+  word?: (view: EditorView, pos: number) => number | null,
+): Command {
+  return (state, dispatch, view) => {
     const sel = state.selection;
     let anchor = sel.anchor;
     let head = sel.head;
@@ -476,16 +488,20 @@ export function extendByImage(dir: -1 | 1): Command {
       else if (between) next = edge + dir;
       else return false;
     } else if (between) {
-      // One character, keeping surrogate pairs together (lines hold only text).
-      const text = $head.parent.textContent;
-      const code = text.charCodeAt(
-        dir > 0 ? $head.parentOffset : $head.parentOffset - 1,
-      );
-      const pair =
-        dir > 0
-          ? code >= 0xd800 && code < 0xdc00
-          : code >= 0xdc00 && code < 0xe000;
-      next = head + dir * (pair ? 2 : 1);
+      const byWord = word && view ? word(view, head) : null;
+      if (byWord !== null && byWord !== head) next = byWord;
+      else {
+        // One character, keeping surrogate pairs together (lines hold only text).
+        const text = $head.parent.textContent;
+        const code = text.charCodeAt(
+          dir > 0 ? $head.parentOffset : $head.parentOffset - 1,
+        );
+        const pair =
+          dir > 0
+            ? code >= 0xd800 && code < 0xdc00
+            : code >= 0xdc00 && code < 0xe000;
+        next = head + dir * (pair ? 2 : 1);
+      }
     } else return false;
     dispatch?.(
       state.tr
@@ -505,24 +521,34 @@ export function leaveImages(dir: -1 | 1): Command {
     const sel = state.selection;
     if (caretBetween(state) === null && !selectedImages(sel)) return false;
     const doc = state.doc;
-    let pos = dir < 0 ? sel.from : sel.to;
-    for (;;) {
-      const $pos = doc.resolve(pos);
-      const node = dir < 0 ? $pos.nodeBefore : $pos.nodeAfter;
-      if (!isImage(node)) break;
-      pos += dir * node!.nodeSize;
-    }
+    const pos = pastImages(doc, dir < 0 ? sel.from : sel.to, dir);
     const $pos = doc.resolve(pos);
-    const line = dir < 0 ? $pos.nodeBefore : $pos.nodeAfter;
     dispatch?.(
       state.tr
         .setSelection(
-          line ? TextSelection.create(doc, pos + dir) : new BlockRange($pos),
+          $pos.parent.inlineContent ? TextSelection.create(doc, pos) : new BlockRange($pos),
         )
         .scrollIntoView(),
     );
     return true;
   };
+}
+
+/**
+ * Where Up / Down take the caret between blocks at `pos` (`leaveImages`): past
+ * the run of images in that direction, into the near end of the text line
+ * beyond it (Up: its end, Down: its start), or to the document's edge right
+ * after the run.
+ */
+export function pastImages(doc: PmNode, pos: number, dir: -1 | 1): number {
+  for (;;) {
+    const $pos = doc.resolve(pos);
+    const node = dir < 0 ? $pos.nodeBefore : $pos.nodeAfter;
+    if (!isImage(node)) break;
+    pos += dir * node!.nodeSize;
+  }
+  const $pos = doc.resolve(pos);
+  return (dir < 0 ? $pos.nodeBefore : $pos.nodeAfter) ? pos + dir : pos;
 }
 
 /**
@@ -539,7 +565,7 @@ export function leaveImages(dir: -1 | 1): Command {
  * browser's own line move knows, so it is asked (`Selection.modify`): if it
  * stays inside this line, that move is kept; if it leaves (or cannot move), the
  * caret was on the edge line. A non-empty selection first collapses toward the
- * key, as the browser does; Shift+Up / Down are not bound here.
+ * key, as the browser does. Shift+Up / Down: `extendLines`.
  */
 function enterImages(view: EditorView, dir: -1 | 1): boolean {
   const sel = view.state.selection;
@@ -586,6 +612,199 @@ function enterImages(view: EditorView, dir: -1 | 1): boolean {
   view.dispatch(
     view.state.tr
       .setSelection(new BlockRange(view.state.doc.resolve(edge)))
+      .scrollIntoView(),
+  );
+  return true;
+}
+
+/**
+ * Where the browser's own caret move by `unit` (`Selection.modify`) takes a
+ * caret at the text position `pos`, or null when it cannot tell (no DOM
+ * selection, or the move ends outside the editor). Only measured: the DOM
+ * selection is put back as it was, and the caller dispatches a selection of its
+ * own or leaves the key to the browser. The move starts from a fresh caret, so
+ * at a soft wrap it is the start of the lower line, and a vertical move does
+ * not keep the column of the moves before it.
+ */
+function nativeMove(
+  view: EditorView,
+  pos: number,
+  dir: -1 | 1,
+  unit: "word" | "line" | "lineboundary",
+): number | null {
+  const domSel = view.dom.ownerDocument.getSelection();
+  if (!domSel || typeof domSel.modify !== "function") return null;
+  const { anchorNode, anchorOffset, focusNode, focusOffset } = domSel;
+  const start = view.domAtPos(pos);
+  domSel.collapse(start.node, start.offset);
+  domSel.modify("move", dir < 0 ? "backward" : "forward", unit);
+  const end = domSel.focusNode;
+  const moved =
+    end && view.dom.contains(end) ? view.posAtDOM(end, domSel.focusOffset) : null;
+  if (anchorNode && focusNode)
+    domSel.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
+  else domSel.removeAllRanges();
+  return moved;
+}
+
+/**
+ * Ctrl+Shift+Left / Right from a range that starts between blocks, its head
+ * inside a text line: the browser's word move from the head (on Windows to
+ * the start of the next / previous word), kept inside the line (its end /
+ * start when the move leaves it). Left to the browser, the extension would
+ * move the anchor into text too and drop the images.
+ */
+const wordStep = (dir: -1 | 1) => (view: EditorView, pos: number) => {
+  const moved = nativeMove(view, pos, dir, "word");
+  if (moved === null) return null;
+  const $pos = view.state.doc.resolve(pos);
+  return Math.min(Math.max(moved, $pos.start()), $pos.end());
+};
+
+/**
+ * The visual line of the `k`th of a row's images, `tops` the tops of all of
+ * them in order (images wrap like words): the indexes [first, end) of the
+ * images on it. Tops less than 1px apart are one line (margin.ts's
+ * `foldStarts`).
+ */
+export function foldOf(tops: number[], k: number): [number, number] {
+  const starts = foldStarts(tops);
+  let i = starts.length - 1;
+  while (i > 0 && starts[i] > k) i--;
+  return [starts[i], starts[i + 1] ?? tops.length];
+}
+
+/**
+ * The visual line of images the image at `pos` is on, measured: `from` before
+ * its first image, `to` after its last. A row of images (from an image
+ * starting a row to the next one that does) wraps where it does not fit.
+ */
+function imageFold(view: EditorView, pos: number) {
+  const { doc } = view.state;
+  const index = doc.resolve(pos).index(0);
+  const joins = (i: number) =>
+    isImage(doc.maybeChild(i - 1)) &&
+    isImage(doc.maybeChild(i)) &&
+    !doc.child(i).attrs.newline;
+  let first = index;
+  let last = index;
+  while (joins(first)) first--;
+  while (joins(last + 1)) last++;
+  // Images are leaves of size 1, so the row's positions follow each other.
+  const start = pos - (index - first);
+  const tops: number[] = [];
+  for (let i = 0; i <= last - first; i++) tops.push(imageRect(view, start + i).top);
+  const [a, b] = foldOf(tops, index - first);
+  return { from: start + a, to: start + b };
+}
+
+/**
+ * The image the caret between blocks at `$pos` on `side` is drawn beside:
+ * `besideImage`, except at a soft wrap inside a row of images (the image after
+ * `$pos` on the visual line below the one before it), where side 1 is the
+ * start of the lower line, before the image after it, as the browser draws the
+ * caret at a soft wrap in text reached by Left (input.ts). For the drawn caret
+ * (caret-geometry.ts) and Home / End.
+ */
+export function caretImage(
+  view: EditorView,
+  $pos: ResolvedPos,
+  side: Side,
+): { pos: number; after: boolean } | null {
+  const image = besideImage($pos, side);
+  if (!image?.after || side < 0 || !isImage($pos.nodeAfter)) return image;
+  const before = view.nodeDOM(image.pos) as HTMLElement | null;
+  const after = view.nodeDOM($pos.pos) as HTMLElement | null;
+  if (!before || !after) return image;
+  return after.getBoundingClientRect().top - before.getBoundingClientRect().top >= 1
+    ? { pos: $pos.pos, after: false }
+    : image;
+}
+
+/**
+ * Home / End (with Shift, `extend`) with the selection's head between blocks:
+ * the start / end of the visual line of images its caret is drawn on
+ * (`caretImage`, `imageFold`), the anchor kept with Shift. An image is one big
+ * character, so its line is the images beside it; left to the browser, the
+ * caret would go to the start / end of a text line next to them. With the
+ * head in a text line and the anchor between blocks, Shift+Home / End go where
+ * the browser's would (`nativeMove`) but keep the anchor, which the browser's
+ * extension would move into text. Otherwise the browser's.
+ */
+function lineEdge(view: EditorView, dir: -1 | 1, extend: boolean): boolean {
+  const { state } = view;
+  const sel = state.selection;
+  if (view.composing || !(sel instanceof BlockRange)) return false;
+  const { doc } = state;
+  const $head = sel.$head;
+  let target: number;
+  if ($head.parent.inlineContent) {
+    if (!extend) return false;
+    const moved = nativeMove(view, sel.head, dir, "lineboundary");
+    if (moved === null) return false;
+    target = Math.min(Math.max(moved, $head.start()), $head.end());
+  } else {
+    const image = caretImage(view, $head, sel.side);
+    if (!image) return false;
+    const fold = imageFold(view, image.pos);
+    target = dir < 0 ? fold.from : fold.to;
+  }
+  // At the start of a visual line the caret is drawn before its first image,
+  // at the end after its last.
+  const side: Side = dir < 0 ? 1 : -1;
+  view.dispatch(
+    state.tr
+      .setSelection(
+        extend
+          ? rangeSelection(doc, sel.anchor, target, dir, side)
+          : caretAt(doc, target, dir, side),
+      )
+      .scrollIntoView(),
+  );
+  return true;
+}
+
+/**
+ * Shift+Up / Shift+Down: the head goes where Up / Down would take a caret
+ * there, the anchor stays. From between blocks: past the run of images
+ * (`pastImages`, as `leaveImages`); from the first / last visual line of a text
+ * line next to images: beside them, between them and the line (as
+ * `enterImages`, measured the same way). Left to the browser, the first would
+ * move the anchor too (its DOM position between blocks reads back after the
+ * image next to it) and the second would skip the images. Inside a text line,
+ * and from a text line to the next, the browser's own extension, except with
+ * the anchor between blocks (it would move into text): there the browser's
+ * line move is measured and taken (`nativeMove`).
+ */
+function extendLines(view: EditorView, dir: -1 | 1): boolean {
+  const { state } = view;
+  const sel = state.selection;
+  if (view.composing) return false;
+  const { doc } = state;
+  const $head = sel.$head;
+  const between = sel instanceof BlockRange;
+  let target: number;
+  if (!$head.parent.inlineContent) {
+    if (!between) return false;
+    target = pastImages(doc, sel.head, dir);
+  } else {
+    if ($head.depth !== 1) return false;
+    const $edge = doc.resolve(dir < 0 ? $head.before() : $head.after());
+    const images = isImage(dir < 0 ? $edge.nodeBefore : $edge.nodeAfter);
+    if (!images && !between) return false;
+    const moved = nativeMove(view, sel.head, dir, "line");
+    const away = moved !== null && moved !== sel.head;
+    if (away && moved >= $head.start() && moved <= $head.end()) {
+      // Another visual line of this text line.
+      if (!between) return false;
+      target = moved;
+    } else if (images) target = $edge.pos;
+    else if (away) target = moved;
+    else target = dir < 0 ? $head.start() : $head.end();
+  }
+  view.dispatch(
+    state.tr
+      .setSelection(rangeSelection(doc, sel.anchor, target, dir))
       .scrollIntoView(),
   );
   return true;
@@ -1152,6 +1371,43 @@ function clickBesideImages(view: EditorView, event: MouseEvent) {
 }
 
 /**
+ * A double / triple click beside images (where a click puts the caret beside
+ * one, `spotBeside`; also below a final image): selects that image, as a double
+ * click selects a word, or its visual line of images, as a triple click selects
+ * a line. Left to the browser it would select a word of a line nearby, or a
+ * range across blocks that typing would then put into the next line. A double
+ * click on an image itself opens it instead (handleDoubleClickOn).
+ */
+function pressBesideImages(view: EditorView, event: MouseEvent, line: boolean) {
+  if (event.button !== 0) return false;
+  const spot = spotBeside(
+    view,
+    event.clientX,
+    event.clientY,
+    event.target as Element | null,
+  );
+  if (!spot) return false;
+  return selectImages(view, spot.side > 0 ? spot.pos : spot.pos - 1, line);
+}
+
+/**
+ * Selects the image at `pos` or, with `line`, its visual line of images
+ * (`imageFold`), for a press: ProseMirror then cancels it, so no drag
+ * selection follows.
+ */
+function selectImages(view: EditorView, pos: number, line: boolean) {
+  const { from, to } = line ? imageFold(view, pos) : { from: pos, to: pos + 1 };
+  const drag = drags.get(view);
+  if (drag) endDrag(drag);
+  view.dispatch(
+    view.state.tr
+      .setSelection(rangeSelection(view.state.doc, from, to))
+      .setMeta("pointer", true),
+  );
+  return true;
+}
+
+/**
  * Where a point beside images (not on one) puts the caret, `target` being the
  * element there: see `clickBesideImages`. Null when it is on a text line or
  * level with one, which the browser / `posAtCoords` places.
@@ -1399,10 +1655,36 @@ function pressOffSelection(view: EditorView, event: MouseEvent) {
   if (domSel?.rangeCount && !domSel.isCollapsed) domSel.collapseToEnd();
 }
 
+/**
+ * Shift+click on an image: the selection extends from its anchor to the side
+ * of the image under the pointer (as a click there puts the caret, `spotBy`).
+ * ProseMirror leaves a press with Shift to the browser, which extends nothing
+ * from an image (it is draggable and not editable), so it is done here and the
+ * press cancelled (no drag of the image, no native selection).
+ */
+function shiftClickImage(view: EditorView, event: MouseEvent) {
+  if (view.composing || !view.editable) return;
+  const spot = overImage(view, event.clientX, event.clientY);
+  if (!spot) return;
+  event.preventDefault();
+  if (!view.hasFocus()) view.focus();
+  const { state } = view;
+  view.dispatch(
+    state.tr
+      .setSelection(
+        rangeSelection(state.doc, state.selection.anchor, spot.pos, 1, spot.side),
+      )
+      .setMeta("pointer", true),
+  );
+}
+
 /** A primary-button press in the editor (input.ts): starts a drag selection, see `DragSelection`. */
 export function dragPress(view: EditorView, event: MouseEvent) {
-  if (event.button !== 0 || (event.target as Element).closest(".image-item"))
+  if (event.button !== 0) return;
+  if ((event.target as Element).closest(".image-item")) {
+    if (event.shiftKey) shiftClickImage(view, event);
     return;
+  }
   let drag = drags.get(view);
   if (!drag) drags.set(view, (drag = { pointer: null, frame: 0, drawn: false }));
   drag.held = undefined;
@@ -1524,6 +1806,62 @@ export function dragRelease(view: EditorView, destroyed = false) {
   drags.delete(view);
 }
 
+/**
+ * The press ended without a release reaching the page (input.ts): the window
+ * lost the focus or was hidden, a key was pressed, an HTML5 drag started or
+ * ended. When the window loses the mouse capture during a press (Alt+Tab, an
+ * input method's window) Chromium sends no mouseup, and left alone the drag
+ * would go on deciding the ends of every selection read back from the DOM
+ * (`createSelectionBetween`): a key would extend a range from the old anchor.
+ * As on a release, a pending DOM selection of the press is read first. With
+ * `ownPress`, ProseMirror's own press ends too (`view.input.mouseDown`, which
+ * would otherwise keep holding back the DOM selection and `readDOMSelection`);
+ * not on dragstart, where ProseMirror ends it itself after reading it. The DOM
+ * selection it held back is set at once (ProseMirror would set it in a timeout,
+ * after the browser has acted on the key with the old one, and undo that).
+ */
+export function dragCancel(view: EditorView, ownPress = true) {
+  const drag = drags.get(view);
+  if (drag?.pointer)
+    (view as unknown as { domObserver?: { flush(): void } }).domObserver?.flush();
+  if (drag) endDrag(drag);
+  const input = (
+    view as unknown as {
+      input?: { mouseDown?: { done(): void; delayedSelectionSync?: boolean } | null };
+    }
+  ).input;
+  const press = ownPress ? input?.mouseDown : null;
+  if (!press) return;
+  const delayed = press.delayedSelectionSync;
+  press.delayedSelectionSync = false;
+  press.done();
+  if (delayed && view.hasFocus()) drawDragSelection(view);
+}
+
+/**
+ * Whether the DOM selection's anchor, read back as `$read`, still stands for
+ * the editor's anchor `pos` between blocks: it is where the editor put it, or
+ * at the near end of the text line right beside it, where the browser moves a
+ * DOM position between blocks when it extends the selection (it keeps only
+ * positions it can show a caret at).
+ */
+function keptAnchor(view: EditorView, pos: number, $read: ResolvedPos) {
+  if ($read.doc.resolve(pos).parent.inlineContent) return false;
+  if (
+    $read.depth === 1 &&
+    ($read.pos === pos + 1
+      ? $read.parentOffset === 0
+      : $read.pos === pos - 1 && $read.parentOffset === $read.parent.content.size)
+  )
+    return true;
+  const domSel = view.dom.ownerDocument.getSelection();
+  if (!domSel?.anchorNode) return false;
+  return ([-1, 1] as const).some((side) => {
+    const at = view.domAtPos(pos, side);
+    return at.node === domSel.anchorNode && at.offset === domSel.anchorOffset;
+  });
+}
+
 /** The drop position of dragged images while they are over the editor. */
 const marks = new PluginKey<Spot | null>("imageMarks");
 
@@ -1575,6 +1913,22 @@ export function imagePlugin(
         if (meta !== undefined) return meta;
         return drop && { pos: tr.mapping.map(drop.pos), side: drop.side };
       },
+    },
+    // An image is never left selected as a node (typing would replace it; a
+    // click and the keys put the caret beside it instead). The browser's own
+    // moves can still put the DOM caret inside an image (Ctrl+Left / Right
+    // inside a text line, say), which ProseMirror reads back as the image
+    // selected: that becomes the caret beside it on the side it was reached
+    // from (before it from above, after it from below). ProseMirror's drag of
+    // an image selects it only in the dragged slice, not in the state.
+    appendTransaction(_trs, old, state) {
+      const sel = state.selection;
+      if (!(sel instanceof NodeSelection) || !isImage(sel.node)) return null;
+      return state.tr.setSelection(
+        old.selection.head <= sel.from
+          ? new BlockRange(sel.$from, sel.$from, 1)
+          : new BlockRange(sel.$to, sel.$to, -1),
+      );
     },
     props: {
       decorations(state) {
@@ -1633,47 +1987,60 @@ export function imagePlugin(
       // puts the end in the nearest text line; the half under the pointer
       // decides instead, as for a click. Beside images (or out of the window
       // level with them) both ends of a drag go where a click there would.
+      // The drag counts only while the button is held (input.ts): a press whose
+      // release never came (see dragCancel) must not decide the ends of later
+      // selections. Positions are in the document read back with the DOM
+      // (`$head.doc`), which after typing is newer than the view's.
       createSelectionBetween: (view, $anchor, $head) => {
-        const head = dragHead(view);
-        const anchor = drags.get(view)?.anchor;
+        const doc = $head.doc;
+        const drag = pressedIn(view) ? drags.get(view) : undefined;
+        const head = drag ? dragHead(view) : null;
+        const anchor = drag?.anchor;
         if (head)
-          return rangeSelection(
-            view.state.doc,
-            anchor ?? $anchor.pos,
-            head.pos,
-            1,
-            head.side,
-          );
+          return rangeSelection(doc, anchor ?? $anchor.pos, head.pos, 1, head.side);
+        let $from = anchor === undefined ? $anchor : doc.resolve(anchor);
+        // Without a press, a range the browser extended from the editor's
+        // anchor between blocks (Ctrl+Shift+End, say): the anchor stays. The
+        // browser moves its DOM position into the text line beside it, or it
+        // reads back as another position; the images next to it would drop
+        // out of the range.
+        const current = view.state.selection;
+        if (
+          !pressedIn(view) &&
+          $anchor.pos !== $head.pos &&
+          doc === view.state.doc &&
+          current.anchor !== $anchor.pos &&
+          keptAnchor(view, current.anchor, $anchor)
+        )
+          $from = doc.resolve(current.anchor);
         // Pressed below the last text line, both ends in text: the browser's
         // anchor is in the line under the press, the drag's is the line's end.
         const sel =
-          selectionBetween(
-            anchor === undefined ? $anchor : view.state.doc.resolve(anchor),
-            $head,
-          ) ??
-          (anchor !== undefined && $head.parent.inlineContent
-            ? rangeSelection(view.state.doc, anchor, $head.pos)
+          selectionBetween($from, $head) ??
+          ($from !== $anchor && $head.parent.inlineContent
+            ? rangeSelection(doc, $from.pos, $head.pos)
             : null);
         // The DOM cannot tell the two sides of a line break between rows
-        // apart: the caret keeps the side it is on.
-        const current = view.state.selection;
+        // apart: the caret (or a range's head) keeps the side it is on.
         return sel instanceof BlockRange &&
-          sel.empty &&
           current instanceof BlockRange &&
-          current.empty &&
+          current.anchor === sel.anchor &&
           current.head === sel.head
           ? current
           : sel;
       },
       handleClickOn: (view, _pos, node, nodePos, event, direct) =>
         clickImage(view, node, nodePos, event, direct),
+      // A triple click on an image selects its visual line, as beside it.
       handleTripleClickOn: (view, _pos, node, nodePos, event, direct) =>
-        clickImage(view, node, nodePos, event, direct),
+        direct && isImage(node) && event.button === 0 && selectImages(view, nodePos, true),
       handleClick: (view, _pos, event) => clickBesideImages(view, event),
       // The first click placed the caret; the second must not select a word
       // next to the image. The tile's own dblclick listener opens the preview.
       handleDoubleClickOn: (_view, _pos, node, _nodePos, _event, direct) =>
         direct && isImage(node),
+      handleDoubleClick: (view, _pos, event) => pressBesideImages(view, event, false),
+      handleTripleClick: (view, _pos, event) => pressBesideImages(view, event, true),
       // Keys typed at the caret between blocks (ProseMirror hands over every
       // keypress outside a text selection).
       handleTextInput: (view, _from, _to, text) =>
@@ -1848,17 +2215,34 @@ export function image({ preview, source, copy, stage }: ImageOptions) {
     addKeyboardShortcuts() {
       const run = (command: Command) =>
         command(this.editor.state, this.editor.view.dispatch, this.editor.view);
+      const view = () => this.editor.view;
+      // With Ctrl an image is one word: Ctrl+Left / Right step over it as Left /
+      // Right do, Ctrl+Backspace / Delete (and Shift+Backspace) delete as
+      // Backspace / Delete do (beside a text line with text, nothing), where
+      // the core keymap would join the line into the image (deleting it). Not
+      // next to an image they are the browser's / the core keymap's.
       return {
         Backspace: () => run(removeNear(-1)),
         Delete: () => run(removeNear(1)),
+        "Mod-Backspace": () => run(removeNear(-1)),
+        "Shift-Backspace": () => run(removeNear(-1)),
+        "Mod-Delete": () => run(removeNear(1)),
         ArrowLeft: () => run(moveCaret(-1)),
         ArrowRight: () => run(moveCaret(1)),
+        "Mod-ArrowLeft": () => run(moveCaret(-1)),
+        "Mod-ArrowRight": () => run(moveCaret(1)),
         "Shift-ArrowLeft": () => run(extendByImage(-1)),
         "Shift-ArrowRight": () => run(extendByImage(1)),
-        ArrowUp: () =>
-          run(leaveImages(-1)) || enterImages(this.editor.view, -1),
-        ArrowDown: () =>
-          run(leaveImages(1)) || enterImages(this.editor.view, 1),
+        "Mod-Shift-ArrowLeft": () => run(extendByImage(-1, wordStep(-1))),
+        "Mod-Shift-ArrowRight": () => run(extendByImage(1, wordStep(1))),
+        ArrowUp: () => run(leaveImages(-1)) || enterImages(view(), -1),
+        ArrowDown: () => run(leaveImages(1)) || enterImages(view(), 1),
+        "Shift-ArrowUp": () => extendLines(view(), -1),
+        "Shift-ArrowDown": () => extendLines(view(), 1),
+        Home: () => lineEdge(view(), -1, false),
+        End: () => lineEdge(view(), 1, false),
+        "Shift-Home": () => lineEdge(view(), -1, true),
+        "Shift-End": () => lineEdge(view(), 1, true),
       };
     },
     addProseMirrorPlugins: () => [imagePlugin(copy, stage)],

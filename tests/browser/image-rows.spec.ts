@@ -151,3 +151,206 @@ test("图片后的空行上插入图片：新图自成一行在图 1 下方，�
   expect(errors).toEqual([]);
 });
 
+
+// ---- 2026-10-28: an image is one big character for the keyboard too ----
+
+/** "type head" for the selection, "type anchor→head" for a range. */
+const where = async (page: import("@playwright/test").Page) => {
+  const sel = await selection(page);
+  return sel.anchor === sel.head ? `${sel.type} ${sel.head}` : `${sel.type} ${sel.anchor}→${sel.head}`;
+};
+/** Records every selection the editor goes through (a NodeSelection passing by too). */
+const recordSelections = (page: import("@playwright/test").Page) =>
+  editorOf(page).evaluate((el: any) => {
+    (window as any).selections = [];
+    el.editor.on("selectionUpdate", ({ editor }: any) =>
+      (window as any).selections.push(editor.state.selection.toJSON().type),
+    );
+  });
+
+test("Ctrl+←/→ 把图片当一个词：停在图片前后，不选中图片；Ctrl+Backspace / Delete 与不带 Ctrl 一样不删文字行旁的图片", async ({
+  page,
+}) => {
+  const errors = await loadSample(page);
+  // "上面 文字" 0-7 (text 1-6), a 7-8, b 8-9, "下面 文字" 9-16.
+  await setDoc(page, ["上面 文字", { id: "a" }, { id: "b" }, "下面 文字"]);
+  await recordSelections(page);
+  await editorOf(page).evaluate((el: any) => el.editor.commands.setTextSelection(1));
+  const stops: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    await page.keyboard.press("Control+ArrowRight");
+    stops.push(await where(page));
+  }
+  // The browser's word moves inside the line (to the start of the next word,
+  // then the line's end), then each image is one step.
+  expect(stops).toEqual(["text 4", "text 6", "blockRange 7", "blockRange 8", "blockRange 9", "text 10"]);
+  const back: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    await page.keyboard.press("Control+ArrowLeft");
+    back.push(await where(page));
+  }
+  expect(back).toEqual(["blockRange 9", "blockRange 8", "blockRange 7", "text 6"]);
+  // Ctrl+Shift+→ takes the images one by one, and the text after them by words.
+  await page.keyboard.press("Control+Shift+ArrowRight");
+  expect(await where(page)).toBe("blockRange 6→8");
+  await page.keyboard.press("Control+Shift+ArrowRight");
+  await page.keyboard.press("Control+Shift+ArrowRight");
+  expect(await where(page)).toBe("text 6→10");
+  await page.keyboard.press("Control+Shift+ArrowRight");
+  const sel = await selection(page);
+  expect(sel.anchor).toBe(6);
+  expect(sel.head).toBeGreaterThan(10);
+  expect(sel.head).toBeLessThanOrEqual(15);
+  // From the caret before a (a range between blocks): the images, then words of
+  // the text line, the anchor staying before a.
+  await clickHalf(tile(page, 0), "left");
+  for (let i = 0; i < 4; i++) await page.keyboard.press("Control+Shift+ArrowRight");
+  expect(await where(page)).toBe("blockRange 7→13");
+  await page.keyboard.press("Control+Shift+ArrowLeft");
+  expect(await where(page)).toBe("blockRange 7→10");
+  // Typing after Ctrl+→ next to an image: a new line, the image stays.
+  await editorOf(page).evaluate((el: any) => el.editor.commands.setTextSelection(6));
+  await page.keyboard.press("Control+ArrowRight");
+  await page.keyboard.type("x");
+  expect(await content(page)).toEqual(["上面 文字", "x", "[a]", "[b]", "下面 文字"]);
+  expect(await page.evaluate(() => (window as any).selections)).not.toContain("node");
+  // Ctrl+Backspace at the start of a line with text below an image, Ctrl+Delete
+  // at the end of one above it: nothing (as without Ctrl).
+  await setDoc(page, ["上面", { id: "a" }, "下面"]);
+  await editorOf(page).evaluate((el: any) => el.editor.commands.setTextSelection(6));
+  await page.keyboard.press("Control+Backspace");
+  await page.keyboard.press("Shift+Backspace");
+  expect(await content(page)).toEqual(["上面", "[a]", "下面"]);
+  await editorOf(page).evaluate((el: any) => el.editor.commands.setTextSelection(3));
+  await page.keyboard.press("Control+Delete");
+  expect(await content(page)).toEqual(["上面", "[a]", "下面"]);
+  // Inside a line Ctrl+Backspace deletes a word as before.
+  await page.keyboard.press("Control+Backspace");
+  expect((await content(page))[0]).not.toBe("上面");
+  // Beside the image (the caret between blocks), Ctrl+Backspace deletes it, as Backspace does.
+  await setDoc(page, ["上面", { id: "a" }, "下面"]);
+  await clickHalf(tile(page, 0), "right");
+  await page.keyboard.press("Control+Backspace");
+  expect(await content(page)).toEqual(["上面", "下面"]);
+  expect(errors).toEqual([]);
+});
+
+test("图片行上 Home / End（含 Shift）到这一视觉行的首尾，不跳进旁边的文字行；折行处 Home 画在下一折行首", async ({
+  page,
+}) => {
+  const errors = await loadSample(page);
+  // "上面" 0-4, a-e 4-9 in one row (e wraps onto a second visual line), f 9-10
+  // starting a row, "下面" 10-14.
+  await setDoc(page, [
+    "上面",
+    { id: "a" },
+    { id: "b" },
+    { id: "c" },
+    { id: "d" },
+    { id: "e" },
+    { id: "f", newline: true },
+    "下面",
+  ]);
+  const boxes = await editorOf(page)
+    .locator(".image-item")
+    .evaluateAll((items) => items.map((item) => item.getBoundingClientRect().top));
+  expect(boxes[4]).toBeGreaterThan(boxes[3] + 50); // e wrapped
+  const key = async (name: string) => {
+    await page.keyboard.press(name);
+    const sel = await selection(page);
+    return sel.anchor === sel.head ? `${sel.head} ${sel.side}` : `${sel.anchor}→${sel.head}`;
+  };
+  // Between a and b: Home before a, End after d (the end of the visual line).
+  await clickHalf(tile(page, 1), "left");
+  expect(await key("Home")).toBe("4 1");
+  expect(await caretBeside(page)).toEqual(["before", "", "", "", "", ""]);
+  expect(await key("End")).toBe("8 -1");
+  expect(await caretBeside(page)).toEqual(["", "", "", "after", "", ""]);
+  // Shift: the anchor stays.
+  await clickHalf(tile(page, 1), "right");
+  expect(await key("Shift+Home")).toBe("6→4");
+  expect(await key("Shift+End")).toBe("6→8");
+  expect(await key("Shift+End")).toBe("6→8");
+  expect(await key("Shift+Home")).toBe("6→4");
+  // On the wrapped visual line: e alone. Home there is drawn at its start (before e).
+  await clickHalf(tile(page, 4), "right");
+  expect(await key("Home")).toBe("8 1");
+  expect(await caretBeside(page)).toEqual(["", "", "", "", "before", ""]);
+  expect(await key("End")).toBe("9 -1");
+  expect(await caretBeside(page)).toEqual(["", "", "", "", "after", ""]);
+  expect(await key("Shift+Home")).toBe("9→8");
+  // The row after the line break: f.
+  await clickHalf(tile(page, 5), "left");
+  expect(await key("End")).toBe("10 -1");
+  expect(await key("Home")).toBe("9 1");
+  expect(await caretBeside(page)).toEqual(["", "", "", "", "", "before"]);
+  // In a text line Home / End are the browser's.
+  await editorOf(page).locator(":scope > p").last().click();
+  expect(await key("Home")).toBe("11 undefined");
+  expect(errors).toEqual([]);
+});
+
+test("Shift+↑/↓ 与 ↑/↓ 停在同样的地方（先停在图片旁），anchor 不漂移", async ({ page }) => {
+  const errors = await loadSample(page);
+  // "上面" 0-4, a 4-5, b 5-6, "下面" 6-10.
+  await recordSelections(page);
+  const key = async (name: string) => {
+    await page.keyboard.press(name);
+    return where(page);
+  };
+  // Before a: past both images to the start of "下面", the anchor before a.
+  await clickHalf(tile(page, 0), "left");
+  expect(await key("Shift+ArrowDown")).toBe("blockRange 4→7");
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(2);
+  expect(await key("Shift+ArrowUp")).toBe("blockRange 4→6");
+  expect(await key("Shift+ArrowUp")).toBe("blockRange 4→3");
+  // The head in the text line, the anchor between blocks: Shift+Home keeps the anchor.
+  expect(await key("Shift+Home")).toBe("blockRange 4→1");
+  // After b: up past both images to the end of "上面".
+  await clickHalf(tile(page, 1), "right");
+  expect(await key("Shift+ArrowUp")).toBe("blockRange 6→3");
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(2);
+  // The browser's own extension (Ctrl+Shift+End): the anchor stays after b,
+  // though its DOM position reads back as the start of "下面".
+  expect(await key("Control+Shift+End")).toBe("blockRange 6→9");
+  expect(await key("Control+Shift+Home")).toBe("blockRange 6→1");
+  // From the middle of "上面": first beside the images, as ↓ stops there.
+  await editorOf(page).evaluate((el: any) => el.editor.commands.setTextSelection(2));
+  expect(await key("Shift+ArrowDown")).toBe("blockRange 2→4");
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(0);
+  expect(await key("Shift+ArrowDown")).toBe("text 2→7");
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(2);
+  expect(await key("Shift+ArrowUp")).toBe("blockRange 2→6");
+  expect(await key("Shift+ArrowUp")).toBe("text 2→3");
+  // Plain ↓ from there still stops beside the images first.
+  await editorOf(page).evaluate((el: any) => el.editor.commands.setTextSelection(2));
+  expect(await key("ArrowDown")).toBe("blockRange 4");
+  expect(await key("ArrowDown")).toBe("text 7");
+  expect(await page.evaluate(() => (window as any).selections)).not.toContain("node");
+  // Text lines alone: the browser's own extension.
+  await setDoc(page, ["第一行", "第二行", "第三行"]);
+  await editorOf(page).evaluate((el: any) => el.editor.commands.setTextSelection(2));
+  expect(await key("Shift+ArrowDown")).toBe("text 2→7");
+  expect(await key("Shift+ArrowDown")).toBe("text 2→12");
+  expect(errors).toEqual([]);
+});
+
+test("向上选到图片行（左栏 Shift+单击、Shift+Home）时，光标画在这一行行首，不画在上一行行末", async ({ page }) => {
+  const errors = await loadSample(page);
+  // "上面" 0-4, a 4-5, b 5-6 (a new row), "下面" 6-10.
+  await setDoc(page, ["上面", { id: "a" }, { id: "b", newline: true }, "下面"]);
+  const box = (await editorOf(page).boundingBox())!;
+  const b = (await tile(page, 1).boundingBox())!;
+  await editorOf(page).evaluate((el: any) => el.editor.commands.setTextSelection(9));
+  await page.keyboard.down("Shift");
+  await page.mouse.click(box.x + 8, b.y + b.height / 2);
+  await page.keyboard.up("Shift");
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 9, head: 5 });
+  expect(await caretBeside(page)).toEqual(["", "before"]);
+  // From after b, Shift+Home: the start of b's row too.
+  await clickHalf(tile(page, 1), "right");
+  await page.keyboard.press("Shift+Home");
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 5 });
+  expect(await caretBeside(page)).toEqual(["", "before"]);
+  expect(errors).toEqual([]);
+});

@@ -6,6 +6,7 @@ import {
   editorOf,
   loadSample,
   selection,
+  setDoc,
   tile,
 } from "./helpers";
 
@@ -146,10 +147,12 @@ test("左右键逐停靠点移动，Backspace / Delete 规则，Shift+左右选�
     const layer = getComputedStyle(el, "::after");
     return {
       background: layer.backgroundColor,
+      opacity: layer.opacity,
       outline: getComputedStyle(el.parentElement!).outlineStyle,
     };
   });
-  expect(look).toEqual({ background: "rgba(151, 198, 235, 0.5)", outline: "none" });
+  // The active selection colour (the editor has the focus) at half opacity.
+  expect(look).toEqual({ background: "rgb(151, 198, 235)", opacity: "0.5", outline: "none" });
   // Delete removes the selected image; Backspace at a caret after an image removes it.
   await page.keyboard.press("Delete");
   expect(await content(page)).toEqual(["上面", "[b]", "下面"]);
@@ -485,5 +488,168 @@ test("拖动图片仍按左右半区落位", async ({ page }) => {
     targetPosition: { x: target.width - 10, y: target.height / 2 },
   });
   await expect.poll(() => content(page)).toEqual(["上面", "[b]", "[a]", "下面"]);
+  expect(errors).toEqual([]);
+});
+
+// ---- 2026-10-28: a press whose release never reaches the page ----
+
+/**
+ * Swallows the next mouseup before any of the app's listeners (window, capture,
+ * registered first), as when the window loses the mouse capture during a press
+ * (Alt+Tab, an input method's window) and Chromium sends no mouseup.
+ */
+const swallowNextMouseUp = (page: Page) =>
+  page.addInitScript(() => {
+    window.addEventListener(
+      "mouseup",
+      (event) => {
+        if (!(window as any).swallowUp) return;
+        (window as any).swallowUp = false;
+        event.stopImmediatePropagation();
+      },
+      true,
+    );
+  });
+
+test("松开没送到页面（失去鼠标捕获）：之后按 ↑、单击、打字都不再沿用拖动的锚点", async ({ page }) => {
+  await swallowNextMouseUp(page);
+  const errors = await loadSample(page);
+  // "上面" 0-4, a 4-5, b 5-6, "下面" 6-10, "末行" 10-14.
+  await setDoc(page, ["上面", { id: "a" }, { id: "b" }, "下面", "末行"]);
+  const b = (await tile(page, 1).boundingBox())!;
+  const lines = editorOf(page).locator(":scope > p");
+  const top = (await lines.nth(0).boundingBox())!;
+  const last = (await lines.nth(2).boundingBox())!;
+  /** Pressed right of the row (anchor after b), dragged up to "上面", the release swallowed. */
+  async function lostDrag() {
+    await page.mouse.click(b.x + b.width + 60, b.y + b.height / 2);
+    await page.waitForTimeout(600);
+    await page.mouse.move(b.x + b.width + 60, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(top.x + 20, top.y + top.height / 2, { steps: 8 });
+    await page.evaluate(() => ((window as any).swallowUp = true));
+    await page.mouse.up();
+    expect(await selection(page)).toMatchObject({ anchor: 6, head: 2 });
+  }
+  // ↑ and ↓ after it move a caret (no range grown from the old anchor).
+  await lostDrag();
+  await page.keyboard.press("ArrowDown");
+  let sel = await selection(page);
+  expect(sel.anchor).toBe(sel.head);
+  await page.keyboard.press("ArrowUp");
+  sel = await selection(page);
+  expect(sel.anchor).toBe(sel.head);
+  // A wheel scroll, then ↑: still a caret.
+  await lostDrag();
+  await page.mouse.wheel(0, 40);
+  await page.keyboard.press("ArrowUp");
+  sel = await selection(page);
+  expect(sel.anchor).toBe(sel.head);
+  // A click in "末行" (without moving the mouse first) puts the caret there.
+  await lostDrag();
+  await page.waitForTimeout(600);
+  await page.mouse.move(last.x + 20, last.y + last.height / 2);
+  await page.evaluate(() => ((window as any).swallowUp = false));
+  await page.mouse.down();
+  await page.mouse.up();
+  sel = await selection(page);
+  expect(sel.anchor).toBe(sel.head);
+  expect(sel.head).toBeGreaterThan(10);
+  // Typing after it: the text goes in where the caret is.
+  await lostDrag();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.type("字");
+  expect((await content(page))[0]).toBe("上字面");
+  sel = await selection(page);
+  expect(sel).toMatchObject({ anchor: 3, head: 3 });
+  // Text put in without a key (an input method's commit, the emoji panel)
+  // replaces the range; the selection read back with the new document is of
+  // that document (no RangeError).
+  await setDoc(page, ["上面", { id: "a" }, { id: "b" }, "下面", "末行"]);
+  await lostDrag();
+  await page.keyboard.insertText("尾");
+  expect((await content(page))[0]).toContain("上尾");
+  sel = await selection(page);
+  expect(sel.anchor).toBe(sel.head);
+  expect(errors).toEqual([]);
+});
+
+test("Shift+单击图片：从 anchor 扩到图片的左 / 右半区那一侧", async ({ page }) => {
+  const errors = await loadSample(page);
+  // "上面" 0-4, a 4-5, b 5-6, "下面" 6-10.
+  const shiftClick = async (i: number, side: "left" | "right") => {
+    await page.keyboard.down("Shift");
+    await clickHalf(tile(page, i), side);
+    await page.keyboard.up("Shift");
+    return selection(page);
+  };
+  await editorOf(page).evaluate((el: any) => el.editor.commands.setTextSelection(2));
+  expect(await shiftClick(1, "right")).toEqual({ type: "blockRange", anchor: 2, head: 6 });
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(2);
+  expect(await shiftClick(0, "left")).toEqual({ type: "blockRange", anchor: 2, head: 4 });
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(0);
+  // From the caret after b, back onto a's left half: both images.
+  await clickHalf(tile(page, 1), "right");
+  await page.waitForTimeout(600);
+  expect(await shiftClick(0, "left")).toEqual({ type: "blockRange", anchor: 6, head: 4 });
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(2);
+  expect(await caretBeside(page)).toEqual(["before", ""]);
+  expect(await shiftClick(0, "right")).toEqual({ type: "blockRange", anchor: 6, head: 5 });
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(1);
+  // The image did not start a drag, and no image was selected as a node.
+  expect(await content(page)).toEqual(["上面", "[a]", "[b]", "下面"]);
+  expect(await page.evaluate(() => (window as any).selections)).not.toContain("node");
+  expect(errors).toEqual([]);
+});
+
+test("图片旁双击选中最近的图片，三击选中整个图片视觉行；双击图片本身仍是预览", async ({ page }) => {
+  const errors = await loadSample(page);
+  // "上面" 0-4, a 4-5, b 5-6, "下面" 6-10.
+  const a = (await tile(page, 0).boundingBox())!;
+  const b = (await tile(page, 1).boundingBox())!;
+  const row = b.y + b.height / 2;
+  const away = () => page.waitForTimeout(600);
+  // Right of the row: b, the image nearest.
+  await page.mouse.dblclick(b.x + b.width + 100, row);
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 5, head: 6 });
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(1);
+  await away();
+  // In the gap between a and b: a (the nearer side of the nearest image).
+  await page.mouse.dblclick(a.x + a.width + 4, row);
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 4, head: 5 });
+  await away();
+  // Left of a is the left margin (margin.ts selects the row's line there).
+  // A triple click right of the row: the whole visual line of images.
+  await page.mouse.click(b.x + b.width + 100, row, { clickCount: 3 });
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 4, head: 6 });
+  await expect(editorOf(page).locator(".image-selected")).toHaveCount(2);
+  await away();
+  // Delete then removes just that image.
+  await page.mouse.dblclick(b.x + b.width + 100, row);
+  await page.keyboard.press("Delete");
+  expect(await content(page)).toEqual(["上面", "[a]", "下面"]);
+  await away();
+  // The document ending with an image: a double click below it selects it.
+  await setDoc(page, ["上面", { id: "a" }, { id: "b" }]);
+  await page.mouse.dblclick(b.x + 50, b.y + b.height + 80);
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 5, head: 6 });
+  await away();
+  await page.mouse.click(b.x + 50, b.y + b.height + 80, { clickCount: 3 });
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 4, head: 6 });
+  await away();
+  // A double click on the image itself keeps the caret its first click put (the preview opens).
+  await tile(page, 0).dblclick({ position: { x: 190, y: 50 } });
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 5, head: 5, side: -1 });
+  await page.keyboard.press("Escape");
+  await away();
+  // A triple click on an image: its visual line too.
+  await tile(page, 0).click({ clickCount: 3, position: { x: 190, y: 50 } });
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 4, head: 6 });
+  await page.keyboard.press("Escape");
+  await away();
+  // A double click in a text line still selects a word there.
+  const line = (await editorOf(page).locator(":scope > p").first().boundingBox())!;
+  await page.mouse.dblclick(line.x + 10, line.y + line.height / 2);
+  expect((await selection(page)).type).toBe("text");
   expect(errors).toEqual([]);
 });

@@ -97,6 +97,8 @@ function fakeView(state, rect = { left: 100, right: 200 }) {
       view.state = view.state.apply(tr);
     },
     nodeDOM: () => ({ getBoundingClientRect: () => rect }),
+    // No DOM selection (createSelectionBetween keeps an anchor the DOM still has).
+    dom: { ownerDocument: { getSelection: () => null } },
   };
   return view;
 }
@@ -389,19 +391,22 @@ test("选中图片的样式是与文字选区同色的半透明蒙层，没有�
     selector: selector.replace(/\/\*[\s\S]*?\*\//g, "").trim(),
     body,
   }));
-  // The text selection is drawn by the editor (caret.ts) in this colour.
-  const hex = rules
-    .find((r) => r.selector === ".selection-layer path")
-    .body.match(/#([0-9a-f]{6})/i)[1];
-  const rgb = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(" ");
+  // The text selection is drawn by the editor (caret.ts) in --selection, the
+  // active or the inactive colour by the editor's focus; the overlay uses the same.
+  assert.match(
+    rules.find((r) => r.selector === ".selection-layer path").body,
+    /fill:\s*var\(--selection\)/,
+  );
   const selected = rules.filter((r) =>
     /image-selected|ProseMirror-selectednode/.test(r.selector),
   );
   assert.ok(selected.length > 0);
   for (const rule of selected) assert.doesNotMatch(rule.body, /outline|border/);
   assert.ok(
-    selected.some((r) => r.body.includes(`rgb(${rgb} /`)),
-    `overlay in rgb(${rgb} / …)`,
+    selected.some(
+      (r) => /background:\s*var\(--selection\)/.test(r.body) && /opacity:\s*0\.5/.test(r.body),
+    ),
+    "overlay in var(--selection) at opacity 0.5",
   );
 });
 
@@ -1125,4 +1130,60 @@ test("拖动混合选区：剪切后粘贴到落点；Ctrl 为复制；落在选
   const still = drop(2);
   assert.equal(still.doc.eq(d), true);
   assert.equal(where(still), "BlockRange 1-4");
+});
+
+// ---- 2026-10-28 ----
+import { foldOf, pastImages, rangeSelection } from "../../src/editor/image-view.ts";
+
+test("foldOf：按顶边把一行图片分成视觉行，返回第 k 张所在那一折的 [首, 尾后)", () => {
+  const tops = [0, 0, 0.4, 110, 110, 220];
+  assert.deepEqual(foldOf(tops, 0), [0, 3]);
+  assert.deepEqual(foldOf(tops, 2), [0, 3]);
+  assert.deepEqual(foldOf(tops, 3), [3, 5]);
+  assert.deepEqual(foldOf(tops, 4), [3, 5]);
+  assert.deepEqual(foldOf(tops, 5), [5, 6]);
+  assert.deepEqual(foldOf([12], 0), [0, 1]);
+});
+
+test("pastImages：上下键越过整串图片，落到下一行行首 / 上一行行末，或文档边缘", () => {
+  // A 0-3 (text 1-2), a 3-4, b 4-5, B 5-8, C 8-11.
+  assert.equal(pastImages(mixed, 3, 1), 6);
+  assert.equal(pastImages(mixed, 4, 1), 6);
+  assert.equal(pastImages(mixed, 5, -1), 2);
+  const end = doc("A", img("a"), img("b"));
+  assert.equal(pastImages(end, 3, 1), 5);
+  assert.equal(pastImages(doc(img("a"), "A"), 1, -1), 0);
+});
+
+test("图片不会以节点选中留在状态里：浏览器读回的 NodeSelection 变为来向一侧的块间光标", () => {
+  const select = (state) =>
+    state.apply(state.tr.setSelection(NodeSelection.create(state.doc, 3))).selection;
+  // From above (the text before it): before the image, at the start of its row.
+  const fromAbove = select(text(mixed, 1));
+  assert.ok(fromAbove instanceof BlockRange && fromAbove.empty);
+  assert.deepEqual(fromAbove.toJSON(), { type: "blockRange", anchor: 3, head: 3, side: 1 });
+  // From below: after it.
+  const fromBelow = select(text(mixed, 6));
+  assert.deepEqual(fromBelow.toJSON(), { type: "blockRange", anchor: 4, head: 4, side: -1 });
+});
+
+test("块间范围保留 head 的 side（画光标用），eq / toJSON 仍不比较；DOM 读回同一范围时保留", () => {
+  // Rows a | b: the line break at 1.
+  const rows = doc(img("a"), img("b", true), "B");
+  const up = rangeSelection(rows, 2, 1, -1);
+  assert.ok(up instanceof BlockRange);
+  assert.equal(up.side, 1);
+  assert.equal(rangeSelection(rows, 0, 1, 1).side, -1);
+  assert.equal(rangeSelection(rows, 2, 1, 1, 1).side, 1);
+  assert.deepEqual(up.toJSON(), { type: "blockRange", anchor: 2, head: 1 });
+  assert.ok(up.eq(rangeSelection(rows, 2, 1, 1)));
+  // Mapping and the history bookmark keep it.
+  const state = stateOf(rows, up);
+  const typed = state.apply(state.tr.insertText("x", 4));
+  assert.equal(typed.selection.side, 1);
+  assert.equal(up.getBookmark().resolve(rows).side, 1);
+  // Read back from the DOM as the same range (no DOM selection in the fake view).
+  const view = fakeView(state);
+  const back = plugin.props.createSelectionBetween.call(plugin, view, rows.resolve(2), rows.resolve(1));
+  assert.equal(back, up);
 });

@@ -373,7 +373,8 @@ class Margin {
     const { anchor: a, head } = marginRange(anchor, line.span);
     pointerInput(view, (line.rect.top + line.rect.bottom) / 2);
     const { state } = view;
-    const next = rangeSelection(state.doc, a, head);
+    // 向上选时 head 在当前行行首：块间的 head 画在这一行首图之前（side 1），而不是上一行末尾。
+    const next = rangeSelection(state.doc, a, head, 1, head < a ? 1 : -1);
     // 同一个选区不再派发（拖动中每次 mousemove 都会来）；折行处画在哪一行仍按这次的指针。
     if (!next.eq(state.selection))
       view.dispatch(state.tr.setSelection(next).setMeta("pointer", true));

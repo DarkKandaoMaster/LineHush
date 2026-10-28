@@ -1,7 +1,7 @@
 import { NodeSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import type { CaretSpot } from "./caret-math.ts";
-import { BlockRange, besideImage } from "./image-view.ts";
+import { BlockRange, caretImage } from "./image-view.ts";
 
 /**
  * Where the caret is drawn, for the editor's own caret (caret.ts), the box
@@ -27,17 +27,18 @@ export function textCaret(view: EditorView, pos: number, side: -1 | 1 = 1): Care
 /**
  * The caret at the selection's head (also for a range, as in Notepad and
  * VS Code), `side` being the head's side at a soft wrap (`headSide`). Between
- * blocks it is drawn beside the image `besideImage` gives: as tall as the
- * image, its middle in the middle of the gap beside it (the image's right
- * margin). A range ending between two text lines: at the end of the one
- * before. A selected image (NodeSelection) has no caret.
+ * blocks it is drawn beside the image `caretImage` gives for the BlockRange's
+ * side (a range's too, 2026-10-28): as tall as the image, its middle in the
+ * middle of the gap beside it (the image's right margin). A range ending
+ * between two text lines: at the end of the one before. A selected image
+ * (NodeSelection) has no caret.
  */
 export function drawnCaret(view: EditorView, side: -1 | 1): CaretSpot | null {
   const sel = view.state.selection;
   if (sel instanceof NodeSelection) return null;
   const $head = sel.$head;
   if ($head.parent.inlineContent) return textCaret(view, sel.head, side);
-  const image = besideImage($head, sel instanceof BlockRange && sel.empty ? sel.side : -1);
+  const image = caretImage(view, $head, sel instanceof BlockRange ? sel.side : -1);
   if (image) {
     const item = view.nodeDOM(image.pos) as HTMLElement | null;
     const rect = item?.getBoundingClientRect();
