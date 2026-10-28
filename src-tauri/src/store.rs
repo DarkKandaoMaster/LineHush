@@ -155,7 +155,7 @@ impl Store {
         self.file.as_ref().map(|(path, _)| path.as_path())
     }
     fn work(&self) -> Result<&Db> {
-        self.work.as_ref().ok_or_else(|| "没有打开的日记".into())
+        self.work.as_ref().ok_or_else(|| "没有打开的笔记".into())
     }
     fn opened(&self, document: Diary, recovered: bool) -> Opened {
         Opened {
@@ -287,7 +287,7 @@ impl Store {
             Some((_, db)) => db.image(id)?,
             None => None,
         }
-        .ok_or_else(|| "日记中缺少这张图片的数据".into())
+        .ok_or_else(|| "笔记中缺少这张图片的数据".into())
     }
     /// Thumbnail of `id`, built by `build` and then kept. `build` runs without
     /// the store lock so a slow decode never holds up saving. Two requests for an

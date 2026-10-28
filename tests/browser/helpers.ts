@@ -5,7 +5,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 // logic are the app's own.
 
 export const editorOf = (page: Page) =>
-  page.getByRole("textbox", { name: "日记正文" });
+  page.getByRole("textbox", { name: "笔记正文" });
 
 type Block =
   | { type: "line"; text: string }

@@ -150,7 +150,7 @@ export function createSession(
     const pick = dialog || !path;
     if (pick) {
       path = await save({
-        title: "保存日记",
+        title: "保存笔记",
         filters: HUSH_FILTER,
         defaultPath:
           state.path ?? `${new Date().toLocaleDateString("sv-SE")}.hush`,
@@ -228,7 +228,7 @@ export function createSession(
     return guarded(async () => {
       const name = displayName().replace(/\.hush$/, "");
       const target = await save({
-        title: "导出日记",
+        title: "导出笔记",
         defaultPath: `${name}.${format}`,
         filters: [{ name: format.toUpperCase(), extensions: [format] }],
       });

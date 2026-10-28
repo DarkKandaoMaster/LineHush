@@ -222,7 +222,7 @@ export function createTabs(
     opening = true;
     try {
       const target = await open({
-        title: "打开日记",
+        title: "打开笔记",
         multiple: false,
         filters: HUSH_FILTER,
       });

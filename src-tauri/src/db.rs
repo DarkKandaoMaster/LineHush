@@ -103,7 +103,7 @@ impl Db {
     pub fn body(&self) -> Result<Diary> {
         let body = read_body(&self.conn)
             .map_err(sql)?
-            .ok_or("日记中缺少正文")?;
+            .ok_or("笔记中缺少正文")?;
         parse_body(&body, NOT_HUSH)
     }
     /// Rewrites only the body; image rows are left untouched.

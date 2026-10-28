@@ -123,7 +123,7 @@ async function pageOf(label, timeout = 20000) {
 const editor = (page) =>
   page
     .locator(".tab-pane:not([hidden])")
-    .getByRole("textbox", { name: "日记正文" });
+    .getByRole("textbox", { name: "笔记正文" });
 /** The current tab's pane: its banners, editor and hidden file input. */
 const pane = (page) => page.locator(".tab-pane:not([hidden])");
 const input = (page) => pane(page).locator("input[type=file]");
@@ -381,7 +381,7 @@ const thumbnailsLoaded = (ed) =>
     .toBe(true);
 
 // ---------------------------------------------------------------------------
-// 系统文件对话框（“保存日记”“导出日记”“打开日记”）。
+// 系统文件对话框（“保存笔记”“导出笔记”“打开笔记”）。
 /**
  * Answers a native file dialog the way a user would: types the path into its
  * file name box and presses 保存 / 打开; with `replace`, confirms 是 in the
@@ -503,7 +503,7 @@ const powershell = (script, env, timeout = 30000) =>
   );
 const answerSaveDialog = (
   target,
-  { replace = false, title = "保存日记" } = {},
+  { replace = false, title = "保存笔记" } = {},
 ) =>
   powershell(FILE_DIALOG, {
     LH_PID: String(processHandle.pid),
@@ -515,7 +515,7 @@ const answerSaveDialog = (
 const answerOpenDialog = (target) =>
   powershell(FILE_DIALOG, {
     LH_PID: String(processHandle.pid),
-    LH_TITLE: "打开日记",
+    LH_TITLE: "打开笔记",
     LH_PATH: target,
     LH_REPLACE: "0",
     LH_OPEN: "1",
@@ -851,7 +851,10 @@ async function closeWindowCase() {
   passed("关窗逐个询问");
 }
 
-/** taskkill /F 后，所有窗口里有未保存修改的标签页恢复到一个窗口，带 ●。 */
+/**
+ * taskkill /F 后（启动时 = 新窗口），有未保存修改的标签页按原窗口恢复：原来几个窗口就开
+ * 几个，沿用原 label、窗口内顺序与当前标签页，带 ●；焦点给原焦点窗口；没修改的标签页不恢复。
+ */
 async function crashTabsCase() {
   const file = writeHush(path.join(dir, "乙.hush"), linesDoc(["乙原文"]));
   const page = await start([file]);

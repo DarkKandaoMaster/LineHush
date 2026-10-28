@@ -108,7 +108,7 @@ function DiaryEditor(props: Props) {
     editorProps: {
       attributes: {
         role: "textbox",
-        "aria-label": "日记正文",
+        "aria-label": "笔记正文",
         "aria-multiline": "true",
         spellcheck: "false",
       },
