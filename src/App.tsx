@@ -4,6 +4,7 @@ import type { Session } from "./core/session";
 import { createTabs, displayName, type Tab } from "./core/tabs";
 import { useCaretMetrics } from "./hooks/useCaretMetrics";
 import { useContextMenu } from "./hooks/useContextMenu";
+import { useDevicePixelRatio } from "./hooks/useDevicePixelRatio";
 import { useDialogs } from "./hooks/useDialogs";
 import { useImagePreview } from "./hooks/useImagePreview";
 import { useSettings } from "./hooks/useSettings";
@@ -56,6 +57,8 @@ export default function App() {
   // 正文缩放：每个窗口一个值，状态栏显示百分比。
   const zoom = useZoom();
   useWindowTitle(current, currentState?.dirty ?? false);
+  // 根元素的 --dpr（屏幕缩放比例），供 CSS 画固定物理像素的分隔线；不依赖其他 hook，放在最后。
+  useDevicePixelRatio();
   const fileDisabled =
     !currentState || currentState.busy || currentState.importing;
   return (

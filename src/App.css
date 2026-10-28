@@ -55,13 +55,18 @@ input:focus-visible {
   display: contents;
 }
 .toolbar {
-  /* 内容高 32px 与记事本菜单栏相同（border-box，含 2px 分隔线共 34px）；窄窗口换行时 min-height 仍能撑开。 */
-  min-height: 34px;
+  /*
+   * 内容高 32px 与记事本菜单栏相同，下面是 2 个物理像素的分隔线（border-box，min-height 含线；
+   * 窄窗口换行时仍能撑开）。线宽 2px / --dpr（useDevicePixelRatio）：Chromium 把边框宽度向下取整到
+   * 物理像素，100% 为 2px，125% 时 1.6px、150% 时 1.333px 都画成 2 物理像素；内容区仍是整 32px，
+   * 线的上沿落在整物理像素上。
+   */
+  min-height: calc(32px + 2px / var(--dpr, 1));
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 0 12px;
-  border-bottom: 2px solid #eaeaea;
+  border-bottom: calc(2px / var(--dpr, 1)) solid #eaeaea;
   /* 记事本菜单行的颜色（2026-10-27 实测 #f8f8f8，比编辑区的 #f9f9f9 略深）。 */
   background: #f8f8f8;
   flex-wrap: wrap;
