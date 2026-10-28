@@ -19,7 +19,6 @@ import {
 
 /** File dialog filter for `.hush` documents. */
 export const HUSH_FILTER = [{ name: "LineHush 笔记", extensions: ["hush"] }];
-const recoveredNotice = "已恢复未保存的修改。";
 export type ExportFormat = "txt" | "html" | "pdf";
 /** The answer to "save changes to <name>?" before the document is replaced or closed. */
 export type UnsavedChoice = "save" | "discard" | "cancel";
@@ -72,7 +71,7 @@ export function createSession(
   let queue = makeQueue();
   /** The stash error banner is cleared by the next successful stash. */
   let stashFailed = false;
-  /** The notice about recovered changes, cleared once they are saved. */
+  /** Rust's notice about recovered changes (if any), cleared once they are saved. */
   let recoveryNotice = "";
   /** Set once Rust has dropped the tab; nothing is stashed after that. */
   let released = false;
@@ -121,9 +120,7 @@ export function createSession(
     clearTimeout(timer);
     queue = makeQueue();
     stashFailed = false;
-    recoveryNotice = result.recovered
-      ? (result.notice ?? recoveredNotice)
-      : "";
+    recoveryNotice = result.recovered ? (result.notice ?? "") : "";
     savedSnapshot = result.recovered ? null : JSON.stringify(result.document);
     set({
       document: result.document,

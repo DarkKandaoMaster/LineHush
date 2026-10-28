@@ -367,10 +367,7 @@ export function createTabs(
    */
   async function closeWindow() {
     if (closing || closingWindow) return;
-    if (busy()) {
-      activeTab()?.session.setNotice("操作仍在进行，完成后可关闭窗口。");
-      return;
-    }
+    if (busy()) return;
     closingWindow = true;
     try {
       const keep =

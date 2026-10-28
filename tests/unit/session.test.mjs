@@ -258,12 +258,12 @@ test("默认文件名为首行文字：取第一行有字的文字，没有时�
   }
 });
 
-test("恢复了未保存的修改时标记为未保存并提示", async () => {
+test("恢复了未保存的修改时标记为未保存，不显示提示", async () => {
   const { session, fake, state } = setup({ recovered: true, answers: ["cancel"] });
   try {
     assert.equal(state().dirty, true);
     assert.equal(state().saveFailed, false);
-    assert.equal(state().notice, "已恢复未保存的修改。");
+    assert.equal(state().notice, "");
     assert.equal(await session.closeTab(), false);
     assert.deepEqual(fake.asked, ["测试.hush"]);
     assert.ok(!fake.calls.includes("close_tab"));
@@ -272,14 +272,15 @@ test("恢复了未保存的修改时标记为未保存并提示", async () => {
   }
 });
 
-test("恢复提示在保存成功后清除，保存失败时保留，其他提示不受影响", async () => {
-  const { session, fake, state } = setup({ recovered: true });
+test("Rust 的恢复提示在保存成功后清除，保存失败时保留，其他提示不受影响", async () => {
+  const notice = "原文件无法打开，未保存的修改已作为未命名文档恢复。测试";
+  const { session, fake, state } = setup({ recovered: true, notice });
   try {
-    assert.equal(state().notice, "已恢复未保存的修改。");
+    assert.equal(state().notice, notice);
     fake.failSave = true;
     await session.saveDocument();
     assert.equal(state().saveFailed, true);
-    assert.equal(state().notice, "已恢复未保存的修改。");
+    assert.equal(state().notice, notice);
     fake.failSave = false;
     await session.saveDocument();
     assert.equal(state().dirty, false);
@@ -294,10 +295,10 @@ test("恢复提示在保存成功后清除，保存失败时保留，其他提�
   }
 });
 
-test("恢复的未命名草稿经另存为保存后清除恢复提示", async () => {
+test("恢复的未命名草稿不显示提示，经另存为保存后不再有修改", async () => {
   const { session, fake, state } = setup({ path: null, recovered: true });
   try {
-    assert.equal(state().notice, "已恢复未保存的修改。");
+    assert.equal(state().notice, "");
     fake.savePath = "D:/恢复.hush";
     await session.saveDocumentAs();
     assert.equal(state().dirty, false);

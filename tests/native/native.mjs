@@ -890,10 +890,10 @@ async function crashTabsCase() {
   expect(await windowCount()).toBe(2);
   expect(await activeName(again)).toBe("● 乙.hush");
   await expect(editor(again)).toHaveText("乙原文改乙");
-  await expect(pane(again).getByText("已恢复未保存的修改。")).toBeVisible();
+  await expect(pane(again).locator(".notice-banner")).toHaveCount(0);
   await dirty(again, true);
   await expect(editor(second2)).toHaveText("三");
-  await expect(pane(second2).getByText("已恢复未保存的修改。")).toBeVisible();
+  await expect(pane(second2).locator(".notice-banner")).toHaveCount(0);
   await dirty(second2, true);
   // The window that had the focus gets it back.
   await expect.poll(() => sessionData().focused).toBe(focusedBefore);
@@ -1368,7 +1368,7 @@ async function draftCase() {
   await stashed(id, (doc) => JSON.stringify(lines(doc)) === JSON.stringify(draftLines));
   await kill();
   page = await start();
-  await expect(pane(page).getByText("已恢复未保存的修改。")).toBeVisible();
+  await expect(pane(page).locator(".notice-banner")).toHaveCount(0);
   await dirty(page, true);
   await expect(editor(page).locator("p")).toHaveText(draftLines);
   expect(await tabNames(page)).toEqual(["● 无标题"]);
@@ -1592,7 +1592,7 @@ async function imagesCase() {
   await page.keyboard.press("Escape");
   await expect(prompt(page, "测试.hush")).toBeHidden();
   // The dialog's close event, which ends the first close attempt, fires a task
-  // after it is hidden; closing again before that only shows "操作仍在进行".
+  // after it is hidden; closing again before that is silently ignored.
   await sleep(300);
   await requestClose(page);
   await answer(page, "测试.hush", "取消");
@@ -1723,7 +1723,7 @@ async function saveAndCrashCase() {
   expect(storedIds(file)).not.toContain(crashed.id);
   page = await start();
   ed = editor(page);
-  await expect(pane(page).getByText("已恢复未保存的修改。")).toBeVisible();
+  await expect(pane(page).locator(".notice-banner")).toHaveCount(0);
   await dirty(page, true);
   await expect.poll(() => title(page)).toBe("● 测试.hush");
   await expect(ed.getByText("崩溃前输入")).toBeVisible();
@@ -1735,7 +1735,7 @@ async function saveAndCrashCase() {
   await ed.click();
   await page.keyboard.press("Control+s");
   await dirty(page, false);
-  await expect(pane(page).getByText("已恢复未保存的修改。")).toHaveCount(0);
+  await expect(pane(page).locator(".notice-banner")).toHaveCount(0);
   expect(body(file)).toEqual(crashStash);
   expect(stored(file, crashed.id).equals(crashed.bytes)).toBe(true);
   expect(stash(workOf(id))).toBeNull();
@@ -1744,7 +1744,7 @@ async function saveAndCrashCase() {
   page = await start();
   ed = editor(page);
   await expect.poll(() => title(page)).toBe("无标题");
-  await expect(pane(page).getByText("已恢复未保存的修改。")).toHaveCount(0);
+  await expect(pane(page).locator(".notice-banner")).toHaveCount(0);
   await expect(ed).toHaveText("");
   await expect(ed.locator(".image-tile")).toHaveCount(0);
   expect(windowEntry().tabs.map((t) => t.path)).toEqual([null]);
@@ -1817,7 +1817,7 @@ async function launchArgumentCase() {
   let page = await start(["副本.hush"], dir);
   await expect.poll(() => title(page)).toBe("副本.hush");
   expect(await tabNames(page)).toEqual(["副本.hush"]);
-  await expect(pane(page).getByText("已恢复未保存的修改。")).toHaveCount(0);
+  await expect(pane(page).locator(".notice-banner")).toHaveCount(0);
   expect(windowEntry().tabs[0].path).toMatch(/副本\.hush$/);
   passed("启动参数（相对路径）打开文件");
   await editor(page).click();
@@ -1835,7 +1835,7 @@ async function launchArgumentCase() {
   await expect.poll(() => title(page)).toBe("另一个.hush");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.keyboard.press("Control+1");
-  await expect(pane(page).getByText("已恢复未保存的修改。")).toBeVisible();
+  await expect(pane(page).locator(".notice-banner")).toHaveCount(0);
   await expect(editor(page).getByText("副本未保存")).toBeVisible();
   passed("启动参数打开文件：崩溃残留先恢复，文件开在新标签页");
   await requestClose(page);

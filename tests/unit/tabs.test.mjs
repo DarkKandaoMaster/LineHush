@@ -143,10 +143,7 @@ test("恢复窗口只调用一次，按 Rust 给出的顺序与当前标签页�
     assert.equal(state().active, "b");
     assert.deepEqual(names(), ["甲.hush", "无标题", "无标题 2"]);
     assert.equal(tabs.activeTab().session.getSnapshot().dirty, true);
-    assert.equal(
-      tabs.activeTab().session.getSnapshot().notice,
-      "已恢复未保存的修改。",
-    );
+    assert.equal(tabs.activeTab().session.getSnapshot().notice, "");
   } finally {
     await teardown(tabs);
   }
@@ -488,7 +485,7 @@ test("关闭窗口：全部通过后逐个丢弃再关闭；保存失败时窗�
   }
 });
 
-test("关闭窗口：有操作在进行时只提示", async () => {
+test("关闭窗口：有操作在进行时静默忽略", async () => {
   const { tabs, fake, state } = setup({
     restored: [
       ["a", blank()],
@@ -499,10 +496,7 @@ test("关闭窗口：有操作在进行时只提示", async () => {
     await tabs.initialize();
     state().tabs[1].session.setImporting(true);
     await tabs.closeWindow();
-    assert.equal(
-      tabs.activeTab().session.getSnapshot().notice,
-      "操作仍在进行，完成后可关闭窗口。",
-    );
+    assert.equal(tabs.activeTab().session.getSnapshot().notice, "");
     assert.ok(!fake.calls.includes("plugin:window|close"));
     state().tabs[1].session.setImporting(false);
   } finally {
