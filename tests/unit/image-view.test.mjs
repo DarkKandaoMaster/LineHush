@@ -449,7 +449,7 @@ function insertNodes(state, nodes) {
   return { state: state.apply(tr), range };
 }
 
-test("插入图片：块间光标或选中图片时就地插入、并入那一行", () => {
+test("插入图片：块间光标处就地插入、并入那一行", () => {
   // Caret between two images of one row: inside that row.
   const pair = doc(img("a"), img("b"));
   const between = insert(caret(pair, 1), "n");
@@ -464,20 +464,95 @@ test("插入图片：块间光标或选中图片时就地插入、并入那一�
   const before = insert(caret(doc("A", img("a")), 3), "n");
   assert.deepEqual(layout(before.state), ["A", "[n a]"]);
   assert.equal(where(before.state), "caret 4");
-  // A selected image (NodeSelection) or a range of images: after them, in the last one's row.
-  const node = insert(stateOf(pair, NodeSelection.create(pair, 0)), "n");
-  assert.deepEqual(layout(node.state), ["[a n b]"]);
-  assert.equal(where(node.state), "caret 2");
-  const range = insert(
-    stateOf(pair, new BlockRange(pair.resolve(0), pair.resolve(2))),
-    "n",
-    "m",
+});
+
+/** `state` with the images `from`..`to` selected (one image: a NodeSelection). */
+const imagesOn = (d, from, to) =>
+  stateOf(
+    d,
+    to === from + 1
+      ? NodeSelection.create(d, from)
+      : new BlockRange(d.resolve(from), d.resolve(to)),
   );
-  assert.deepEqual(layout(range.state), ["[a b n m]"]);
-  assert.equal(where(range.state), "caret 4");
-  const rows = doc(img("a"), row("b"));
-  const across = insert(stateOf(rows, new BlockRange(rows.resolve(0), rows.resolve(2))), "n");
-  assert.deepEqual(layout(across.state), ["[a]", "[b n]"]);
+const newlines = (state) => {
+  const out = [];
+  state.doc.forEach((node) => {
+    if (node.type.name === "image") out.push(node.attrs.newline);
+  });
+  return out;
+};
+
+test("插入图片：选中图片时替换掉它们，新图片接替它们所在的行", () => {
+  // The first image of a row (after a row): the new one starts that row.
+  const first = insert(imagesOn(doc(img("z"), row("a"), img("b")), 1, 2), "n");
+  assert.deepEqual(layout(first.state), ["[z]", "[n b]"]);
+  assert.deepEqual(newlines(first.state), [false, true, false]);
+  assert.deepEqual(first.range, { from: 1, to: 2 });
+  assert.equal(spot(first.state), "caret 2 -1");
+  // The first image of a row below a text line.
+  const belowLine = insert(imagesOn(doc("A", row("a"), img("b")), 3, 4), "n");
+  assert.deepEqual(layout(belowLine.state), ["A", "[n b]"]);
+  assert.deepEqual(newlines(belowLine.state), [true, false]);
+  // Inside a row, and at its end: the new one stays in that row.
+  const middle = insert(imagesOn(doc(img("a"), img("b"), img("c")), 1, 2), "n");
+  assert.deepEqual(layout(middle.state), ["[a n c]"]);
+  assert.equal(spot(middle.state), "caret 2 -1");
+  const end = insert(imagesOn(doc(img("a"), img("b"), row("y")), 1, 2), "n");
+  assert.deepEqual(layout(end.state), ["[a n]", "[y]"]);
+  assert.equal(spot(end.state), "caret 2 -1");
+  // A whole row (between rows, or below a line): the new ones make a row of their own.
+  const whole = insert(imagesOn(doc(img("z"), row("a"), img("b"), row("y")), 1, 3), "n", "m");
+  assert.deepEqual(layout(whole.state), ["[z]", "[n m]", "[y]"]);
+  assert.deepEqual(whole.range, { from: 1, to: 3 });
+  assert.equal(spot(whole.state), "caret 3 -1");
+  const wholeBelowLine = insert(imagesOn(doc("A", row("a"), img("b"), row("y"), "B"), 3, 5), "n");
+  assert.deepEqual(layout(wholeBelowLine.state), ["A", "[n]", "[y]", "B"]);
+  // Two rows selected: one row of the new ones.
+  const across = insert(imagesOn(doc(img("a"), row("b")), 0, 2), "n");
+  assert.deepEqual(layout(across.state), ["[n]"]);
+  // A range ending inside a row: the rest of that row joins the new ones.
+  const partial = insert(imagesOn(doc(img("a"), img("b"), row("c"), img("d")), 1, 3), "n");
+  assert.deepEqual(layout(partial.state), ["[a n d]"]);
+});
+
+test("插入图片：替换文档末尾 / 唯一的图片不留空行", () => {
+  const only = insert(imagesOn(doc(img("a")), 0, 1), "n");
+  assert.deepEqual(layout(only.state), ["[n]"]);
+  assert.deepEqual(content(only.state), ["[n]"]);
+  assert.equal(only.state.doc.childCount, 1);
+  assert.deepEqual(newlines(only.state), [true]);
+  assert.equal(spot(only.state), "caret 1 -1");
+  const last = insert(imagesOn(doc("A", img("a")), 3, 4), "n", "m");
+  assert.deepEqual(layout(last.state), ["A", "[n m]"]);
+  assert.equal(last.state.doc.childCount, 3);
+  assert.equal(spot(last.state), "caret 5 -1");
+});
+
+test("插入图片：选中多张替换为多张，首张之后保留各自的换行", () => {
+  const rows = doc(img("z"), row("a"), img("b"), row("y"));
+  const pasted = insertNodes(imagesOn(rows, 1, 3), [img("x"), row("p"), img("q")]);
+  assert.deepEqual(layout(pasted.state), ["[z]", "[x]", "[p q]", "[y]"]);
+  assert.deepEqual(pasted.range, { from: 1, to: 4 });
+  assert.equal(spot(pasted.state), "caret 4 -1");
+  // Inside a row: the first new image joins it, the rest keep their rows.
+  const inRow = insertNodes(imagesOn(doc(img("a"), img("b"), img("c")), 1, 2), [row("x"), row("y")]);
+  assert.deepEqual(layout(inRow.state), ["[a x]", "[y c]"]);
+});
+
+test("插入图片替换选中图片是一步撤销，撤销后原图回来", () => {
+  const d = doc(img("z"), row("a"), img("b"), row("y"));
+  const state = EditorState.create({
+    doc: d,
+    selection: new BlockRange(d.resolve(1), d.resolve(3)),
+    plugins: [plugin, history()],
+  });
+  const tr = closeHistory(state.tr);
+  insertImages(tr, [img("n")]);
+  const replaced = state.apply(tr);
+  assert.deepEqual(layout(replaced), ["[z]", "[n]", "[y]"]);
+  const undone = run(replaced, undo).state;
+  assert.deepEqual(layout(undone), ["[z]", "[a b]", "[y]"]);
+  assert.deepEqual(newlines(undone), [false, true, false, true]);
 });
 
 test("插入图片：在两行图片之间的换行处，行末（side -1）并入上一行，行首（side 1）并入下一行", () => {

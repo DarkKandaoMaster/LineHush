@@ -247,11 +247,11 @@ function DiaryEditor(props: Props) {
         // One undo step for the whole batch.
         const tr = closeHistory(state.tr);
         // Each picture is its own node; neighbouring images share a row unless
-        // a line break (`newline`) starts a new one. At images (selected, or
-        // the caret between blocks) the new ones join the row there; on a text
-        // line they make a row of their own. Nothing ends up selected: the
-        // caret sits at the end of their row, where a second paste joins them
-        // and Enter starts a new row.
+        // a line break (`newline`) starts a new one. Selected images are
+        // replaced in place; at the caret between blocks the new ones join the
+        // row there; on a text line they make a row of their own. Nothing
+        // ends up selected: the caret sits at the end of their row, where a
+        // second paste joins them and Enter starts a new row.
         insertImages(
           tr,
           pictures.map((pic, i) =>

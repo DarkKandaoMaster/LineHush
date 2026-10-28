@@ -677,8 +677,12 @@ export function placeRows(
  * leaves the caret between blocks after the last of them (the end of their
  * row); returns where they are.
  *
- * Selected images, or the caret between blocks: right there, in the row there
- * (see `joinAt`). Otherwise (a text selection) the images take the place of an
+ * Selected images (only images) are replaced: the new ones take their place
+ * and their rows, the first starting a row where the first selected one did
+ * (so a whole row selected becomes a row of their own), the image after them
+ * staying in their row or starting the next as before. The caret between
+ * blocks: right there, in the row there (see `joinAt`). Otherwise (a text
+ * selection, or images and text lines) the images take the place of an
  * empty line the caret is on, go before / after a line with the caret at its
  * start / end, split it in the middle, or replace selected text; they then make
  * a row of their own: they start a new row after an image above, and an image
@@ -698,8 +702,18 @@ export function insertImages(
   const size = nodes.reduce((sum, node) => sum + node.nodeSize, 0);
   let join: Join = 0;
   if (selectedImages(sel)) {
-    join = -1;
-    tr.insert(from, nodes);
+    // Replaced in place (one step, undone as one): the first new image starts
+    // a row where the first selected one did; the image after the selection
+    // keeps its own line break, so it stays in their row or below it.
+    from = sel.from;
+    const $from = tr.doc.resolve(from);
+    const newline =
+      !isImage($from.nodeBefore) || !!$from.nodeAfter!.attrs.newline;
+    tr.replaceWith(from, sel.to, nodes);
+    tr.setNodeAttribute(from, "newline", newline);
+    const to = from + size;
+    tr.setSelection(new BlockRange(tr.doc.resolve(to), undefined, -1));
+    return { from, to };
   } else if (sel instanceof BlockRange && sel.empty) {
     join = joinAt(sel.$head, sel.side);
     tr.insert(from, nodes);
