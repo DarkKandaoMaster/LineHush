@@ -451,3 +451,39 @@ test("末行下方空白：左栏仍选末行，行右侧空白仍在行尾，�
   expect(await selection(page)).toMatchObject({ type: "blockRange", head: 10, side: -1 });
   expect(errors).toEqual([]);
 });
+test("无标题笔记打字后删空回到未修改（无 ●）；多留一个空行仍为已修改", async ({ page }) => {
+  const errors = await load(page);
+  const tabName = page.locator(".tab.active .tab-name");
+  await page.keyboard.insertText("今天");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("记录");
+  await expect(tabName).toHaveText("● 无标题");
+  await page.keyboard.press("Control+a");
+  await page.keyboard.press("Delete");
+  await expect(tabName).toHaveText("无标题");
+  await page.keyboard.insertText("一");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Backspace");
+  await expect(tabName).toHaveText("● 无标题");
+  await page.keyboard.press("Backspace");
+  await expect(tabName).toHaveText("无标题");
+  // Two empty lines are other content than the new document's one.
+  await page.keyboard.press("Enter");
+  await expect(tabName).toHaveText("● 无标题");
+  await page.keyboard.press("Backspace");
+  await expect(tabName).toHaveText("无标题");
+  expect(errors).toEqual([]);
+});
+test("恢复的无标题笔记（崩溃残留）删空后回到未修改（无 ●）", async ({ page }) => {
+  const errors = await load(page, {
+    blocks: [{ type: "line", text: "恢复的内容" }],
+    recovered: true,
+  });
+  const tabName = page.locator(".tab.active .tab-name");
+  await expect(editorOf(page).locator("p")).toHaveText(["恢复的内容"]);
+  await expect(tabName).toHaveText("● 无标题");
+  await page.keyboard.press("Control+a");
+  await page.keyboard.press("Backspace");
+  await expect(tabName).toHaveText("无标题");
+  expect(errors).toEqual([]);
+});

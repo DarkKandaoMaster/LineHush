@@ -14,6 +14,8 @@ type Block =
 export interface DesktopOptions {
   /** The one untitled tab's document (restore_window); one empty line by default. */
   blocks?: Block[];
+  /** That document is unsaved changes recovered from its working copy (crash residue). */
+  recovered?: boolean;
   /** What read_settings hands out (normalized by the app); the defaults by default. */
   settings?: Record<string, unknown>;
   /**
@@ -45,10 +47,10 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       settings: options.settings ?? {},
       newTabs: 0,
     });
-    const opened = (path: string | null, blocks?: Block[]) => ({
+    const opened = (path: string | null, blocks?: Block[], recovered = false) => ({
       document: { blocks: blocks ?? [{ type: "line", text: "" }] },
       path,
-      recovered: false,
+      recovered,
       notice: null,
     });
     const emit = (event: string, payload: unknown) => {
@@ -76,7 +78,10 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
             return {
               tabs: tabs.map((tab, i) => ({
                 tab: tab.id,
-                opened: opened(tab.path, i === 0 ? options.blocks : undefined),
+                opened:
+                  i === 0
+                    ? opened(tab.path, options.blocks, options.recovered)
+                    : opened(tab.path),
                 error: null,
               })),
               active: tabs[0].id,

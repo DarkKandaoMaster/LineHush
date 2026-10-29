@@ -37,6 +37,8 @@ export interface SessionState {
   saveFailed: boolean;
 }
 export type Session = ReturnType<typeof createSession>;
+/** JSON of a new untitled document (Rust's `Diary::empty`): one empty line. */
+const EMPTY = JSON.stringify(fromText(""));
 
 /**
  * The document of one tab. It owns its stash queue; React only subscribes to
@@ -77,9 +79,12 @@ export function createSession(
   let released = false;
   /**
    * JSON of the content in the user's file (or of a fresh untitled document), so
-   * undoing back to it clears `dirty`. Null when unknown: recovered changes.
+   * undoing back to it clears `dirty`. Null when unknown: recovered changes to a
+   * file. Recovered changes to an untitled document count against the empty
+   * document (Rust recovers an untitled stash only when it is not empty), so
+   * deleting everything leaves nothing to save.
    */
-  let savedSnapshot: string | null = JSON.stringify(state.document);
+  let savedSnapshot: string | null = EMPTY;
   /** Edits go to the crash-recovery working copy; the user's file is left alone. */
   function makeQueue() {
     return new SaveQueue<Diary>(async (snapshot) => {
@@ -121,7 +126,11 @@ export function createSession(
     queue = makeQueue();
     stashFailed = false;
     recoveryNotice = result.recovered ? (result.notice ?? "") : "";
-    savedSnapshot = result.recovered ? null : JSON.stringify(result.document);
+    savedSnapshot = !result.recovered
+      ? JSON.stringify(result.document)
+      : result.path === null
+        ? EMPTY
+        : null;
     set({
       document: result.document,
       path: result.path,

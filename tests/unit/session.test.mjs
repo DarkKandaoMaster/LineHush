@@ -180,6 +180,27 @@ test("未命名新文档改回空文档时清除未保存标记，恢复的修�
   }
 });
 
+test("恢复的未命名文档删空后清除未保存标记（同新建的空文档），改出别的内容仍为未保存", async () => {
+  for (const notice of [null, "原文件无法打开，未保存的修改已作为未命名文档恢复。测试"]) {
+    // Crash residue or a reload: Rust recovers an untitled stash only when it is not empty.
+    const { session, state } = setup({ path: null, recovered: true, notice });
+    try {
+      assert.equal(state().dirty, true);
+      session.update(fromText("改过"));
+      assert.equal(state().dirty, true);
+      session.update(fromText(""));
+      assert.equal(state().dirty, false);
+      // A blank line more is other content than the new document's one empty line.
+      session.update(fromText("\n"));
+      assert.equal(state().dirty, true);
+      session.update(fromText("旧日记\n\n"));
+      assert.equal(state().dirty, true);
+    } finally {
+      await teardown(session);
+    }
+  }
+});
+
 test("保存写入当前文件并清除未保存标记，失败时保留标记并可重试", async () => {
   const { session, fake, state } = setup();
   try {
