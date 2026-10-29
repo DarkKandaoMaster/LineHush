@@ -1,0 +1,6 @@
+{
+  "version": "0.9.0",
+  "notes": "第一个带自动更新的版本：启动后自动检查新版本（设置里可关闭），发现新版本时可在程序内一键更新。",
+  "pub_date": "2026-10-29T16:49:46Z",
+  "url": "https://github.com/DarkKandaoMaster/LineHush/releases/download/LineHush_v0.9.0/LineHush_0.9.0_x64-setup.exe"
+}
