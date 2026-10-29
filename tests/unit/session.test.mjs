@@ -31,6 +31,8 @@ function setup({
   mockIPC(async (cmd, args) => {
     fake.calls.push(cmd);
     fake.args.push([cmd, args]);
+    // `holdSave` keeps the write pending until the test resolves it.
+    if (cmd === "save_document" && fake.holdSave) await fake.holdSave;
     if (cmd === "save_document" && fake.failSave) throw Error("测试写入失败");
     if (cmd === "close_tab" && fake.failClose) throw "测试清理失败";
     if (cmd === "export_pdf") {
@@ -38,6 +40,7 @@ function setup({
       if (fake.failPdf) throw "无法写入 PDF 文件";
     }
     if (cmd === "plugin:dialog|save") {
+      if (fake.holdDialog) await fake.holdDialog;
       fake.dialog = args.options;
       return fake.savePath;
     }
@@ -50,6 +53,7 @@ function setup({
     "t1",
     async (name) => {
       fake.asked.push(name);
+      if (fake.holdAsk) await fake.holdAsk;
       return answers.shift();
     },
     () => name,
@@ -507,6 +511,157 @@ test("未命名文档导出的默认文件名为“无标题”", async () => {
     fake.savePath = null;
     await session.exportDocument("txt", DEFAULT_SETTINGS);
     assert.equal(fake.dialog.defaultPath, "无标题.txt");
+  } finally {
+    await teardown(session);
+  }
+});
+
+/** A promise the test resolves by hand. */
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+test("已命名文件保存中：不锁界面（locked 为 false）但不重入（busy 为 true）", async () => {
+  const { session, fake, state } = setup();
+  try {
+    session.update(fromText("新日记"));
+    const gate = deferred();
+    fake.holdSave = gate.promise;
+    const saving = session.saveDocument();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(fake.calls.at(-1), "save_document");
+    assert.equal(state().busy, true);
+    assert.equal(state().locked, false);
+    // A second save while one is running is dropped, not queued.
+    await session.saveDocument();
+    gate.resolve();
+    await saving;
+    assert.equal(state().busy, false);
+    assert.equal(state().locked, false);
+    assert.equal(state().dirty, false);
+    assert.equal(fake.calls.filter((cmd) => cmd === "save_document").length, 1);
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("保存进行中继续编辑：保存完成后仍为未保存，新内容随后暂存到工作副本", async () => {
+  const { session, fake, state } = setup();
+  try {
+    session.update(fromText("第一版"));
+    const gate = deferred();
+    fake.holdSave = gate.promise;
+    const saving = session.saveDocument();
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(fileCommands(fake), ["stash_document", "save_document"]);
+    session.update(fromText("第二版"));
+    assert.equal(state().dirty, true);
+    // Nothing is stashed while the file is being written (Rust empties the
+    // working copy when the save lands).
+    await session.flush();
+    assert.deepEqual(fileCommands(fake), ["stash_document", "save_document"]);
+    gate.resolve();
+    await saving;
+    assert.equal(state().busy, false);
+    assert.equal(state().dirty, true);
+    assert.equal(state().saveFailed, false);
+    assert.equal(state().error, "");
+    const written = fake.args.find(([cmd]) => cmd === "save_document")[1].document;
+    assert.deepEqual(written, fromText("第一版"));
+    await session.flush();
+    assert.deepEqual(fileCommands(fake), [
+      "stash_document",
+      "save_document",
+      "stash_document",
+    ]);
+    assert.deepEqual(fake.args.at(-1)[1].document, fromText("第二版"));
+    // Typing the saved content back is clean again; the second save writes 第二版.
+    session.update(fromText("第一版"));
+    assert.equal(state().dirty, false);
+    session.update(fromText("第二版"));
+    await session.saveDocument();
+    assert.equal(state().dirty, false);
+    assert.deepEqual(fake.args.at(-1)[1].document, fromText("第二版"));
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("保存进行中继续编辑而保存失败：错误横幅不带重试，新内容仍暂存", async () => {
+  const { session, fake, state } = setup();
+  try {
+    session.update(fromText("第一版"));
+    const gate = deferred();
+    fake.holdSave = gate.promise;
+    const saving = session.saveDocument();
+    await new Promise((r) => setImmediate(r));
+    session.update(fromText("第二版"));
+    fake.failSave = true;
+    gate.resolve();
+    await saving;
+    assert.equal(state().dirty, true);
+    assert.match(state().error, /^保存失败：/);
+    // 重试保存 would write 第二版, not what failed: it is not offered.
+    assert.equal(state().saveFailed, false);
+    await session.flush();
+    assert.deepEqual(fileCommands(fake), [
+      "stash_document",
+      "save_document",
+      "stash_document",
+    ]);
+    assert.deepEqual(fake.args.at(-1)[1].document, fromText("第二版"));
+    fake.failSave = false;
+    fake.holdSave = null;
+    await session.saveDocument();
+    assert.equal(state().dirty, false);
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("无标题文档保存（走对话框）期间锁住界面：locked 与 busy 都为 true", async () => {
+  const { session, fake, state } = setup({ path: null, name: "无标题" });
+  /** Runs `start` with the dialog held open, checks the flags, then lets it cancel. */
+  async function heldDialog(start) {
+    const gate = deferred();
+    fake.holdDialog = gate.promise;
+    fake.savePath = null;
+    const pending = start();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(state().busy, true);
+    assert.equal(state().locked, true);
+    gate.resolve();
+    await pending;
+    assert.equal(state().busy, false);
+    assert.equal(state().locked, false);
+  }
+  try {
+    session.update(fromText("草稿"));
+    await heldDialog(() => session.saveDocument());
+    assert.equal(fake.calls.at(-1), "plugin:dialog|save");
+    // Save As and export lock too.
+    await heldDialog(() => session.saveDocumentAs());
+    await heldDialog(() => session.exportDocument("txt", DEFAULT_SETTINGS));
+  } finally {
+    await teardown(session);
+  }
+});
+
+test("关闭标签页询问期间锁住界面", async () => {
+  const { session, fake, state } = setup({ answers: ["cancel"] });
+  try {
+    session.update(fromText("改过"));
+    const gate = deferred();
+    fake.holdAsk = gate.promise;
+    const closing = session.closeTab();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(state().busy, true);
+    assert.equal(state().locked, true);
+    gate.resolve();
+    assert.equal(await closing, false);
+    assert.equal(state().locked, false);
   } finally {
     await teardown(session);
   }

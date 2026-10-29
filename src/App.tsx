@@ -63,8 +63,9 @@ export default function App() {
   useWindowTitle(current, currentState?.dirty ?? false);
   // 根元素的 --dpr（屏幕缩放比例），供 CSS 画固定物理像素的分隔线；不依赖其他 hook，放在最后。
   useDevicePixelRatio();
+  // 保存 / 另存为 / 导出按钮只在弹着对话框或长操作时变灰（locked），已命名文件的 Ctrl+S 不算。
   const fileDisabled =
-    !currentState || currentState.busy || currentState.importing;
+    !currentState || currentState.locked || currentState.importing;
   return (
     <main className="app">
       <TitleBar

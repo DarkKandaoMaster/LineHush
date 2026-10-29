@@ -32,7 +32,7 @@ interface Props {
 /** One tab: its banners, editor and status bar. */
 export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) {
   const { session } = tab;
-  const { document, generation, busy, error, notice, saveFailed } =
+  const { document, generation, locked, error, notice, saveFailed } =
     useSyncExternalStore(session.subscribe, session.getSnapshot);
   const editor = useRef<DiaryEditorHandle>(null);
   const [position, setPosition] = useState({ line: 1, column: 1 });
@@ -51,10 +51,11 @@ export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) 
   }, [generation]);
   // The current editor takes the focus when its tab is shown, loads another
   // document, or the window asks for it. A disabled editor cannot take focus back
-  // from a closing dialog, so it is returned when the operation ends.
+  // from a closing dialog, so it is returned when the operation ends. Saving a
+  // named file does not lock (session.ts), so nothing moves or scrolls then.
   useEffect(() => {
-    if (!hidden && !busy) editor.current?.focus();
-  }, [hidden, busy, generation, focus]);
+    if (!hidden && !locked) editor.current?.focus();
+  }, [hidden, locked, generation, focus]);
   return (
     <div className="tab-pane" hidden={hidden} role="tabpanel">
       <Banners
@@ -70,7 +71,7 @@ export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) 
           ref={editor}
           tab={tab.id}
           initial={document}
-          disabled={busy}
+          disabled={locked}
           onChange={session.update}
           images={images}
           onPreview={preview}

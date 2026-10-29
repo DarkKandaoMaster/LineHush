@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { caretOf, clickHalf, editorOf, frames, layout, load, selection, setDoc, tile } from "./helpers";
+import { calls, caretOf, clickHalf, editorOf, frames, layout, load, releaseSave, selection, setDoc, tile } from "./helpers";
 
 test("真实编辑区保留连续末尾换行，撤销重做正常", async ({ page }) => {
   const errors = await load(page);
@@ -485,5 +485,46 @@ test("恢复的无标题笔记（崩溃残留）删空后回到未修改（无 �
   await page.keyboard.press("Control+a");
   await page.keyboard.press("Backspace");
   await expect(tabName).toHaveText("无标题");
+  expect(errors).toEqual([]);
+});
+test("已命名文件 Ctrl+S 期间编辑器仍有焦点、不禁用、不变淡，按钮不变灰；保存中打的字保存后仍为已修改并暂存", async ({ page }) => {
+  const errors = await load(page, {
+    tabs: [{ id: "t1", path: "D:\\笔记\\甲.hush" }],
+    holdSave: true,
+  });
+  const editor = editorOf(page);
+  const host = page.locator(".editor-host");
+  const tabName = page.locator(".tab.active .tab-name");
+  const saveButton = page.getByRole("button", { name: "保存", exact: true });
+  await page.keyboard.insertText("第一版");
+  await expect(tabName).toHaveText("● 甲.hush");
+  await page.keyboard.press("Control+s");
+  await expect.poll(async () => (await calls(page, "save_document")).length).toBe(1);
+  // The save is pending (holdSave): nothing on the page changed.
+  await expect(editor).toHaveClass(/ProseMirror-focused/);
+  await expect(editor).toBeFocused();
+  await expect(host).not.toHaveClass(/disabled/);
+  await expect(host).toHaveCSS("opacity", "1");
+  await expect(saveButton).toBeEnabled();
+  await expect(page.getByRole("button", { name: "另存为" })).toBeEnabled();
+  await expect(tabName).toHaveText("● 甲.hush");
+  // Typing meanwhile goes in as usual.
+  await page.keyboard.insertText("，第二版");
+  await expect(editor.locator("p")).toHaveText(["第一版，第二版"]);
+  await releaseSave(page);
+  // The file holds 第一版; the page is dirty again with 第二版, stashed shortly after.
+  expect((await calls(page, "save_document"))[0].document.blocks).toEqual([
+    { type: "line", text: "第一版" },
+  ]);
+  await expect(tabName).toHaveText("● 甲.hush");
+  await expect(editor).toBeFocused();
+  await expect(host).not.toHaveClass(/disabled/);
+  await expect
+    .poll(async () => (await calls(page, "stash_document")).at(-1)?.document.blocks)
+    .toEqual([{ type: "line", text: "第一版，第二版" }]);
+  // Saving again with no edits in between clears the mark.
+  await page.keyboard.press("Control+s");
+  await releaseSave(page);
+  await expect(tabName).toHaveText("甲.hush");
   expect(errors).toEqual([]);
 });

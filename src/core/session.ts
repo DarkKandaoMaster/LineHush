@@ -27,7 +27,14 @@ export interface SessionState {
   path: string | null;
   /** Bumped whenever another document is loaded into the tab; the editor remounts. */
   generation: number;
+  /** A file operation is running; another one is not started (`guarded`). */
   busy: boolean;
+  /**
+   * The editor is disabled and the file buttons greyed: a dialog is up or a long
+   * operation runs. Saving a named file (Ctrl+S) is busy but never locked, so the
+   * editor keeps its focus and the page does not flicker.
+   */
+  locked: boolean;
   importing: boolean;
   /** Changed since the last save to the user's file (stashing does not count). */
   dirty: boolean;
@@ -58,6 +65,7 @@ export function createSession(
     path: null,
     generation: 0,
     busy: false,
+    locked: false,
     importing: false,
     dirty: false,
     error: "",
@@ -78,6 +86,12 @@ export function createSession(
   /** Set once Rust has dropped the tab; nothing is stashed after that. */
   let released = false;
   /**
+   * The user's file is being written. Edits still go into the queue but are not
+   * stashed until it is done: Rust empties the working copy when the save lands,
+   * which would lose a stash that landed just before it.
+   */
+  let saving = false;
+  /**
    * JSON of the content in the user's file (or of a fresh untitled document), so
    * undoing back to it clears `dirty`. Null when unknown: recovered changes to a
    * file. Recovered changes to an untitled document count against the empty
@@ -93,6 +107,8 @@ export function createSession(
   }
   async function flush() {
     clearTimeout(timer);
+    // Edits made during a save are stashed once it has landed (`saveFile`).
+    if (saving) return;
     try {
       await queue.flush();
       if (stashFailed) {
@@ -112,13 +128,19 @@ export function createSession(
   async function settleStash() {
     await flush().catch(() => {});
   }
+  /** Stashes the queued edits once the editor has been quiet for a moment. */
+  function scheduleStash() {
+    clearTimeout(timer);
+    timer = setTimeout(() => void flush().catch(() => {}), 650);
+  }
+  function isClean(doc: Diary) {
+    return savedSnapshot !== null && JSON.stringify(doc) === savedSnapshot;
+  }
   function update(doc: Diary) {
     if (released) return;
     queue.update(doc);
-    const clean = savedSnapshot !== null && JSON.stringify(doc) === savedSnapshot;
-    set({ document: doc, dirty: !clean, saveFailed: false });
-    clearTimeout(timer);
-    timer = setTimeout(() => void flush().catch(() => {}), 650);
+    set({ document: doc, dirty: !isClean(doc), saveFailed: false });
+    if (!saving) scheduleStash();
   }
   /** Shows a document Rust loaded into this tab (new, opened or recovered). */
   function adopt(result: Opened) {
@@ -142,7 +164,10 @@ export function createSession(
       notice: result.recovered ? recoveryNotice : (result.notice ?? ""),
     });
   }
-  /** File operations never overlap. `failure` words the error banner. */
+  /**
+   * File operations never overlap. `failure` words the error banner. The action
+   * calls `lock` when it puts up a dialog or takes long; both flags clear at the end.
+   */
   async function guarded(
     action: () => Promise<void>,
     failure: (e: unknown) => string = String,
@@ -154,18 +179,27 @@ export function createSession(
     } catch (e) {
       set({ error: failure(e) });
     } finally {
-      set({ busy: false });
+      set({ busy: false, locked: false });
     }
+  }
+  /** Disables the editor and greys the file buttons until the operation ends. */
+  function lock() {
+    if (!state.locked) set({ locked: true });
   }
   /**
    * Writes the user's file; an untitled document (or `dialog`) asks for a target.
    * False if that is cancelled. An untitled document's dialog starts at a free
    * name (`suggestedName`) in the folder last opened or saved to (Rust).
+   *
+   * Only the dialog locks the page: writing to the current file takes a few tens
+   * of milliseconds and the editor stays editable and focused through it. What is
+   * typed meanwhile is dirty afterwards and stashed as usual.
    */
   async function saveFile(dialog: boolean) {
     let path = state.path;
     const pick = dialog || !path;
     if (pick) {
+      lock();
       path = await save({
         title: "保存笔记",
         filters: HUSH_FILTER,
@@ -179,20 +213,31 @@ export function createSession(
     }
     await settleStash();
     const saved = state.document;
+    saving = true;
     try {
       // Save As stays available after a failed write to the current file.
       if (pick) path = (await native.saveAs(tab, path!, saved)).path;
       else await native.saveDocument(tab, saved);
     } catch (e) {
-      set({ saveFailed: true });
+      saving = false;
+      // Edits made meanwhile are stashed now; 重试保存 only while nothing changed.
+      if (queue.dirty) scheduleStash();
+      set({ saveFailed: state.document === saved });
       throw `保存失败：${e}`;
     }
+    saving = false;
     queue = makeQueue();
     stashFailed = false;
     savedSnapshot = JSON.stringify(saved);
+    // Edits made during the save go to the (now emptied) working copy as usual.
+    const current = state.document;
+    if (current !== saved) {
+      queue.update(current);
+      scheduleStash();
+    }
     set({
       path,
-      dirty: false,
+      dirty: !isClean(current),
       error: "",
       saveFailed: false,
       // The recovered changes are now in the user's file; other notices stay.
@@ -210,6 +255,7 @@ export function createSession(
     set({ busy: true });
     try {
       if (state.dirty) {
+        lock();
         const choice = await confirmUnsaved(displayName());
         if (choice === "cancel") return false;
         if (choice === "save" && !(await saveFile(false))) return false;
@@ -220,7 +266,7 @@ export function createSession(
       set({ error: failure(e) });
       return false;
     } finally {
-      set({ busy: false });
+      set({ busy: false, locked: false });
     }
   }
   /**
@@ -246,6 +292,7 @@ export function createSession(
   /** `settings`: the font and size a PDF is printed in, as the editor shows them. */
   function exportDocument(format: ExportFormat, settings: Settings) {
     return guarded(async () => {
+      lock();
       const name = displayName().replace(/\.hush$/, "");
       const target = await save({
         title: "导出笔记",

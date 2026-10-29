@@ -28,6 +28,11 @@ export interface DesktopOptions {
    * 正文为一个空行；当前标签页为第一个。
    */
   tabs?: { id: string; path: string | null }[];
+  /**
+   * save_document stays pending until the test calls `releaseSave`, so the page
+   * can be inspected while a named file is being saved.
+   */
+  holdSave?: boolean;
 }
 
 /**
@@ -46,6 +51,7 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       destroyed: false,
       settings: options.settings ?? {},
       newTabs: 0,
+      releaseSave: () => {},
     });
     const opened = (path: string | null, blocks?: Block[], recovered = false) => ({
       document: { blocks: blocks ?? [{ type: "line", text: "" }] },
@@ -100,6 +106,10 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
             return true;
           case "paste_images":
             return [];
+          case "save_document":
+            if (options.holdSave)
+              await new Promise<void>((resolve) => (state.releaseSave = resolve));
+            return;
           // 无标题笔记保存对话框的默认路径：没有文件夹，名字原样。
           case "suggest_save_path":
             return `${args.base}.hush`;
@@ -148,6 +158,9 @@ export const calls = (page: Page, cmd: string) =>
         .map((c: any) => c.args),
     cmd,
   );
+/** Lets the save_document held by `holdSave` finish. */
+export const releaseSave = (page: Page) =>
+  page.evaluate(() => (window as any).testNative.releaseSave());
 export const destroyed = (page: Page): Promise<boolean> =>
   page.evaluate(() => (window as any).testNative.destroyed);
 
