@@ -1097,9 +1097,22 @@ test("复制 / 剪切混合选区：写纯文字与 blocks、不写 HTML，暂�
   assert.deepEqual(staged, ["b"]);
   // The text line went, so c starts a new row after a.
   assert.deepEqual(layout(view.state), ["[a]", "[c]"]);
-  // Only images, or only text: not this path.
-  const plain = fakeView(stateOf(doc("A", "B"), TextSelection.create(doc("A", "B"), 1, 5)));
-  assert.equal(mixedPlugin.props.handleDOMEvents.copy.call(mixedPlugin, plain, event), false);
+  // Text alone: only the plain text (a line per paragraph, empty ones kept), no
+  // blocks, nothing staged; a cut deletes the text as ProseMirror's own cut did.
+  const t = doc("A", "", "B", "");
+  const plain = fakeView(stateOf(t, TextSelection.create(t, 1, 9)));
+  plain.someProp = (name, f) =>
+    name === "clipboardTextSerializer" ? f(() => "A\n\nB\n") : undefined;
+  for (const key of Object.keys(written)) delete written[key];
+  prevented = false;
+  assert.equal(mixedPlugin.props.handleDOMEvents.cut.call(mixedPlugin, plain, event), true);
+  assert.equal(prevented, true);
+  assert.deepEqual(written, { "text/plain": "A\n\nB\n" });
+  assert.deepEqual(staged, ["b"]);
+  assert.deepEqual(layout(plain.state), [""]);
+  // An empty selection: nothing to copy, the browser's default.
+  const none = fakeView(stateOf(t, TextSelection.create(t, 1)));
+  assert.equal(mixedPlugin.props.handleDOMEvents.copy.call(mixedPlugin, none, event), false);
 });
 
 test("拖动混合选区：剪切后粘贴到落点；Ctrl 为复制；落在选区内不动", () => {

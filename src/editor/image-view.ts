@@ -968,7 +968,7 @@ export function lineOf(doc: PmNode, index: number) {
 
 /**
  * The clipboard format of a copy holding images and text lines (see
- * `mixedSlice`): `{v: 1, blocks}`, the document model's blocks (each row of
+ * `copyText`): `{v: 1, blocks}`, the document model's blocks (each row of
  * images one `images` block). Only LineHush reads it, so other programs paste
  * the plain text written with it.
  */
@@ -1011,7 +1011,7 @@ export function blockPictures(blocks: Block[]): Picture[] {
 
 /**
  * The blocks of a LineHush copy of images and text (`BLOCKS_MIME`, written by
- * `copyMixed`), or null unless it looks like one: version 1, blocks that are
+ * `copyText`), or null unless it looks like one: version 1, blocks that are
  * lines of text or non-empty rows of images.
  */
 export function clipboardBlocks(data: string): Block[] | null {
@@ -1138,7 +1138,7 @@ export function insertBlocks(
   return { from, to };
 }
 
-/** Removes the selected images, as Ctrl+X does. */
+/** Removes the selected images (with any text lines), as Ctrl+X does. */
 function removeSelected(view: EditorView) {
   const { from, to } = view.state.selection;
   view.dispatch(
@@ -1151,9 +1151,9 @@ function removeSelected(view: EditorView) {
 /**
  * Copy / cut events (Ctrl+C / Ctrl+X, the context menu). Images alone go to
  * the system clipboard through Rust (see ImageOptions.copy): the event is
- * cancelled with nothing set, so the browser leaves the clipboard alone. Images
- * with text lines: see `copyMixed`. A cut then deletes the selection as
- * Backspace does.
+ * cancelled with nothing set, so the browser leaves the clipboard alone. Any
+ * other selection (text, or images with text lines): see `copyText`. A cut
+ * then deletes the selection as Backspace does.
  */
 function copyEvent(
   view: EditorView,
@@ -1163,7 +1163,7 @@ function copyEvent(
   cut: boolean,
 ) {
   const images = selectedImages(view.state.selection);
-  if (!images) return copyMixed(view, event, stage, cut);
+  if (!images) return copyText(view, event, stage, cut);
   event.preventDefault();
   copy(images.pictures, images.rows);
   if (cut && view.editable) removeSelected(view);
@@ -1171,31 +1171,47 @@ function copyEvent(
 }
 
 /**
- * Copies images with text lines: the browser writes the plain text (the
- * editor's text serializer, images as placeholders) and the blocks
- * (`BLOCKS_MIME`), no HTML, so other programs paste only the text. Rust keeps
- * copies of the originals (`stage`) for a paste into another document. A cut
- * then deletes the selection as Backspace does (`deleteBlocks`).
+ * Copies a selection of text, or of images with text lines: the browser writes
+ * only the plain text (the editor's text serializer: a line per paragraph,
+ * empty ones kept, images as placeholders), never HTML, so other programs
+ * paste just the text (an HTML copy would give empty lines as empty `<p>`s,
+ * which some programs drop). With images the blocks (`BLOCKS_MIME`) go too and
+ * Rust keeps copies of the originals (`stage`) for a paste into another
+ * document. A cut then deletes the selection: with images as Backspace does
+ * (`deleteBlocks`), text alone as ProseMirror's own cut did.
  */
-function copyMixed(
+function copyText(
   view: EditorView,
   event: ClipboardEvent,
   stage: ImageOptions["stage"],
   cut: boolean,
 ) {
-  const slice = mixedSlice(view.state);
+  const sel = view.state.selection;
   const data = event.clipboardData;
-  if (!slice || !data) return false;
+  if (sel.empty || !data) return false;
   event.preventDefault();
-  const blocks = sliceBlocks(slice);
+  const slice = sel.content();
   const text =
     view.someProp("clipboardTextSerializer", (f) => f(slice, view)) ??
     slice.content.textBetween(0, slice.content.size, "\n");
   data.clearData();
   data.setData("text/plain", text);
-  data.setData(BLOCKS_MIME, JSON.stringify({ v: 1, blocks }));
-  stage(blockPictures(blocks));
-  if (cut && view.editable) removeSelected(view);
+  const images = hasImage(slice);
+  if (images) {
+    const blocks = sliceBlocks(slice);
+    data.setData(BLOCKS_MIME, JSON.stringify({ v: 1, blocks }));
+    stage(blockPictures(blocks));
+  }
+  if (cut && view.editable) {
+    if (images) removeSelected(view);
+    else
+      view.dispatch(
+        view.state.tr
+          .deleteSelection()
+          .scrollIntoView()
+          .setMeta("uiEvent", "cut"),
+      );
+  }
   return true;
 }
 

@@ -133,6 +133,78 @@ test("混合剪切：删除保持图片行结构，粘贴回来文字与图片�
   expect(errors).toEqual([]);
 });
 
+test("复制 / 剪切纯文字：只写 text/plain（每段一行、空行与末尾空行保留），不写 HTML；粘贴回来不变，剪切一步撤销", async ({
+  page,
+}) => {
+  const errors = await loadSample(page);
+  // What Ctrl+C / Ctrl+X left on the clipboard, seen after the editor's handler.
+  await page.evaluate(() => {
+    const w = window as any;
+    w.copies = [];
+    for (const type of ["copy", "cut"])
+      document.addEventListener(type, (event: any) =>
+        w.copies.push({
+          type,
+          prevented: event.defaultPrevented,
+          types: Array.from(event.clipboardData?.types ?? []),
+          text: event.clipboardData?.getData("text/plain"),
+          html: event.clipboardData?.getData("text/html"),
+        }),
+      );
+  });
+  await setDoc(page, [""]);
+  await editorOf(page).click();
+  // Typed lines with an empty line between and two empty lines at the end.
+  for (const key of ["4. xxx", "Enter", "Enter", "需要问的点：", "Enter", "Enter"])
+    if (key === "Enter") await page.keyboard.press("Enter");
+    else await page.keyboard.type(key);
+  const lines = ["4. xxx", "", "需要问的点：", "", ""];
+  expect(await layout(page)).toEqual(lines);
+  const text = "4. xxx\n\n需要问的点：\n\n";
+  await page.keyboard.press("Control+a");
+  await page.keyboard.press("Control+c");
+  await expect.poll(() => page.evaluate(() => (window as any).copies.length)).toBe(1);
+  expect(await page.evaluate(() => (window as any).copies[0])).toEqual({
+    type: "copy",
+    prevented: true,
+    types: ["text/plain"],
+    text,
+    html: "",
+  });
+  expect(await layout(page)).toEqual(lines);
+  // Pasted over the whole document: the same lines, empty ones included.
+  await page.keyboard.press("Control+a");
+  await pasteEvent(page, { prevented: true, types: [], text, blocks: "" });
+  expect(await layout(page)).toEqual(lines);
+  // A cut writes the same and deletes the text, one undo step (after a pause,
+  // or the history groups it with the edits just before).
+  await page.waitForTimeout(600);
+  await page.keyboard.press("Control+a");
+  await page.keyboard.press("Control+x");
+  await expect.poll(() => page.evaluate(() => (window as any).copies.length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).copies[1])).toEqual({
+    type: "cut",
+    prevented: true,
+    types: ["text/plain"],
+    text,
+    html: "",
+  });
+  expect(await layout(page)).toEqual([""]);
+  await page.keyboard.press("Control+z");
+  expect(await layout(page)).toEqual(lines);
+  // Part of the lines, from the middle of the first into the empty line after
+  // the second: the copy ends with that line break.
+  const part = await editorOf(page).evaluate((el: any) => {
+    el.editor.commands.setTextSelection({ from: 4, to: 19 });
+    const data = new DataTransfer();
+    const event = new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true });
+    el.dispatchEvent(event);
+    return { types: Array.from(data.types), text: data.getData("text/plain") };
+  });
+  expect(part).toEqual({ types: ["text/plain"], text: "xxx\n\n需要问的点：\n" });
+  expect(errors).toEqual([]);
+});
+
 test("拖动混合选区：等价于剪切后粘贴到落点，一步撤销；拖回选区内不动", async ({ page }) => {
   const errors = await loadSample(page);
   await setDoc(page, ["甲", { id: A }, "乙", "丙"]);
