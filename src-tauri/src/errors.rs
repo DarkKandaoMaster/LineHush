@@ -1,4 +1,4 @@
-//! Turns SQLite, file-system and updater errors into the Chinese text shown to the user.
+//! Turns SQLite, file-system and update errors into the Chinese text shown to the user.
 //! The original (usually English) message follows in brackets, for diagnosis.
 use rusqlite::ErrorCode;
 use std::io::ErrorKind;
@@ -37,26 +37,64 @@ impl Describe for std::io::Error {
         }
     }
 }
-/// 检查、下载、安装更新时的错误（tauri-plugin-updater）。
-impl Describe for tauri_plugin_updater::Error {
-    fn reason(&self) -> &'static str {
-        use tauri_plugin_updater::Error;
+/// 检查、下载、安装更新时的错误（update.rs）。
+#[derive(Debug)]
+pub enum UpdateError {
+    /// 连不上、超时（含下载时的空闲读超时）、读响应中途断开。
+    Network(reqwest::Error),
+    /// 服务器回了 2xx 以外的状态码。
+    Status(u16),
+    /// latest.json 不是预期的 JSON。
+    Json(serde_json::Error),
+    /// latest.json 里的版本号不是 semver。
+    Version(semver::Error),
+    /// 写临时安装包。
+    Io(std::io::Error),
+    /// ShellExecuteW 启动安装程序失败。
+    Launch(std::io::Error),
+}
+impl std::fmt::Display for UpdateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Reqwest(_) | Error::Network(_) => "网络连接失败",
-            Error::Minisign(_)
-            | Error::Base64(_)
-            | Error::SignatureUtf8(_)
-            | Error::SignedVersionMismatch { .. }
-            | Error::MissingSignedVersion => "安装包签名校验失败",
-            Error::ReleaseNotFound
-            | Error::Serialization(_)
-            | Error::Semver(_)
-            | Error::UrlParse(_)
-            | Error::TargetNotFound(_)
-            | Error::TargetsNotFound(_) => "更新信息无效",
-            Error::InvalidUpdaterFormat | Error::BinaryNotFoundInArchive => "安装包格式无效",
-            Error::Io(e) => e.reason(),
-            _ => "更新失败",
+            Self::Network(e) => e.fmt(f),
+            Self::Status(code) => write!(f, "HTTP {code}"),
+            Self::Json(e) => e.fmt(f),
+            Self::Version(e) => e.fmt(f),
+            Self::Io(e) | Self::Launch(e) => e.fmt(f),
+        }
+    }
+}
+impl From<reqwest::Error> for UpdateError {
+    fn from(e: reqwest::Error) -> Self {
+        Self::Network(e)
+    }
+}
+impl From<serde_json::Error> for UpdateError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
+    }
+}
+impl From<semver::Error> for UpdateError {
+    fn from(e: semver::Error) -> Self {
+        Self::Version(e)
+    }
+}
+impl From<std::io::Error> for UpdateError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+impl Describe for UpdateError {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Network(e) if e.is_timeout() => "网络连接超时",
+            Self::Network(_) => "网络连接失败",
+            Self::Status(404) => "服务器上找不到更新文件",
+            Self::Status(_) => "服务器返回错误",
+            Self::Json(_) => "更新信息无效",
+            Self::Version(_) => "更新信息里的版本号无效",
+            Self::Io(e) => e.reason(),
+            Self::Launch(_) => "无法启动安装程序",
         }
     }
 }
@@ -110,17 +148,68 @@ mod tests {
     }
 
     #[test]
-    fn updater_errors_are_described_in_chinese() {
-        use tauri_plugin_updater::Error as Updater;
+    fn update_errors_are_described_in_chinese() {
+        use crate::errors::UpdateError;
         assert_eq!(
-            describe(Updater::Network("status 404".into())),
-            "网络连接失败（`status 404`）"
+            describe(UpdateError::Status(404)),
+            "服务器上找不到更新文件（HTTP 404）"
         );
-        assert!(describe(Updater::ReleaseNotFound).starts_with("更新信息无效（"));
-        assert!(describe(Updater::TargetNotFound("windows-x86_64".into())).starts_with("更新信息无效（"));
-        assert!(describe(Updater::MissingSignedVersion).starts_with("安装包签名校验失败（"));
-        assert!(describe(Updater::InvalidUpdaterFormat).starts_with("安装包格式无效（"));
-        assert!(describe(Updater::Io(Error::from_raw_os_error(5))).starts_with("没有访问权限（"));
-        assert!(describe(Updater::EmptyEndpoints).starts_with("更新失败（"));
+        assert_eq!(
+            describe(UpdateError::Status(503)),
+            "服务器返回错误（HTTP 503）"
+        );
+        let json = serde_json::from_str::<serde_json::Value>("<html>").unwrap_err();
+        assert!(describe(UpdateError::Json(json)).starts_with("更新信息无效（"));
+        let version = semver::Version::parse("0.9").unwrap_err();
+        assert!(describe(UpdateError::Version(version)).starts_with("更新信息里的版本号无效（"));
+        assert!(describe(UpdateError::Io(Error::from_raw_os_error(112))).starts_with("磁盘已满（"));
+        assert!(describe(UpdateError::Launch(Error::from_raw_os_error(5)))
+            .starts_with("无法启动安装程序（"));
+        // 地址无效时 reqwest 在发请求前就报错，算作网络错误。
+        let network = crate::update::client(|builder| builder)
+            .unwrap()
+            .get("not a url")
+            .build()
+            .unwrap_err();
+        assert!(describe(UpdateError::Network(network)).starts_with("网络连接失败（"));
+    }
+
+    /// 下载时的空闲读超时（`read_timeout`）也是“网络连接超时”：本机起一个只发一半响应体就不动的服务器。
+    #[test]
+    fn a_stalled_download_is_a_timeout() {
+        use crate::errors::UpdateError;
+        use std::io::{Read, Write};
+        use std::time::Duration;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nab")
+                .unwrap();
+            std::thread::sleep(Duration::from_secs(2));
+        });
+        let error = tauri::async_runtime::block_on(async move {
+            let client = crate::update::client(|builder| {
+                builder.no_proxy().read_timeout(Duration::from_millis(300))
+            })
+            .unwrap();
+            let mut response = client
+                .get(format!("http://{address}/"))
+                .send()
+                .await
+                .unwrap();
+            loop {
+                match response.chunk().await {
+                    Ok(Some(_)) => continue,
+                    Ok(None) => panic!("响应体不该读完"),
+                    Err(e) => break e,
+                }
+            }
+        });
+        assert!(describe(UpdateError::Network(error)).starts_with("网络连接超时（"));
+        server.join().unwrap();
     }
 }

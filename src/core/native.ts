@@ -242,7 +242,7 @@ export type UpdateProgress =
 /** 有新版本且还没有窗口显示过时交出说明，之后为 null（本次运行只提示一次）。 */
 export const takeUpdate = () => invoke<UpdateInfo | null>("take_update");
 /**
- * 下载并校验新版本 → 请所有窗口暂存修改 → 启动安装程序并退出进程（成功时不会返回）。
+ * 下载新版本安装包 → 请所有窗口暂存修改 → 启动安装程序并退出进程（成功时不会返回）。
  * 失败时以中文原因 reject，可以重试。
  */
 export function installUpdate(onProgress: (progress: UpdateProgress) => void) {

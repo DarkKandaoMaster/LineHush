@@ -26,7 +26,7 @@ export const updateBusy = (phase: UpdatePhase) =>
  * - Rust 发现新版本时给最近使用的窗口发 `update-available`，页面经 `takeUpdate` 取说明（只交出
  *   一次）；事件可能早于监听，所以开始监听后也自己取一次。取到后 `waiting` 为 true，由 App 在
  *   没有别的对话框开着时 `present`（不叠两个对话框）。
- * - “立即更新”：`installUpdate` 下载、校验，再请所有窗口暂存修改，然后启动安装程序并退出进程；
+ * - “立即更新”：`installUpdate` 下载安装包，再请所有窗口暂存修改，然后启动安装程序并退出进程；
  *   进度经 Channel 回来显示在对话框里，失败显示原因与“重试” / “关闭”。
  * - 每个窗口都应答 `flush-requested`：把本窗口所有标签页的修改立刻暂存（`tabs.stashAll`），
  *   再以 `stashFlushed` 答复。

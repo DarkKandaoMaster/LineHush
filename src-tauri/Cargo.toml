@@ -27,8 +27,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 rusqlite = { version = "0.40", features = ["bundled"] }
 sha2 = "0.11"
 tauri-plugin-single-instance = "2"
-# 自动检查更新（GitHub Releases 上的 latest.json，见 docs/design/auto-update-2026-10-29.md）。
-tauri-plugin-updater = "2"
+# 自动检查更新（update.rs；仓库根目录的 latest.json，见 docs/design/auto-update-2026-10-29.md）。
+# TLS 用 rustls + ring，证书按 Windows 系统证书库校验（rustls-platform-verifier），走系统代理。
+# 这几个原先 tauri-plugin-updater 就在用，Cargo.lock 里都有；reqwest 0.13 的默认 TLS 要 aws-lc-rs，不用。
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+semver = "1"
 clipboard-win = "5.4"
 # 导出 PDF 调用 WebView2 的 PrintToPdf。版本须与 wry 所用的一致（webview2-com 0.38 / windows 0.61），
 # 否则 Tauri 给出的 WebView2 接口类型对不上。

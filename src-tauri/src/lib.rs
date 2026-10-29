@@ -991,8 +991,7 @@ pub fn run() {
         .manage(pdf::PrintJob::default())
         .register_asynchronous_uri_scheme_protocol(pdf::SCHEME, pdf::protocol)
         .plugin(tauri_plugin_dialog::init())
-        // 自动检查更新（update.rs）。页面不直接用插件的命令，只用 update.rs 的三个命令。
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 自动检查更新（update.rs，自己实现，不用 tauri-plugin-updater）。
         .manage(update::UpdateState::default());
     // Remembers size, position and maximized state across launches. Tests skip it so
     // they always start at the configured size and never touch the user's saved state.
