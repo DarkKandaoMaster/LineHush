@@ -246,6 +246,19 @@ export default function SettingsDialog(props: Props) {
             value={settings.defaultFileName}
             onChange={(defaultFileName) => onChange({ defaultFileName })}
           />
+          <span id="settings-updates">更新</span>
+          <div className="settings-choices" role="group" aria-labelledby="settings-updates">
+            <label>
+              <input
+                type="checkbox"
+                checked={settings.checkUpdates}
+                onChange={(event) =>
+                  onChange({ checkUpdates: event.currentTarget.checked })
+                }
+              />
+              自动检查更新
+            </label>
+          </div>
           <Choices
             name="settings-open-file"
             label="打开文件"

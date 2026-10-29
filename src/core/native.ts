@@ -2,7 +2,7 @@
 // the IPC contract with src-tauri and with the test doubles; do not rename them.
 // Commands that act on a document name its tab; window commands act on the
 // calling window (Tauri passes it to Rust).
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type { Diary, Picture } from "./document.ts";
 import type { CaretMetrics } from "../editor/caret-math.ts";
 import type { Settings } from "./settings.ts";
@@ -213,6 +213,46 @@ export const revealInExplorer = (path: string) =>
 export const readSettings = () => invoke<Settings>("read_settings");
 export const writeSettings = (settings: Settings) =>
   invoke<void>("write_settings", { settings });
+/**
+ * 自动检查更新（src-tauri/src/update.rs）：Rust 在启动约 3 秒后检查一次，有新版本时给最近使用的
+ * 窗口发这个事件（载荷为 `UpdateInfo`）；页面一律经 `takeUpdate` 取说明，只交出一次。
+ */
+export const UPDATE_AVAILABLE = "update-available";
+/**
+ * “立即更新”安装前 Rust 发给所有窗口（`{ round }`）：立刻暂存所有标签页的修改，完成后以
+ * `stashFlushed` 答复（安装会退出进程，重启后靠工作副本恢复未保存的修改）。
+ */
+export const FLUSH_REQUESTED = "flush-requested";
+/** 新版本说明。 */
+export interface UpdateInfo {
+  /** 新版本号，如 "0.9.0"。 */
+  version: string;
+  /** 正在运行的版本号。 */
+  current: string;
+  /** 更新说明（latest.json 的 notes），没有时为空串。 */
+  notes: string;
+  /** 发布时间（RFC 3339），没有时为 null。 */
+  date: string | null;
+}
+/** `installUpdate` 的进度：下载中（总长度可能未知）、等各窗口暂存、启动安装程序。 */
+export type UpdateProgress =
+  | { phase: "downloading"; downloaded: number; total: number | null }
+  | { phase: "stashing" }
+  | { phase: "installing" };
+/** 有新版本且还没有窗口显示过时交出说明，之后为 null（本次运行只提示一次）。 */
+export const takeUpdate = () => invoke<UpdateInfo | null>("take_update");
+/**
+ * 下载并校验新版本 → 请所有窗口暂存修改 → 启动安装程序并退出进程（成功时不会返回）。
+ * 失败时以中文原因 reject，可以重试。
+ */
+export function installUpdate(onProgress: (progress: UpdateProgress) => void) {
+  const channel = new Channel<UpdateProgress>();
+  channel.onmessage = onProgress;
+  return invoke<void>("install_update", { onProgress: channel });
+}
+/** 答复一轮 `FLUSH_REQUESTED`：本窗口的标签页都暂存完了；`error` 为暂存失败的原因。 */
+export const stashFlushed = (round: number, error: string | null) =>
+  invoke<void>("stash_flushed", { round, error });
 /**
  * Windows' text caret settings: width in screen pixels, blink rate and timeout
  * (see src/editor/caret.ts).

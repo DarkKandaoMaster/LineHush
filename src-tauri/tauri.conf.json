@@ -19,6 +19,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "publisher": "Kandao",
     "copyright": "Copyright © 2026 Kandao",
     "shortDescription": "本地优先的图文笔记编辑器",
@@ -45,6 +46,15 @@
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcxMzJBRjRBREE0M0U2NTkKUldSWjVrUGFTcTh5Y1FUMXRVK1huZmFYYmtGU3dvZlV6NjYwWjRpN1NPRkI1enk5bFEyNUpub0cK",
+      "endpoints": [
+        "https://github.com/DarkKandaoMaster/LineHush/releases/latest/download/latest.json"
+      ],
+      "windows": { "installMode": "passive" }
     }
   }
 }

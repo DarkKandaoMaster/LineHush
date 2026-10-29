@@ -22,6 +22,7 @@ test("设置规范化：字号（pt）保留一位小数并限制在 6–30，�
     selectionCorners: "rounded",
     marginSelection: "line",
     defaultFileName: "date",
+    checkUpdates: true,
   });
   assert.deepEqual(normalizeSettings(null), DEFAULT_SETTINGS);
   assert.deepEqual(normalizeSettings({ fontSizePt: "abc", fontFamily: 3 }), DEFAULT_SETTINGS);
@@ -34,6 +35,7 @@ test("设置规范化：字号（pt）保留一位小数并限制在 6–30，�
     selectionCorners: "rounded",
     marginSelection: "line",
     defaultFileName: "date",
+    checkUpdates: true,
   });
   assert.equal(normalizeSettings({ fontSizePt: 10.5 }).fontSizePt, 10.5);
   assert.equal(normalizeSettings({ fontSizePt: 12.55 }).fontSizePt, 12.6);
@@ -52,7 +54,7 @@ test("打开文件：只认 tab / window，其他值取默认 tab，不影响其
     assert.equal(normalizeSettings({ openFile: value }).openFile, "tab");
   assert.deepEqual(
     normalizeSettings({ fontFamily: "宋体", fontSizePt: 12, openFile: "新窗口" }),
-    { fontFamily: "宋体", fontSizePt: 12, openFile: "tab", startup: "newWindow", caretWidth: "thin", selectionCorners: "rounded", marginSelection: "line", defaultFileName: "date" },
+    { fontFamily: "宋体", fontSizePt: 12, openFile: "tab", startup: "newWindow", caretWidth: "thin", selectionCorners: "rounded", marginSelection: "line", defaultFileName: "date", checkUpdates: true },
   );
   // 已规范化的值再规范化不变（设置广播到其他窗口时会再走一遍）。
   const settings = {
@@ -64,6 +66,7 @@ test("打开文件：只认 tab / window，其他值取默认 tab，不影响其
     selectionCorners: "square",
     marginSelection: "visualLine",
     defaultFileName: "firstLine",
+    checkUpdates: false,
   };
   assert.deepEqual(normalizeSettings(settings), settings);
 });
@@ -76,7 +79,7 @@ test("启动时：只认 newWindow / lastSession，其他值取默认 newWindow�
     assert.equal(normalizeSettings({ startup: value }).startup, "newWindow");
   assert.deepEqual(
     normalizeSettings({ fontSizePt: 12, openFile: "window", startup: "恢复" }),
-    { fontFamily: "微软雅黑", fontSizePt: 12, openFile: "window", startup: "newWindow", caretWidth: "thin", selectionCorners: "rounded", marginSelection: "line", defaultFileName: "date" },
+    { fontFamily: "微软雅黑", fontSizePt: 12, openFile: "window", startup: "newWindow", caretWidth: "thin", selectionCorners: "rounded", marginSelection: "line", defaultFileName: "date", checkUpdates: true },
   );
   // 没有 startup：取默认。
   assert.deepEqual(normalizeSettings({ fontFamily: "宋体", fontSizePt: 12 }), {
@@ -88,6 +91,7 @@ test("启动时：只认 newWindow / lastSession，其他值取默认 newWindow�
     selectionCorners: "rounded",
     marginSelection: "line",
     defaultFileName: "date",
+    checkUpdates: true,
   });
 });
 
@@ -114,6 +118,7 @@ test("光标粗细：只认 thin / medium / thick，缺省或其他值取默认 
       selectionCorners: "rounded",
       marginSelection: "line",
       defaultFileName: "date",
+      checkUpdates: true,
     },
   );
   // “细”跟随系统设置，“中”为其 2 倍，“粗”为其 3 倍，不设上限，闪烁不受影响。
@@ -157,6 +162,7 @@ test("选区边角：只认 square / rounded，缺省或其他值取默认 round
       selectionCorners: "rounded",
       marginSelection: "line",
       defaultFileName: "date",
+      checkUpdates: true,
     },
   );
   assert.deepEqual(
@@ -192,7 +198,7 @@ test("默认文件名：只认 date / firstLine，缺省或其他值取默认 da
   assert.equal(DEFAULT_SETTINGS.defaultFileName, "date");
   assert.equal(normalizeSettings({}).defaultFileName, "date");
   assert.equal(normalizeSettings(null).defaultFileName, "date");
-  assert.equal(normalizeSettings({ defaultFileName: "date" }).defaultFileName, "date");
+  assert.equal(normalizeSettings({ defaultFileName: "date", checkUpdates: true }).defaultFileName, "date");
   assert.equal(normalizeSettings({ defaultFileName: "firstLine" }).defaultFileName, "firstLine");
   for (const value of [undefined, null, "", "Date", "firstline", "first-line", "日期", "首行文字", 1, true, ["firstLine"], {}])
     assert.equal(normalizeSettings({ defaultFileName: value }).defaultFileName, "date");
@@ -207,6 +213,28 @@ test("默认文件名：只认 date / firstLine，缺省或其他值取默认 da
   // 往返不变（广播到其他窗口时会再规范化一遍）。
   const firstLine = { ...DEFAULT_SETTINGS, defaultFileName: "firstLine" };
   assert.deepEqual(normalizeSettings(JSON.parse(JSON.stringify(firstLine))), firstLine);
+});
+
+test("自动检查更新：只认 true / false，缺省或其他值取默认 true，不影响其他字段", () => {
+  assert.equal(DEFAULT_SETTINGS.checkUpdates, true);
+  assert.equal(normalizeSettings({}).checkUpdates, true);
+  assert.equal(normalizeSettings(null).checkUpdates, true);
+  assert.equal(normalizeSettings({ checkUpdates: true }).checkUpdates, true);
+  assert.equal(normalizeSettings({ checkUpdates: false }).checkUpdates, false);
+  // 只有布尔值 false 才关：字符串、数字等一律取默认（Rust 也只认 JSON 的 false）。
+  for (const value of [undefined, null, "", "false", "off", 0, 1, [], {}, [false]])
+    assert.equal(normalizeSettings({ checkUpdates: value }).checkUpdates, true);
+  assert.deepEqual(
+    normalizeSettings({ fontSizePt: 12, defaultFileName: "firstLine", checkUpdates: "否" }),
+    { ...DEFAULT_SETTINGS, fontSizePt: 12, defaultFileName: "firstLine" },
+  );
+  assert.deepEqual(
+    normalizeSettings({ caretWidth: "粗", checkUpdates: false }),
+    { ...DEFAULT_SETTINGS, checkUpdates: false },
+  );
+  // 往返不变（广播到其他窗口时会再规范化一遍）。
+  const off = { ...DEFAULT_SETTINGS, checkUpdates: false };
+  assert.deepEqual(normalizeSettings(JSON.parse(JSON.stringify(off))), off);
 });
 
 test("设置写成 CSS 变量：单个字体名加引号与回退字体，字体列表原样使用", () => {

@@ -45,6 +45,11 @@ export interface Settings {
    * 加 “ (2)”“ (3)”…（`suggest_save_path`）。
    */
   defaultFileName: DefaultFileName;
+  /**
+   * 自动检查更新：每次启动约 3 秒后由 Rust 检查一次 GitHub 上的最新正式版，有新版本才弹出
+   * 更新对话框；没有新版本或网络不通时什么也不显示。见 src-tauri/src/update.rs。
+   */
+  checkUpdates: boolean;
 }
 export type CaretWidth = "thin" | "medium" | "thick";
 const CARET_WIDTH_VALUES: readonly CaretWidth[] = ["thin", "medium", "thick"];
@@ -60,8 +65,9 @@ export type Startup = "newWindow" | "lastSession";
 const STARTUP_VALUES: readonly Startup[] = ["newWindow", "lastSession"];
 
 /**
- * Rust stores settings.json as it is and only reads `openFile` and `startup`,
- * taking "tab" and "newWindow" for anything else (src-tauri/src/settings.rs);
+ * Rust stores settings.json as it is and only reads `openFile`, `startup` and
+ * `checkUpdates`, taking "tab", "newWindow" and true for anything else
+ * (src-tauri/src/settings.rs);
  * every other check happens here. "微软雅黑" is Microsoft YaHei (not the UI
  * variant); WebView2 finds fonts by their Chinese names itself.
  */
@@ -74,6 +80,7 @@ export const DEFAULT_SETTINGS: Settings = {
   selectionCorners: "rounded",
   marginSelection: "line",
   defaultFileName: "date",
+  checkUpdates: true,
 };
 /** In pt. */
 export const MIN_FONT_SIZE = 6;
@@ -89,7 +96,8 @@ const FALLBACK_FONTS = [
 /**
  * Any stored or typed value made valid: size rounded to 0.1 and clamped, an
  * empty font is the default, an unknown `openFile`, `startup`, `caretWidth`,
- * `selectionCorners`, `marginSelection` or `defaultFileName` is the default.
+ * `selectionCorners`, `marginSelection` or `defaultFileName` is the default;
+ * `checkUpdates` is off only when it is `false`.
  */
 export function normalizeSettings(value: unknown): Settings {
   const input = (typeof value === "object" && value !== null ? value : {}) as {
@@ -101,6 +109,7 @@ export function normalizeSettings(value: unknown): Settings {
     selectionCorners?: unknown;
     marginSelection?: unknown;
     defaultFileName?: unknown;
+    checkUpdates?: unknown;
   };
   const family =
     typeof input.fontFamily === "string" ? input.fontFamily.trim() : "";
@@ -125,6 +134,10 @@ export function normalizeSettings(value: unknown): Settings {
     defaultFileName:
       DEFAULT_FILE_NAME_VALUES.find((value) => value === input.defaultFileName) ??
       DEFAULT_SETTINGS.defaultFileName,
+    checkUpdates:
+      typeof input.checkUpdates === "boolean"
+        ? input.checkUpdates
+        : DEFAULT_SETTINGS.checkUpdates,
   };
 }
 

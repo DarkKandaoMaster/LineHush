@@ -33,6 +33,11 @@ export interface DesktopOptions {
    * can be inspected while a named file is being saved.
    */
   holdSave?: boolean;
+  /**
+   * install_update 走完下载、暂存、安装三步之后以此失败；不给则停在“正在安装”（真实程序此时已
+   * 退出）。见 `announceUpdate` / `releaseInstall`。
+   */
+  installFailure?: string;
 }
 
 /**
@@ -52,6 +57,13 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       settings: options.settings ?? {},
       newTabs: 0,
       releaseSave: () => {},
+      /** take_update 交出一次的新版本说明（`announceUpdate` 放进来）。 */
+      update: null as unknown,
+      /** install_update 报完下载进度后等测试调 `releaseInstall`。 */
+      releaseInstall: () => {},
+      /** stash_flushed 到了。 */
+      flushed: () => {},
+      emit: (_event: string, _payload: unknown) => {},
     });
     const opened = (path: string | null, blocks?: Block[], recovered = false) => ({
       document: { blocks: blocks ?? [{ type: "line", text: "" }] },
@@ -63,6 +75,7 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       for (const id of state.listeners.get(event) ?? [])
         state.callbacks.get(id)?.({ event, id, payload });
     };
+    state.emit = emit;
     w.isTauri = true;
     w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
     w.__TAURI_INTERNALS__ = {
@@ -104,6 +117,28 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
             return { width: 1, blinkMs: 530, timeoutMs: 5000 };
           case "is_last_window":
             return true;
+          case "take_update": {
+            const update = state.update;
+            state.update = null;
+            return update;
+          }
+          // 照 Rust（update.rs）：下载进度 → 请各窗口暂存并等答复 → 安装（随后进程退出）。
+          case "install_update": {
+            const send = (index: number, message: unknown) =>
+              state.callbacks.get(args.onProgress.id)?.({ index, message });
+            send(0, { phase: "downloading", downloaded: 45, total: 100 });
+            await new Promise<void>((resolve) => (state.releaseInstall = resolve));
+            send(1, { phase: "stashing" });
+            const flushed = new Promise<void>((resolve) => (state.flushed = resolve));
+            emit("flush-requested", { round: 1 });
+            await flushed;
+            send(2, { phase: "installing" });
+            if (options.installFailure) throw options.installFailure;
+            return new Promise(() => {});
+          }
+          case "stash_flushed":
+            state.flushed();
+            return;
           case "paste_images":
             return [];
           case "save_document":
@@ -158,6 +193,19 @@ export const calls = (page: Page, cmd: string) =>
         .map((c: any) => c.args),
     cmd,
   );
+/** Rust 发现了新版本：take_update 交出 `info` 一次，并发 update-available。 */
+export const announceUpdate = (
+  page: Page,
+  info = { version: "0.9.0", current: "0.8.0", notes: "", date: null as string | null },
+) =>
+  page.evaluate((info) => {
+    const state = (window as any).testNative;
+    state.update = info;
+    state.emit("update-available", info);
+  }, info);
+/** 让 install_update 从下载进度往下走（暂存、安装）。 */
+export const releaseInstall = (page: Page) =>
+  page.evaluate(() => (window as any).testNative.releaseInstall());
 /** Lets the save_document held by `holdSave` finish. */
 export const releaseSave = (page: Page) =>
   page.evaluate(() => (window as any).testNative.releaseSave());

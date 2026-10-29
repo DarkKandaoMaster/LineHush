@@ -1,4 +1,4 @@
-//! Turns SQLite and file-system errors into the Chinese text shown to the user.
+//! Turns SQLite, file-system and updater errors into the Chinese text shown to the user.
 //! The original (usually English) message follows in brackets, for diagnosis.
 use rusqlite::ErrorCode;
 use std::io::ErrorKind;
@@ -34,6 +34,29 @@ impl Describe for std::io::Error {
             ErrorKind::PermissionDenied => "没有访问权限",
             ErrorKind::StorageFull => "磁盘已满",
             _ => "读写失败",
+        }
+    }
+}
+/// 检查、下载、安装更新时的错误（tauri-plugin-updater）。
+impl Describe for tauri_plugin_updater::Error {
+    fn reason(&self) -> &'static str {
+        use tauri_plugin_updater::Error;
+        match self {
+            Error::Reqwest(_) | Error::Network(_) => "网络连接失败",
+            Error::Minisign(_)
+            | Error::Base64(_)
+            | Error::SignatureUtf8(_)
+            | Error::SignedVersionMismatch { .. }
+            | Error::MissingSignedVersion => "安装包签名校验失败",
+            Error::ReleaseNotFound
+            | Error::Serialization(_)
+            | Error::Semver(_)
+            | Error::UrlParse(_)
+            | Error::TargetNotFound(_)
+            | Error::TargetsNotFound(_) => "更新信息无效",
+            Error::InvalidUpdaterFormat | Error::BinaryNotFoundInArchive => "安装包格式无效",
+            Error::Io(e) => e.reason(),
+            _ => "更新失败",
         }
     }
 }
@@ -84,5 +107,20 @@ mod tests {
         assert!(describe(Error::from_raw_os_error(32)).starts_with("文件正被其他程序占用（"));
         assert!(describe(Error::from_raw_os_error(112)).starts_with("磁盘已满（"));
         assert!(describe(Error::from_raw_os_error(5)).starts_with("没有访问权限（"));
+    }
+
+    #[test]
+    fn updater_errors_are_described_in_chinese() {
+        use tauri_plugin_updater::Error as Updater;
+        assert_eq!(
+            describe(Updater::Network("status 404".into())),
+            "网络连接失败（`status 404`）"
+        );
+        assert!(describe(Updater::ReleaseNotFound).starts_with("更新信息无效（"));
+        assert!(describe(Updater::TargetNotFound("windows-x86_64".into())).starts_with("更新信息无效（"));
+        assert!(describe(Updater::MissingSignedVersion).starts_with("安装包签名校验失败（"));
+        assert!(describe(Updater::InvalidUpdaterFormat).starts_with("安装包格式无效（"));
+        assert!(describe(Updater::Io(Error::from_raw_os_error(5))).starts_with("没有访问权限（"));
+        assert!(describe(Updater::EmptyEndpoints).starts_with("更新失败（"));
     }
 }

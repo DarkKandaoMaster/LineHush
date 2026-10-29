@@ -2,7 +2,8 @@
 //! the JSON as the frontend sends it; the frontend fills in defaults and checks
 //! every value (`normalizeSettings` in src/core/settings.ts). Rust itself reads
 //! only `openFile` when a file is opened from outside (see `open_from_outside`
-//! in lib.rs) and `startup` when it starts (see `Session::plan_launch`).
+//! in lib.rs), `startup` when it starts (see `Session::plan_launch`) and
+//! `checkUpdates` before checking for a new version (see update.rs).
 use crate::errors::describe;
 use crate::fsx::shown;
 use crate::model::Result;
@@ -29,12 +30,14 @@ pub enum Startup {
     NewWindow,
     LastSession,
 }
-/// The two settings Rust acts on; a missing or unknown value takes the default
-/// (`tab` / `newWindow`, as `DEFAULT_SETTINGS` in src/core/settings.ts).
+/// The settings Rust acts on; a missing or unknown value takes the default
+/// (`tab` / `newWindow` / `true`, as `DEFAULT_SETTINGS` in src/core/settings.ts).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Preferences {
     pub open_file: OpenFile,
     pub startup: Startup,
+    /// 自动检查更新：只有存的是 `false` 才不检查。
+    pub check_updates: bool,
 }
 impl Preferences {
     pub fn of(settings: &Value) -> Self {
@@ -48,6 +51,10 @@ impl Preferences {
                 Some("lastSession") => Startup::LastSession,
                 _ => Startup::NewWindow,
             },
+            check_updates: settings
+                .get("checkUpdates")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
         }
     }
 }
@@ -133,6 +140,7 @@ mod tests {
         let defaults = Preferences {
             open_file: OpenFile::Tab,
             startup: Startup::NewWindow,
+            check_updates: true,
         };
         assert_eq!(Preferences::of(&json!({})), defaults);
         assert_eq!(Preferences::of(&json!(null)), defaults);
@@ -142,6 +150,7 @@ mod tests {
             Preferences {
                 open_file: OpenFile::Window,
                 startup: Startup::LastSession,
+                check_updates: true,
             }
         );
         // An unknown value of one does not affect the other.
@@ -152,6 +161,7 @@ mod tests {
                 Preferences {
                     open_file: OpenFile::Tab,
                     startup: Startup::LastSession,
+                    check_updates: true,
                 }
             );
             let settings = json!({ "openFile": "window", "startup": bad });
@@ -160,8 +170,27 @@ mod tests {
                 Preferences {
                     open_file: OpenFile::Window,
                     startup: Startup::NewWindow,
+                    check_updates: true,
                 }
             );
         }
+    }
+
+    #[test]
+    fn check_updates_is_on_unless_stored_as_false() {
+        assert!(Preferences::of(&json!({})).check_updates);
+        assert!(Preferences::of(&json!(null)).check_updates);
+        assert!(Preferences::of(&json!({ "checkUpdates": true })).check_updates);
+        assert!(!Preferences::of(&json!({ "checkUpdates": false })).check_updates);
+        // 读不懂的值取默认（开），也不影响其他两项。
+        for bad in [json!("false"), json!(0), json!(null), json!([]), json!({})] {
+            let preferences =
+                Preferences::of(&json!({ "checkUpdates": bad, "openFile": "window" }));
+            assert!(preferences.check_updates);
+            assert_eq!(preferences.open_file, OpenFile::Window);
+        }
+        let off = Preferences::of(&json!({ "checkUpdates": false, "startup": "lastSession" }));
+        assert_eq!(off.startup, Startup::LastSession);
+        assert_eq!(off.open_file, OpenFile::Tab);
     }
 }

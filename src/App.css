@@ -805,6 +805,7 @@ input:focus-visible {
  * 预览之上，排最上面。
  */
 .unsaved-dialog,
+.update-dialog,
 .settings-dialog,
 .image-preview {
   position: fixed;
@@ -833,6 +834,46 @@ input:focus-visible {
 .unsaved-dialog p {
   margin: 0 0 20px;
   font-size: 14px;
+}
+/* 发现新版本：样子同保存询问；更新说明过长时自己滚动，状态行失败时为红字。 */
+.update-dialog {
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 20px 20px 16px;
+  min-width: 320px;
+  width: min(440px, 94vw);
+  background: #f9f9f9;
+  color: inherit;
+  box-shadow: 0 8px 24px #0002;
+}
+.update-dialog:focus {
+  outline: none;
+}
+.update-dialog p {
+  margin: 0 0 16px;
+  font-size: 14px;
+}
+.update-notes {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0 0 16px;
+  padding: 8px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #fff;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.update-dialog .update-status {
+  color: #5f5f5f;
+}
+.update-dialog .update-status.failed {
+  color: #c42b1c;
+  overflow-wrap: anywhere;
+}
+/* 变灰（全局 button:disabled）时不随悬停变色。 */
+.dialog-actions button:disabled {
+  pointer-events: none;
 }
 .dialog-mask {
   position: fixed;

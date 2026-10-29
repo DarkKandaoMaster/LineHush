@@ -9,7 +9,8 @@
     "tauri": "tauri",
     "test": "node --test tests/unit/*.test.mjs",
     "test:native": "node tests/native/native.mjs",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "release:json": "node scripts/release-json.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

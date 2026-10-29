@@ -27,6 +27,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 rusqlite = { version = "0.40", features = ["bundled"] }
 sha2 = "0.11"
 tauri-plugin-single-instance = "2"
+# 自动检查更新（GitHub Releases 上的 latest.json，见 docs/design/auto-update-2026-10-29.md）。
+tauri-plugin-updater = "2"
 clipboard-win = "5.4"
 # 导出 PDF 调用 WebView2 的 PrintToPdf。版本须与 wry 所用的一致（webview2-com 0.38 / windows 0.61），
 # 否则 Tauri 给出的 WebView2 接口类型对不上。

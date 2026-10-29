@@ -14,6 +14,7 @@ mod settings;
 mod store;
 #[cfg(test)]
 mod store_tests;
+mod update;
 
 use model::{Diary, ExportImage, Picture, Result};
 use serde::Serialize;
@@ -989,7 +990,10 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(second_instance))
         .manage(pdf::PrintJob::default())
         .register_asynchronous_uri_scheme_protocol(pdf::SCHEME, pdf::protocol)
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        // 自动检查更新（update.rs）。页面不直接用插件的命令，只用 update.rs 的三个命令。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(update::UpdateState::default());
     // Remembers size, position and maximized state across launches. Tests skip it so
     // they always start at the configured size and never touch the user's saved state.
     // Windows start hidden and `create_window` restores them before showing them,
@@ -1088,6 +1092,11 @@ pub fn run() {
                 }
             }
             reveal(app.handle(), &plan.focus);
+            // 窗口建好约 3 秒后检查一次更新（设置“自动检查更新”关着则不查）；测试模式从不检查，
+            // 不发任何网络请求。
+            if !test_data_dir_set {
+                update::schedule_check(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1121,7 +1130,10 @@ pub fn run() {
             explorer::reveal_in_explorer,
             caret::caret_metrics,
             settings::read_settings,
-            settings::write_settings
+            settings::write_settings,
+            update::take_update,
+            update::stash_flushed,
+            update::install_update
         ])
         .run(context)
         .expect("无法启动 LineHush");

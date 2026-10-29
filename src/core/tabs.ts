@@ -405,6 +405,29 @@ export function createTabs(
       closingWindow = false;
     }
   }
+  /**
+   * 安装更新之前（安装程序启动后进程直接退出，见 src-tauri/src/update.rs）：每个标签页待暂存的
+   * 修改立刻写进工作副本，不等 650 ms 防抖（`session.flush` 清掉定时器并等串行暂存队列排空），
+   * 重启后照程序意外退出时的规则恢复为“有未保存修改”。没有修改的标签页（含改了又撤销回原样的）
+   * 丢掉暂存，重启后不带未保存标记（同 closeWindow 的“打开上一会话中的内容”）。
+   * 返回暂存失败的原因（失败的标签页另有错误横幅），全部成功为 null。
+   */
+  async function stashAll(): Promise<string | null> {
+    const failures: string[] = [];
+    for (const tab of state.tabs)
+      try {
+        await tab.session.flush();
+      } catch (e) {
+        failures.push(`“${displayName(tab)}”：${e}`);
+      }
+    // 尽力而为：丢不掉只是重启后多一个未保存标记。
+    for (const tab of state.tabs)
+      if (!tab.session.getSnapshot().dirty)
+        await native
+          .discardStash(tab.id)
+          .catch((e) => console.error("无法丢弃暂存：", e));
+    return failures.length ? failures.join("；") : null;
+  }
   return {
     getSnapshot: () => state,
     subscribe: (listener: () => void) => {
@@ -429,6 +452,7 @@ export function createTabs(
     closeTabs,
     revealTab,
     closeWindow,
+    stashAll,
     /** Moves the keyboard focus back into the current tab's editor. */
     focus: () => set({ focus: state.focus + 1 }),
     /** The window is closing for good: its close request must go through. */

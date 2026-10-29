@@ -9,6 +9,7 @@ import { useDialogs } from "./hooks/useDialogs";
 import { useImagePreview } from "./hooks/useImagePreview";
 import { useSettings } from "./hooks/useSettings";
 import { useUnsavedPrompt } from "./hooks/useUnsavedPrompt";
+import { updateBusy, useUpdate } from "./hooks/useUpdate";
 import { useWindowGuards } from "./hooks/useWindowGuards";
 import { useZoom } from "./hooks/useZoom";
 import ContextMenu from "./components/ContextMenu";
@@ -18,6 +19,7 @@ import TabPane from "./components/TabPane";
 import TitleBar from "./components/TitleBar";
 import Toolbar from "./components/Toolbar";
 import UnsavedDialog from "./components/UnsavedDialog";
+import UpdateDialog from "./components/UpdateDialog";
 import "./App.css";
 
 export default function App() {
@@ -43,16 +45,25 @@ export default function App() {
   const currentState = useSessionState(current?.session);
   const preview = useImagePreview();
   const settingsDialog = useRef<HTMLDialogElement>(null);
+  // 发现新版本（Rust 启动后检查一次）与“立即更新”，以及各窗口安装前的暂存。
+  const update = useUpdate(tabs);
   // 对话框非模态（标题栏照常可拖、可按），开着时其余部分 inert、盖上遮罩，见 useDialogs。
   const dialogs = useDialogs({
     dialogs: {
       unsaved: unsaved.dialog,
+      update: update.dialog,
       settings: settingsDialog,
       preview: preview.dialog,
     },
     focus: tabs.focus,
+    updateBusy: updateBusy(update.phase),
   });
   const dimmed = dialogs.top !== null;
+  // 有别的对话框开着时，新版本提示等它关掉再弹，不叠两个对话框。
+  const { waiting: updateWaiting, present: presentUpdate } = update;
+  useEffect(() => {
+    if (updateWaiting && dialogs.top === null) presentUpdate();
+  }, [updateWaiting, dialogs.top, presentUpdate]);
 
   useWindowGuards(tabs);
   useCaretMetrics();
@@ -131,6 +142,14 @@ export default function App() {
         dialogRef={unsaved.dialog}
         name={unsaved.name}
         onClose={unsaved.closed}
+      />
+      <UpdateDialog
+        dialogRef={update.dialog}
+        info={update.info}
+        phase={update.phase}
+        onInstall={() => void update.install()}
+        onDismiss={update.close}
+        onClosed={update.closed}
       />
       <SettingsDialog
         dialogRef={settingsDialog}
