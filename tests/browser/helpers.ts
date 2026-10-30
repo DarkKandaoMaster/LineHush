@@ -7,9 +7,16 @@ import { expect, type Locator, type Page } from "@playwright/test";
 export const editorOf = (page: Page) =>
   page.getByRole("textbox", { name: "笔记正文" });
 
-type Block =
-  | { type: "line"; text: string }
-  | { type: "images"; images: { id: string; name: string; width: number; height: number }[] };
+/** A picture as Rust hands it out; videos and recordings carry `kind` and `duration`. */
+export interface TestPicture {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  kind?: "image" | "video" | "audio";
+  duration?: number;
+}
+type Block = { type: "line"; text: string } | { type: "images"; images: TestPicture[] };
 
 export interface DesktopOptions {
   /** The one untitled tab's document (restore_window); one empty line by default. */
@@ -19,8 +26,9 @@ export interface DesktopOptions {
   /** What read_settings hands out (normalized by the app); the defaults by default. */
   settings?: Record<string, unknown>;
   /**
-   * read_image: "png" answers every picture with a 400×300 PNG; "fail" (the
-   * default) rejects, so tiles show their placeholder at the picture's size.
+   * read_image: "png" answers every picture (a video's cover frame too) with a
+   * 400×300 PNG; "fail" (the default) rejects, so tiles show their placeholder
+   * at the picture's size, except for videos imported here (media_poster).
    */
   images?: "png" | "fail";
   /**
@@ -56,6 +64,10 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       destroyed: false,
       settings: options.settings ?? {},
       newTabs: 0,
+      /** import_media 交出的视频 / 音频个数（id 为 media1、media2…）。 */
+      media: 0,
+      /** media_poster 存过封面的 id。 */
+      posters: [] as string[],
       releaseSave: () => {},
       /** take_update 交出一次的新版本说明（`announceUpdate` 放进来）。 */
       update: null as unknown,
@@ -89,9 +101,26 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
         return id;
       },
       unregisterCallback: (id: number) => state.callbacks.delete(id),
-      invoke: async (cmd: string, args: any) => {
-        state.calls.push({ cmd, args });
+      invoke: async (cmd: string, args: any, invokeOptions?: { headers?: HeadersInit }) => {
+        // Raw-body commands (import_image, import_media, media_poster) are
+        // recorded by their size and headers.
+        const raw = args instanceof ArrayBuffer;
+        const headers = Object.fromEntries(new Headers(invokeOptions?.headers ?? {}));
+        state.calls.push({ cmd, args: raw ? { size: args.byteLength, headers } : args });
         switch (cmd) {
+          // 照 Rust：只存字节、不解码，按 header 交回 Picture（名字为空）。
+          case "import_media":
+            return {
+              id: `media${++state.media}`,
+              name: "",
+              width: Number(headers["x-linehush-width"]),
+              height: Number(headers["x-linehush-height"]),
+              kind: headers["x-linehush-kind"],
+              duration: Number(headers["x-linehush-duration"]),
+            };
+          case "media_poster":
+            state.posters.push(headers["x-linehush-id"]);
+            return;
           case "restore_window": {
             const tabs = options.tabs ?? [{ id: "t1", path: null }];
             return {
@@ -153,7 +182,8 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
             if (String(args.path).includes("已删除")) throw `文件不存在：${args.path}`;
             return;
           case "read_image": {
-            if (options.images !== "png") throw "测试：没有缩略图";
+            if (options.images !== "png" && !state.posters.includes(args.id))
+              throw "测试：没有缩略图";
             // A real picture: the preview grows once the original has loaded.
             const canvas = new OffscreenCanvas(400, 300);
             const context = canvas.getContext("2d")!;
@@ -225,10 +255,21 @@ export async function load(page: Page, options: DesktopOptions = {}) {
   return errors;
 }
 
-/** Strings are text lines; images as { id, newline } (shown 200×100 unless sized). */
+/**
+ * Strings are text lines; images as { id, newline } (shown 200×100 unless
+ * sized); `kind` / `duration` make a video (`<id>.mp4`) or a recording
+ * (`<id>.mp3`).
+ */
 export type Item =
   | string
-  | { id: string; newline?: boolean; width?: number; height?: number };
+  | {
+      id: string;
+      newline?: boolean;
+      width?: number;
+      height?: number;
+      kind?: "image" | "video" | "audio";
+      duration?: number;
+    };
 export async function setDoc(page: Page, items: Item[]) {
   await editorOf(page).evaluate((el: any, items: Item[]) => {
     el.editor.commands.setContent({
@@ -240,9 +281,11 @@ export async function setDoc(page: Page, items: Item[]) {
               type: "image",
               attrs: {
                 id: item.id,
-                name: `${item.id}.png`,
+                name: `${item.id}.${{ video: "mp4", audio: "mp3" }[item.kind ?? ""] ?? "png"}`,
                 width: item.width ?? 200,
                 height: item.height ?? 100,
+                kind: item.kind ?? "image",
+                duration: item.duration ?? null,
                 newline: !!item.newline,
               },
             },

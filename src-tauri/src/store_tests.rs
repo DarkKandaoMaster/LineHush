@@ -1,5 +1,5 @@
 use crate::images;
-use crate::model::{Block, Diary, ExportImage, Picture};
+use crate::model::{Block, Diary, ExportImage, MediaKind, Picture};
 use crate::store::{Opened, Store};
 use image::{DynamicImage, ImageFormat, RgbImage};
 use rusqlite::Connection;
@@ -127,7 +127,7 @@ fn blank_lines_round_trip_and_header_is_set() {
     };
     // VACUUM INTO must carry the header values over to the saved file.
     assert_eq!(pragma("application_id"), 0x4855_5348);
-    assert_eq!(pragma("user_version"), 1);
+    assert_eq!(pragma("user_version"), 2);
     assert_eq!(pragma("auto_vacuum"), 2);
     let mode: String = conn
         .query_row("PRAGMA journal_mode", [], |r| r.get(0))
@@ -784,4 +784,229 @@ fn close_succeeds_when_the_working_copy_cannot_be_discarded() {
     drop(holder);
     drop(store);
     fs::remove_dir_all(root).unwrap();
+}
+
+/// Bytes that start like an MP4 and do not compress away; nothing decodes them.
+fn clip(seed: u32, len: usize) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
+    let mut bytes = b"\0\0\0\x20ftypisom\0\0\x02\0".to_vec();
+    while bytes.len() < len {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        bytes.push(state as u8);
+    }
+    bytes
+}
+/// What the import_media command does, minus the IPC.
+fn import_clip(store: &mut Store, bytes: &[u8], kind: MediaKind) -> Picture {
+    let id = images::hash(bytes);
+    store.add_image(&id, bytes, None).unwrap();
+    Picture {
+        id,
+        name: "片段.mp4".into(),
+        width: 640,
+        height: 360,
+        kind,
+        duration: Some(3.5),
+    }
+}
+/// A small PNG standing in for the cover the front end draws.
+fn cover(shade: u8) -> Vec<u8> {
+    let mut out = Cursor::new(Vec::new());
+    DynamicImage::ImageRgb8(RgbImage::from_pixel(4, 3, image::Rgb([shade, 0, 0])))
+        .write_to(&mut out, ImageFormat::Png)
+        .unwrap();
+    out.into_inner()
+}
+fn user_version(file: &Path) -> i64 {
+    Connection::open(file)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap()
+}
+fn has_posters(file: &Path) -> bool {
+    Connection::open(file)
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'posters'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+        == 1
+}
+/// A file (or working copy) as LineHush 0.9.0 wrote it: format v1, no posters table.
+fn write_v1(path: &Path, body: Option<&Diary>, originals: &[&[u8]]) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "PRAGMA auto_vacuum = INCREMENTAL;
+         PRAGMA application_id = 1213551432;
+         PRAGMA user_version = 1;
+         CREATE TABLE doc (id INTEGER PRIMARY KEY CHECK (id = 1), body TEXT NOT NULL);
+         CREATE TABLE images (id TEXT PRIMARY KEY, data BLOB NOT NULL);",
+    )
+    .unwrap();
+    if let Some(body) = body {
+        conn.execute(
+            "INSERT INTO doc (id, body) VALUES (1, ?1)",
+            [serde_json::to_string(body).unwrap()],
+        )
+        .unwrap();
+    }
+    for bytes in originals {
+        conn.execute(
+            "INSERT INTO images (id, data) VALUES (?1, ?2)",
+            rusqlite::params![images::hash(bytes), bytes],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn media_are_saved_byte_for_byte_and_read_by_range() {
+    let root = temp();
+    let file = root.join("视频.hush");
+    let mut store = session(&root);
+    store.save_as(&file, &diary("")).unwrap();
+    let bytes = clip(1, 300_000);
+    let pic = import_clip(&mut store, &bytes, MediaKind::Video);
+    let audio_bytes = clip(2, 5_000);
+    let audio = import_clip(&mut store, &audio_bytes, MediaKind::Audio);
+    // Ranges from the working copy; a range past the end is cut short.
+    let len = bytes.len() as u64;
+    assert_eq!(store.image_len(&pic.id).unwrap(), Some(len));
+    assert_eq!(store.image_range(&pic.id, 0, 16).unwrap().unwrap(), bytes[..16]);
+    assert_eq!(
+        store.image_range(&pic.id, 1000, 70_000).unwrap().unwrap(),
+        bytes[1000..71_000]
+    );
+    assert_eq!(
+        store.image_range(&pic.id, len - 10, 100).unwrap().unwrap(),
+        bytes[bytes.len() - 10..]
+    );
+    assert_eq!(store.image_range(&pic.id, len, 100).unwrap(), Some(Vec::new()));
+    assert_eq!(store.image_len("missing").unwrap(), None);
+    assert_eq!(store.image_range("missing", 0, 16).unwrap(), None);
+    assert_eq!(images::sniff_media_mime(&bytes[..16]), "video/mp4");
+
+    let poster = cover(200);
+    store.add_poster(&pic.id, &poster).unwrap();
+    assert_eq!(rows(&working(&root), "posters"), 1);
+    let doc = with_pictures("视频", &[&pic, &audio]);
+    store.save(&doc).unwrap();
+    // The originals go into the file as they are, the cover with them.
+    let stored: Vec<u8> = Connection::open(&file)
+        .unwrap()
+        .query_row("SELECT data FROM images WHERE id = ?1", [&pic.id], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stored, bytes);
+    assert_eq!(rows(&file, "images"), 2);
+    assert_eq!(rows(&file, "posters"), 1);
+    assert_eq!(rows(&working(&root), "posters"), 0);
+    assert_eq!(reopen(&file), doc);
+    let body: String = Connection::open(&file)
+        .unwrap()
+        .query_row("SELECT body FROM doc", [], |r| r.get(0))
+        .unwrap();
+    assert!(body.contains(r#""kind":"video","duration":3.5"#), "{body}");
+
+    // Another tab reads ranges and the cover from the file; the cover is the
+    // video's thumbnail, never decoded from the original.
+    let reader = Mutex::new(other(&root, &file));
+    assert_eq!(
+        reader.lock().unwrap().image_range(&pic.id, 299_990, 10).unwrap().unwrap(),
+        bytes[299_990..]
+    );
+    assert_eq!(reader.lock().unwrap().image_len(&audio.id).unwrap(), Some(5_000));
+    let thumb = Store::thumbnail(&reader, &pic.id, |_| panic!("decoded")).unwrap();
+    assert_eq!(thumb, poster);
+    assert_eq!(reader.lock().unwrap().poster(&audio.id).unwrap(), None);
+    drop(reader);
+
+    // Save as carries the originals and the cover; leaving the file drops both
+    // once the saved body no longer references them.
+    let copy = root.join("副本.hush");
+    store.save_as(&copy, &doc).unwrap();
+    assert_eq!(rows(&copy, "images"), 2);
+    assert_eq!(rows(&copy, "posters"), 1);
+    let only_audio = with_pictures("", &[&audio]);
+    store.save(&only_audio).unwrap();
+    assert_eq!(store.close(), None);
+    assert_eq!(rows(&copy, "images"), 1);
+    assert_eq!(rows(&copy, "posters"), 0);
+    assert_eq!(reopen(&copy), only_audio);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn covers_imported_into_an_unnamed_draft_go_into_its_first_file() {
+    let root = temp();
+    let mut store = session(&root);
+    let bytes = clip(3, 20_000);
+    let pic = import_clip(&mut store, &bytes, MediaKind::Video);
+    store.add_poster(&pic.id, &cover(10)).unwrap();
+    let doc = with_pictures("", &[&pic]);
+    let file = root.join("草稿.hush");
+    store.save_as(&file, &doc).unwrap();
+    assert_eq!(rows(&file, "posters"), 1);
+    assert_eq!(user_version(&file), 2);
+    drop(store);
+    let reader = Mutex::new(other(&root, &file));
+    assert_eq!(
+        Store::thumbnail(&reader, &pic.id, |_| panic!("decoded")).unwrap(),
+        cover(10)
+    );
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn v1_files_are_upgraded_by_their_first_save_only() {
+    let root = temp();
+    let photo_bytes = photo(9, 64);
+    let (photo_pic, _) = images::prepare(&photo_bytes).unwrap();
+    let saved = with_pictures("旧文件", &[&photo_pic]);
+    let file = root.join("旧.hush");
+    write_v1(&file, Some(&saved), &[&photo_bytes]);
+    // Opening, reading and leaving a v1 file does not change its format.
+    let before = fs::read(&file).unwrap();
+    let reader = Mutex::new(other(&root, &file));
+    let thumb = Store::thumbnail(&reader, &photo_pic.id, images::thumbnail).unwrap();
+    assert_eq!(thumb, images::thumbnail(&photo_bytes).unwrap());
+    assert_eq!(reader.lock().unwrap().poster(&photo_pic.id).unwrap(), None);
+    assert_eq!(reader.lock().unwrap().close(), None);
+    drop(reader);
+    assert_eq!(fs::read(&file).unwrap(), before);
+    assert_eq!(user_version(&file), 1);
+
+    // A crash of 0.9.0 left a v1 working copy with unsaved changes; saving it
+    // upgrades the file, though the working copy has no covers to bring along.
+    let edited = with_pictures("改过\n", &[&photo_pic]);
+    write_v1(&working(&root), Some(&edited), &[]);
+    let (mut store, opened) = load(&root, Some(&file));
+    assert_eq!(opened.document, edited);
+    store.save(&edited).unwrap();
+    assert_eq!(user_version(&file), 2);
+    assert!(has_posters(&file));
+    assert_eq!(rows(&file, "posters"), 0);
+    assert_eq!(reopen(&file), edited);
+    drop(store);
+
+    // A v1 working copy of a draft (another session) takes a cover too, and
+    // save as upgrades the copy.
+    let draft_root = temp();
+    write_v1(&working(&draft_root), Some(&diary("草稿")), &[]);
+    let (mut store, _) = load(&draft_root, None);
+    let bytes = clip(4, 10_000);
+    let pic = import_clip(&mut store, &bytes, MediaKind::Video);
+    store.add_poster(&pic.id, &cover(30)).unwrap();
+    let target = root.join("新.hush");
+    let doc = with_pictures("草稿", &[&pic]);
+    store.save_as(&target, &doc).unwrap();
+    assert_eq!(user_version(&target), 2);
+    assert_eq!(rows(&target, "posters"), 1);
+    assert_eq!(reopen(&target), doc);
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(draft_root).unwrap();
 }

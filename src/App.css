@@ -672,7 +672,9 @@ input:focus-visible {
  * itself and looks the same.
  */
 .tiptap .ProseMirror-selectednode .image-tile::after,
-.tiptap .image-selected .image-tile::after {
+.tiptap .image-selected .image-tile::after,
+.tiptap .ProseMirror-selectednode .audio-chip::after,
+.tiptap .image-selected .audio-chip::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -799,6 +801,105 @@ input:focus-visible {
   color: #793414;
 }
 /*
+ * A video: its cover frame with a play badge in the middle (a click on it
+ * plays the video in the preview) and its length in the bottom right corner.
+ */
+.play-badge {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  border-radius: 50%;
+  background: #0000008c;
+  cursor: pointer;
+}
+.play-badge::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 10px;
+  border-style: solid;
+  border-width: 8px 0 8px 13px;
+  border-color: transparent transparent transparent #fff;
+}
+.play-badge:hover {
+  background: #000000b3;
+}
+.video-tile .media-duration {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #0000008c;
+  color: #fff;
+  font:
+    11px/16px "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+  pointer-events: none;
+}
+/*
+ * A recording: a chip, as tall as a short line of images, with a play / pause
+ * button, its name (cut short with an ellipsis) and its length; it plays in
+ * place.
+ */
+.audio-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 32px;
+  max-width: min(280px, 100%);
+  padding: 0 10px 0 3px;
+  border: 1px solid #ddd;
+  border-radius: 16px;
+  background: #f0f0f0;
+  font:
+    13px/1 "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+  color: #303030;
+  white-space: nowrap;
+}
+/* The selection overlay (see .image-selected above) follows the chip's round ends. */
+.audio-chip::after {
+  border-radius: inherit;
+}
+.audio-play {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #0067c0;
+  color: #fff;
+  cursor: pointer;
+}
+.audio-play:hover {
+  background: #1975c5;
+}
+.audio-error .audio-play {
+  background: #a0a0a0;
+}
+.audio-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.audio-duration {
+  flex: none;
+  color: #5e5e5e;
+  font-variant-numeric: tabular-nums;
+}
+/*
  * 对话框用非模态的 show() 打开（标题栏照常可用，见 useDialogs）：不在顶层、没有
  * ::backdrop，所以自己在整个窗口视口里居中（与模态相同，不用 transform，免得 150%
  * 缩放下发糊），盖在遮罩之上；遮罩从标题栏下缘盖到窗口底。保存询问可能出现在设置 /
@@ -910,7 +1011,8 @@ input:focus-visible {
   display: flex;
   gap: 4px;
 }
-.image-preview img {
+.image-preview img,
+.image-preview video {
   display: block;
   max-width: 90vw;
   max-height: 82vh;

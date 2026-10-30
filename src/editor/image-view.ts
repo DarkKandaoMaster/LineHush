@@ -20,10 +20,12 @@ import type { Mappable } from "@tiptap/pm/transform";
 import { dropPoint } from "@tiptap/pm/transform";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import {
+  formatDuration,
   fromEditor,
   toEditor,
   type Block,
   type Picture,
+  type PictureKind,
 } from "../core/document.ts";
 import { pointerInput, pressedIn } from "./input.ts";
 import { foldStarts } from "./margin.ts";
@@ -818,11 +820,16 @@ const isImageSlice = (slice: Slice) =>
     slice.content.child(i),
   ).every(isImage);
 
+/** The node's picture as the document model has it (`kind` / `duration` only for media). */
 const pictureOf = (node: PmNode): Picture => ({
   id: node.attrs.id,
   name: node.attrs.name,
   width: node.attrs.width,
   height: node.attrs.height,
+  ...(node.attrs.kind !== "image" ? { kind: node.attrs.kind } : {}),
+  ...(typeof node.attrs.duration === "number"
+    ? { duration: node.attrs.duration }
+    : {}),
 });
 
 /**
@@ -1741,6 +1748,8 @@ function shiftClickImage(view: EditorView, event: MouseEvent) {
 /** A primary-button press in the editor (input.ts): starts a drag selection, see `DragSelection`. */
 export function dragPress(view: EditorView, event: MouseEvent) {
   if (event.button !== 0) return;
+  // A media control (play) is pressed as a button, not a place in the text.
+  if (mediaControl(event.target)) return;
   if ((event.target as Element).closest(".image-item")) {
     if (event.shiftKey) shiftClickImage(view, event);
     return;
@@ -2117,9 +2126,15 @@ export function imagePlugin(
         direct && isImage(node) && event.button === 0 && selectImages(view, nodePos, true),
       handleClick: (view, _pos, event) => clickBesideImages(view, event),
       // The first click placed the caret; the second must not select a word
-      // next to the image. The tile's own dblclick listener opens the preview.
-      handleDoubleClickOn: (_view, _pos, node, _nodePos, _event, direct) =>
-        direct && isImage(node),
+      // next to the image. The tile's own dblclick listener opens the preview
+      // (an image's, a video's); a recording has none and is selected, as
+      // beside it.
+      handleDoubleClickOn: (view, _pos, node, nodePos, event, direct) =>
+        direct &&
+        isImage(node) &&
+        (node.attrs.kind !== "audio" ||
+          event.button !== 0 ||
+          selectImages(view, nodePos, false)),
       handleDoubleClick: (view, _pos, event) => pressBesideImages(view, event, false),
       handleTripleClick: (view, _pos, event) => pressBesideImages(view, event, true),
       // Keys typed at the caret between blocks (ProseMirror hands over every
@@ -2251,10 +2266,15 @@ function dropMixed(
 }
 
 export interface ImageOptions {
-  /** Opens the original (double click). */
+  /** Opens the original (double click), a video to play. */
   preview: (pic: Picture) => void;
-  /** A Blob URL of the picture's thumbnail, which the image revokes when it goes. */
+  /**
+   * A Blob URL of the picture's thumbnail (a video's cover frame), which the
+   * image revokes when it goes. Not asked for audio.
+   */
   source: (pic: Picture) => Promise<string>;
+  /** Where a recording plays from (`mediaUrl`). */
+  media: (pic: Picture) => string;
   /**
    * Puts the originals on the system clipboard; `rows` marks the images that
    * start a new row (see `selectedImages`).
@@ -2267,13 +2287,175 @@ export interface ImageOptions {
   stage: (pictures: Picture[]) => void;
 }
 
+/** Whether `target` is (in) a control of a video or recording: its play button or badge. */
+function mediaControl(target: EventTarget | null) {
+  return !!(target as Element | null)?.closest?.("[data-media-control]");
+}
+
+/** What a node view shows of its picture, and what to do when it goes. */
+interface PictureView {
+  element: HTMLElement;
+  destroy: () => void;
+}
+
+/**
+ * An image's or a video's tile: the thumbnail (a video's cover frame, with a
+ * play badge and its length) scaled into 280×200. Not a real <button>: a
+ * click would move focus into it, away from the editor, and once the image
+ * was deleted keys would go nowhere. The tile is still announced as a button;
+ * the preview opens with a double click (a video's also with a click on the
+ * badge).
+ */
+function pictureTile(
+  pic: Picture,
+  kind: PictureKind,
+  source: ImageOptions["source"],
+  preview: ImageOptions["preview"],
+): PictureView {
+  const video = kind === "video";
+  const tile = document.createElement("div");
+  tile.setAttribute("role", "button");
+  tile.className = video ? "image-tile video-tile" : "image-tile";
+  tile.title = `${pic.name} · ${video ? "双击播放视频" : "双击查看原图"}`;
+  tile.setAttribute(
+    "aria-label",
+    `${video ? "播放视频" : "查看图片"} ${pic.name}`,
+  );
+  const scale = Math.min(1, 280 / pic.width, 200 / pic.height);
+  tile.style.width = `${Math.max(48, Math.round(pic.width * scale))}px`;
+  tile.style.height = `${Math.max(48, Math.round(pic.height * scale))}px`;
+  const img = document.createElement("img");
+  img.alt = pic.name;
+  img.draggable = false;
+  img.loading = "lazy";
+  img.decoding = "async";
+  tile.append(img);
+  if (video) {
+    const badge = document.createElement("span");
+    badge.className = "play-badge";
+    badge.dataset.mediaControl = "";
+    badge.setAttribute("aria-hidden", "true");
+    // Keeps the focus and the caret where they are (see audioChip).
+    badge.addEventListener("mousedown", (event) => event.preventDefault());
+    badge.addEventListener("click", (event) => {
+      if (event.button === 0 && event.detail <= 1) preview(pic);
+    });
+    const length = document.createElement("span");
+    length.className = "media-duration";
+    length.textContent = formatDuration(pic.duration);
+    tile.append(badge, length);
+  }
+  let url: string | undefined;
+  let destroyed = false;
+  void source(pic)
+    .then((result) => {
+      if (destroyed) {
+        URL.revokeObjectURL(result);
+        return;
+      }
+      url = result;
+      img.src = result;
+    })
+    .catch(() => {
+      if (destroyed) return;
+      // A video keeps its badge and length.
+      if (video) img.replaceWith("无法显示视频封面");
+      else tile.textContent = "无法显示此图片";
+      tile.classList.add("image-error");
+    });
+  // A single click places the caret through the plugin's handleClickOn.
+  tile.addEventListener("dblclick", (event) => {
+    if (!mediaControl(event.target)) preview(pic);
+  });
+  return {
+    element: tile,
+    destroy: () => {
+      destroyed = true;
+      if (url) URL.revokeObjectURL(url);
+    },
+  };
+}
+
+const PLAY_ICON =
+  '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M5 3.2v9.6L12.6 8z" fill="currentColor"/></svg>';
+const PAUSE_ICON =
+  '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4.5 3h2.4v10H4.5zM9.1 3h2.4v10H9.1z" fill="currentColor"/></svg>';
+
+/**
+ * A recording: a chip with a play / pause button, its name and length, playing
+ * in place from `src` through a hidden <audio> that loads nothing until the
+ * first play. The button keeps the focus and the caret where they are (its
+ * mousedown is prevented, and the node view keeps ProseMirror out of it);
+ * the rest of the chip is pressed like an image. Playback stops at the end
+ * (back to the start) and when the node view goes (deleted, the editor
+ * rebuilt).
+ */
+function audioChip(pic: Picture, src: string): PictureView {
+  const chip = document.createElement("div");
+  chip.className = "audio-chip";
+  chip.title = pic.name;
+  chip.setAttribute("role", "group");
+  chip.setAttribute("aria-label", `音频 ${pic.name}`);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "audio-play";
+  button.tabIndex = -1;
+  button.draggable = false;
+  button.dataset.mediaControl = "";
+  const name = document.createElement("span");
+  name.className = "audio-name";
+  name.textContent = pic.name;
+  const length = document.createElement("span");
+  length.className = "media-duration audio-duration";
+  length.textContent = formatDuration(pic.duration);
+  const audio = document.createElement("audio");
+  audio.preload = "none";
+  audio.hidden = true;
+  audio.src = src;
+  const show = () => {
+    const playing = !audio.paused;
+    chip.classList.toggle("playing", playing);
+    button.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
+    button.setAttribute("aria-label", playing ? "暂停" : "播放");
+  };
+  show();
+  audio.addEventListener("play", show);
+  audio.addEventListener("pause", show);
+  audio.addEventListener("ended", () => {
+    audio.currentTime = 0;
+    show();
+  });
+  audio.addEventListener("error", () => {
+    chip.classList.add("audio-error");
+    chip.title = `${pic.name} · 无法播放`;
+    show();
+  });
+  button.addEventListener("mousedown", (event) => event.preventDefault());
+  button.addEventListener("dragstart", (event) => event.preventDefault());
+  button.addEventListener("click", () => {
+    if (audio.paused) {
+      chip.classList.remove("audio-error");
+      audio.play().catch(() => show());
+    } else audio.pause();
+  });
+  chip.append(button, name, length, audio);
+  return {
+    element: chip,
+    destroy: () => {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    },
+  };
+}
+
 /**
  * One picture per node. Neighbouring image nodes share a row, which CSS wraps
  * where it does not fit; an image with `newline` starts a new row after the
  * image before it (a line break between them, drawn as a spacer by the plugin).
  * The document model makes each row one `images` block.
  */
-export function image({ preview, source, copy, stage }: ImageOptions) {
+export function image({ preview, source, media, copy, stage }: ImageOptions) {
   return Node.create({
     name: "image",
     group: "block",
@@ -2287,6 +2469,10 @@ export function image({ preview, source, copy, stage }: ImageOptions) {
       name: { default: "", rendered: false },
       width: { default: 0, rendered: false },
       height: { default: 0, rendered: false },
+      // "image", "video" or "audio": all lay out alike, as images.
+      kind: { default: "image", rendered: false },
+      // Seconds, for a video or a recording.
+      duration: { default: null, rendered: false },
       // A line break before this image, if an image comes before it; no
       // meaning after a text line or at the document's start.
       newline: { default: false, rendered: false },
@@ -2332,61 +2518,29 @@ export function image({ preview, source, copy, stage }: ImageOptions) {
         const pic = pictureOf(node);
         const same = (other: PmNode) =>
           other.type === node.type &&
-          (["id", "name", "width", "height"] as const).every(
+          (["id", "name", "width", "height", "kind", "duration"] as const).every(
             (key) => other.attrs[key] === node.attrs[key],
           );
         const dom = document.createElement("div");
         dom.className = "image-item";
         dom.contentEditable = "false";
-        // Not a real <button>: a click would move focus into it, away from the
-        // editor, and once the image was deleted keys would go nowhere. The tile
-        // is still announced as a button; the preview opens with a double click.
-        const tile = document.createElement("div");
-        tile.setAttribute("role", "button");
-        tile.className = "image-tile";
-        tile.title = `${pic.name} · 双击查看原图`;
-        tile.setAttribute("aria-label", `查看图片 ${pic.name}`);
-        const scale = Math.min(1, 280 / pic.width, 200 / pic.height);
-        tile.style.width = `${Math.max(48, Math.round(pic.width * scale))}px`;
-        tile.style.height = `${Math.max(48, Math.round(pic.height * scale))}px`;
-        const img = document.createElement("img");
-        img.alt = pic.name;
-        img.draggable = false;
-        img.loading = "lazy";
-        img.decoding = "async";
-        tile.append(img);
-        dom.append(tile);
-        let url: string | undefined;
-        let destroyed = false;
-        void source(pic)
-          .then((result) => {
-            if (destroyed) {
-              URL.revokeObjectURL(result);
-              return;
-            }
-            url = result;
-            img.src = result;
-          })
-          .catch(() => {
-            if (!destroyed) {
-              tile.textContent = "无法显示此图片";
-              tile.classList.add("image-error");
-            }
-          });
-        // A single click places the caret through the plugin's handleClickOn.
-        tile.addEventListener("dblclick", () => preview(pic));
+        const content =
+          node.attrs.kind === "audio"
+            ? audioChip(pic, media(pic))
+            : pictureTile(pic, node.attrs.kind, source, preview);
+        dom.append(content.element);
         return {
           dom,
           // A line break added or removed before the image keeps its tile
           // (and thumbnail); the spacer is the plugin's.
           update: (other: PmNode) => same(other),
-          // Only the double click is ours; mousedown and dragstart stay with ProseMirror.
-          stopEvent: (event) => event.type === "dblclick",
+          // The double click is ours, and so is anything on a media control
+          // (a press there must not place the caret or start a drag); other
+          // presses and dragstart stay with ProseMirror.
+          stopEvent: (event) =>
+            event.type === "dblclick" || mediaControl(event.target),
           ignoreMutation: () => true,
-          destroy: () => {
-            destroyed = true;
-            if (url) URL.revokeObjectURL(url);
-          },
+          destroy: content.destroy,
         };
       };
     },

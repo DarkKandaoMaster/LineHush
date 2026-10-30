@@ -35,7 +35,7 @@ const MARGIN: f64 = 0.59;
 pub struct PrintJob(Mutex<Option<(String, String)>>);
 
 /// `linehush-print` 协议：`/doc.html` 为待打印页面，`/image/<id>` 为正在导出的
-/// 标签页中的原图，其他路径 404。
+/// 标签页中的原图，`/poster/<id>` 为其中视频的封面，其他路径（及找不到的图）404。
 pub fn protocol(
     ctx: UriSchemeContext<'_, Wry>,
     request: Request<Vec<u8>>,
@@ -58,14 +58,19 @@ fn serve(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
             .body(html.into_bytes())
             .unwrap_or_else(|_| status(StatusCode::INTERNAL_SERVER_ERROR));
     }
-    let Some(id) = path.strip_prefix("/image/") else {
+    let read = if let Some(id) = path.strip_prefix("/image/") {
+        lock_tab(app, &tab).and_then(|store| lock(&store).image(id))
+    } else if let Some(id) = path.strip_prefix("/poster/") {
+        lock_tab(app, &tab)
+            .and_then(|store| lock(&store).poster(id))
+            .and_then(|poster| poster.ok_or_else(|| "笔记中缺少这段视频的封面".into()))
+    } else {
         return status(StatusCode::NOT_FOUND);
     };
-    let original = lock_tab(app, &tab).and_then(|store| lock(&store).image(id));
-    let bytes = match original {
+    let bytes = match read {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("导出 PDF 时无法读取图片 {id}：{e}");
+            eprintln!("导出 PDF 时无法读取 {path}：{e}");
             return status(StatusCode::NOT_FOUND);
         }
     };

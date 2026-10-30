@@ -6,6 +6,7 @@ mod db;
 mod errors;
 mod fsx;
 mod images;
+mod media;
 mod model;
 mod pdf;
 mod explorer;
@@ -16,7 +17,7 @@ mod store;
 mod store_tests;
 mod update;
 
-use model::{Diary, ExportImage, Picture, Result};
+use model::{Diary, ExportImage, MediaKind, Picture, Result};
 use serde::Serialize;
 use session::{Session, TabEntry, WINDOW_PREFIX};
 use settings::OpenFile;
@@ -42,8 +43,17 @@ use tauri_plugin_window_state::{StateFlags, WindowExt};
 const OPEN_REQUESTED: &str = "open-requested";
 /// Tells one window to switch to a tab (`{ tab }`): the file asked for is open there.
 const ACTIVATE_TAB: &str = "activate-tab";
-/// `import_image` sends the image as the raw body, so its tab comes in this header.
+/// `import_image`, `import_media` and `media_poster` send the file as the raw
+/// body, so its tab comes in this header.
 const TAB_HEADER: &str = "x-linehush-tab";
+/// `import_media`: `video` or `audio`, and what the front end measured
+/// (pixels of the picture, seconds).
+const KIND_HEADER: &str = "x-linehush-kind";
+const WIDTH_HEADER: &str = "x-linehush-width";
+const HEIGHT_HEADER: &str = "x-linehush-height";
+const DURATION_HEADER: &str = "x-linehush-duration";
+/// `media_poster`: the video the cover belongs to.
+const ID_HEADER: &str = "x-linehush-id";
 /// What the window-state plugin remembers. Not VISIBLE: `create_window` shows the
 /// window itself once the rest is restored.
 const WINDOW_STATE: StateFlags = StateFlags::SIZE
@@ -111,8 +121,9 @@ impl ClipboardState {
 }
 /// Makes sure `target` holds each image: an image from another document is read
 /// back from the file its copy left in `dir` (also from an earlier session) or,
-/// failing that, from another open tab that holds it. Only one store is locked
-/// at a time. Returns the ids found nowhere.
+/// failing that, from another open tab that holds it. A video's cover comes
+/// along from another open tab that has it (the copy folder holds no covers).
+/// Only one store is locked at a time. Returns the ids found nowhere.
 fn adopt_images(
     dir: &Path,
     target: &Mutex<Store>,
@@ -134,7 +145,15 @@ fn adopt_images(
             })
         });
         match bytes {
-            Some(bytes) => lock(target).add_image(&id, &bytes, None)?,
+            Some(bytes) => {
+                lock(target).add_image(&id, &bytes, None)?;
+                let poster = others
+                    .iter()
+                    .find_map(|store| lock(store).poster(&id).ok().flatten());
+                if let Some(poster) = poster {
+                    lock(target).add_poster(&id, &poster)?;
+                }
+            }
             None if !missing.contains(&id) => missing.push(id),
             None => {}
         }
@@ -712,6 +731,73 @@ async fn import_image(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resul
     })
     .await
 }
+/// The text of header `name` of a raw-body command.
+fn header<'a>(request: &'a tauri::ipc::Request<'_>, name: &str) -> Option<&'a str> {
+    request.headers().get(name).and_then(|value| value.to_str().ok())
+}
+/// A number the front end measured; None when missing, negative or not finite.
+fn measured(request: &tauri::ipc::Request<'_>, name: &str) -> Option<f64> {
+    header(request, name)
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|n| n.is_finite() && *n >= 0.0)
+}
+/// Stores a video or audio clip (the raw body) in the working copy of the tab
+/// in `x-linehush-tab`. It is not decoded: the front end has already checked
+/// that WebView2 plays it and sends its kind, size and duration as headers.
+/// `name` is left to the caller, as in `import_image`.
+#[tauri::command]
+async fn import_media(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<Picture> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("媒体数据无效".into());
+    };
+    let tab = header(&request, TAB_HEADER)
+        .ok_or("媒体数据缺少所属标签页")?
+        .to_owned();
+    let kind = match header(&request, KIND_HEADER) {
+        Some("video") => MediaKind::Video,
+        Some("audio") => MediaKind::Audio,
+        _ => return Err("不支持的媒体类型".into()),
+    };
+    let pixels = |name| measured(&request, name).map_or(0, |n| n.round() as u32);
+    let (width, height) = match kind {
+        MediaKind::Video => (pixels(WIDTH_HEADER), pixels(HEIGHT_HEADER)),
+        _ => (0, 0),
+    };
+    let duration = measured(&request, DURATION_HEADER);
+    images::check_media_size(bytes.len())?;
+    let bytes = bytes.clone();
+    blocking(move || {
+        let id = images::hash(&bytes);
+        lock(&*lock_tab(&app, &tab)?).add_image(&id, &bytes, None)?;
+        Ok(Picture {
+            id,
+            name: String::new(),
+            width,
+            height,
+            kind,
+            duration,
+        })
+    })
+    .await
+}
+/// Stores the cover of the video `x-linehush-id` (the raw body, drawn by the
+/// front end) in the working copy of the tab in `x-linehush-tab`; `read_image`
+/// returns it as the video's thumbnail.
+#[tauri::command]
+async fn media_poster(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<()> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("封面数据无效".into());
+    };
+    let tab = header(&request, TAB_HEADER)
+        .ok_or("封面数据缺少所属标签页")?
+        .to_owned();
+    let id = header(&request, ID_HEADER)
+        .filter(|id| !id.is_empty())
+        .ok_or("封面数据缺少所属视频")?
+        .to_owned();
+    let bytes = bytes.clone();
+    with_tab(app, tab, move |store| store.add_poster(&id, &bytes)).await
+}
 #[tauri::command]
 async fn read_image(tab: String, id: String, original: bool, app: AppHandle) -> Result<Response> {
     blocking(move || {
@@ -749,8 +835,8 @@ async fn copy_images(
         for pic in pictures {
             let bytes = lock(&store).image(&pic.id)?;
             let path = clipboard::stage(&state.dir, &pic, &bytes)?;
-            // An image that cannot be decoded still goes out as a file.
-            if single {
+            // An image that cannot be decoded, a video or an audio clip still goes out as a file.
+            if single && pic.kind.is_image() {
                 pixels = images::clipboard_pixels(&bytes).ok();
             }
             items.push((pic, path));
@@ -990,6 +1076,8 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(second_instance))
         .manage(pdf::PrintJob::default())
         .register_asynchronous_uri_scheme_protocol(pdf::SCHEME, pdf::protocol)
+        // 播放视频 / 音频（media.rs，按 Range 分段读原始字节）。
+        .register_asynchronous_uri_scheme_protocol(media::SCHEME, media::protocol)
         .plugin(tauri_plugin_dialog::init())
         // 自动检查更新（update.rs，自己实现，不用 tauri-plugin-updater）。
         .manage(update::UpdateState::default());
@@ -1114,6 +1202,8 @@ pub fn run() {
             suggest_save_path,
             export_document,
             import_image,
+            import_media,
+            media_poster,
             read_image,
             export_image,
             copy_images,
@@ -1178,7 +1268,9 @@ mod tests {
         assert_eq!(clipboard::staged(&staging, &open.id), None);
         assert!(stage_pictures(&staging, &target, std::slice::from_ref(&staged)).is_err());
         // A staged image comes from its file, another one from the open tab
-        // holding it, an unknown one is reported (once).
+        // holding it (with its cover, as for a video), an unknown one is
+        // reported (once).
+        source.lock().unwrap().add_poster(&open.id, &png(9)).unwrap();
         let unknown = "0".repeat(64);
         let missing = adopt_images(
             &staging,
@@ -1191,6 +1283,8 @@ mod tests {
         let held = target.lock().unwrap();
         assert_eq!(held.image(&staged.id).unwrap(), a);
         assert_eq!(held.image(&open.id).unwrap(), b);
+        assert_eq!(held.poster(&open.id).unwrap(), Some(png(9)));
+        assert_eq!(held.poster(&staged.id).unwrap(), None);
         drop(held);
         // Without the source tab only the staged image is still found.
         let late = tab("late");

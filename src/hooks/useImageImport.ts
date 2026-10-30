@@ -4,9 +4,12 @@ import {
   copiedImages,
   copyImages,
   importImage,
+  importMedia,
+  mediaPoster,
   pasteImages,
   stageImages,
 } from "../core/native";
+import { isMediaFile, probeMedia } from "../core/media-probe";
 import { blockPictures, withoutPictures } from "../editor/image-view";
 import type { Session } from "../core/session";
 import type { DiaryEditorHandle, EditorImages } from "../editor/DiaryEditor";
@@ -19,7 +22,9 @@ type Insertion = ReturnType<DiaryEditorHandle["reserveInsertion"]>;
 /**
  * Image import, paste and copy for one tab:
  * - `importFiles` imports files one by one through Rust; pasted files that are
- *   still LineHush's last copy are not imported but used as they are;
+ *   still LineHush's last copy are not imported but used as they are. Videos
+ *   and recordings are read in the page first (`probeMedia`: length, frame
+ *   size, a video's cover frame), which turns away what WebView2 cannot play;
  * - `pasteBlocks` pastes images with text lines copied in LineHush, also from
  *   another document, once Rust has made those images available here;
  * - `copy` puts selected images on the system clipboard, `stage` keeps copies
@@ -65,6 +70,7 @@ export function useImageImport(
     (files: File[], fromClipboard = false) => {
       if (!files.length) return;
       let current = "";
+      let media = false;
       const images: Picture[] = [];
       // Which images start a new row; only a paste of copied rows has any.
       const rows: boolean[] = [];
@@ -80,7 +86,25 @@ export function useImageImport(
           }
           for (const file of files) {
             current = file.name;
-            const pic = await importImage(session.tab, await file.arrayBuffer());
+            media = isMediaFile(file);
+            let pic: Picture;
+            if (media) {
+              const probe = await probeMedia(file);
+              const { poster, ...meta } = probe;
+              const stored = await importMedia(
+                session.tab,
+                await file.arrayBuffer(),
+                meta,
+              );
+              pic = {
+                ...stored,
+                kind: stored.kind ?? meta.kind,
+                duration: stored.duration ?? meta.duration,
+              };
+              // Before the node is made, which reads it as the thumbnail.
+              if (poster)
+                await mediaPoster(session.tab, pic.id, await poster.arrayBuffer());
+            } else pic = await importImage(session.tab, await file.arrayBuffer());
             // A file a LineHush copy left (e.g. from an earlier session) keeps
             // its original name.
             const staged = STAGED.exec(file.name);
@@ -89,9 +113,15 @@ export function useImageImport(
             images.push({ ...pic, name });
           }
         },
-        // Rust says why (format, damage, size); the name says which file.
-        (e) =>
-          current ? `无法插入图片“${current}”：${e}` : `无法插入图片：${e}`,
+        // Rust (or the probe) says why (format, damage, size); the name says
+        // which file.
+        (e) => {
+          const reason = e instanceof Error ? e.message : String(e);
+          const what = media ? "" : "图片";
+          return current
+            ? `无法插入${what}“${current}”：${reason}`
+            : `无法插入${what}：${reason}`;
+        },
         // Successfully imported images stay if a later file fails.
         (insertion) =>
           images.length ? insertion.insert(images, rows) : insertion.cancel(),

@@ -3,8 +3,8 @@
 //!
 //! The user's file changes only on `save` / `save_as`. Everything in between
 //! lives in the tab's working copy `tabs/<id>.hush`: the stashed body (present
-//! only while there are unsaved changes) and the images imported since the last
-//! save. For an unnamed document the working copy is the whole draft. Which file
+//! only while there are unsaved changes) and the images, videos, audio clips and
+//! video covers imported since the last save. For an unnamed document the working copy is the whole draft. Which file
 //! a working copy belongs to is recorded in session.json (see session.rs).
 use crate::db::Db;
 use crate::errors::describe;
@@ -270,6 +270,43 @@ impl Store {
         }
         Ok(())
     }
+    /// Stores the cover of video `id` in the working copy, so it is saved with
+    /// this document, and shows it as the video's thumbnail from now on.
+    pub fn add_poster(&mut self, id: &str, bytes: &[u8]) -> Result<()> {
+        self.work()?.insert_poster(id, bytes)?;
+        self.thumbnails.insert(id.to_owned(), Ok(bytes.to_vec()));
+        Ok(())
+    }
+    /// The cover of video `id`, from the working copy or else from the open file.
+    pub fn poster(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(bytes) = self.work()?.poster(id)? {
+            return Ok(Some(bytes));
+        }
+        match &self.file {
+            Some((_, db)) => db.poster(id),
+            None => Ok(None),
+        }
+    }
+    /// Size of an original (see `image`), or None when neither holds it.
+    pub fn image_len(&self, id: &str) -> Result<Option<u64>> {
+        if let Some(len) = self.work()?.image_len(id)? {
+            return Ok(Some(len));
+        }
+        match &self.file {
+            Some((_, db)) => db.image_len(id),
+            None => Ok(None),
+        }
+    }
+    /// Up to `len` bytes of an original from byte `start` on (see `image`).
+    pub fn image_range(&self, id: &str, start: u64, len: usize) -> Result<Option<Vec<u8>>> {
+        if let Some(bytes) = self.work()?.image_range(id, start, len)? {
+            return Ok(Some(bytes));
+        }
+        match &self.file {
+            Some((_, db)) => db.image_range(id, start, len),
+            None => Ok(None),
+        }
+    }
     /// Whether this document can show `id`: the working copy or the open file holds it.
     pub fn has_image(&self, id: &str) -> Result<bool> {
         Ok(self.work()?.has_image(id)?
@@ -289,19 +326,23 @@ impl Store {
         }
         .ok_or_else(|| "笔记中缺少这张图片的数据".into())
     }
-    /// Thumbnail of `id`, built by `build` and then kept. `build` runs without
-    /// the store lock so a slow decode never holds up saving. Two requests for an
-    /// image not cached yet may both build it; the id is the content hash, so
-    /// either result is the same.
+    /// Thumbnail of `id`: a video's stored cover, or else built by `build` from
+    /// the original; then kept. `build` runs without the store lock so a slow
+    /// decode never holds up saving. Two requests for an image not cached yet may
+    /// both build it; the id is the content hash, so either result is the same.
     pub fn thumbnail(
         store: &Mutex<Self>,
         id: &str,
         build: impl FnOnce(&[u8]) -> Result<Vec<u8>>,
     ) -> Result<Vec<u8>> {
         let source = {
-            let store = lock(store);
+            let mut store = lock(store);
             if let Some(cached) = store.thumbnails.get(id) {
                 return cached.clone();
+            }
+            if let Some(poster) = store.poster(id)? {
+                store.thumbnails.insert(id.to_owned(), Ok(poster.clone()));
+                return Ok(poster);
             }
             store.image(id)?
         };

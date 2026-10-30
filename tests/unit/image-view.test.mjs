@@ -47,8 +47,13 @@ import {
 const schema = getSchema(
   extensions({ preview() {}, source: async () => "", copy() {}, stage() {} }),
 );
-const img = (id, newline = false) =>
-  schema.nodes.image.create({ id, name: `${id}.png`, width: 40, height: 30, newline });
+/** An image node; `media` makes it a video or a recording (kind, duration, …). */
+const img = (id, newline = false, media = {}) =>
+  schema.nodes.image.create({ id, name: `${id}.png`, width: 40, height: 30, newline, ...media });
+const video = (id, newline = false) =>
+  img(id, newline, { name: `${id}.mp4`, width: 640, height: 360, kind: "video", duration: 12.5 });
+const audio = (id, newline = false) =>
+  img(id, newline, { name: `${id}.mp3`, width: 0, height: 0, kind: "audio", duration: 61 });
 /** Strings are text lines (possibly empty), other values image nodes. */
 const doc = (...nodes) =>
   schema.nodes.doc.create(
@@ -1199,4 +1204,55 @@ test("块间范围保留 head 的 side（画光标用），eq / toJSON 仍不比
   const view = fakeView(state);
   const back = plugin.props.createSelectionBetween.call(plugin, view, rows.resolve(2), rows.resolve(1));
   assert.equal(back, up);
+});
+
+// ---- Videos and recordings (2026-10-31): image nodes of another kind, laid out alike. ----
+
+test("视频 / 音频节点：默认 kind 为 image，插入 / 删除与图片同规则，复制带出 kind 与时长", () => {
+  assert.equal(img("a").attrs.kind, "image");
+  assert.equal(img("a").attrs.duration, null);
+  // A video joins the row at the caret between a and b; a recording goes in after it.
+  const pair = doc(img("a"), img("b"));
+  const inserted = insertNodes(caret(pair, 1), [video("v"), audio("s")]);
+  assert.deepEqual(layout(inserted.state), ["[a v s b]"]);
+  assert.deepEqual(
+    fromEditor(inserted.state.doc.toJSON()).blocks[0].images.map((p) => [p.id, p.kind, p.duration]),
+    [["a", undefined, undefined], ["v", "video", 12.5], ["s", "audio", 61], ["b", undefined, undefined]],
+  );
+  // Backspace after the recording deletes it as it would an image.
+  const removed = run(caret(inserted.state.doc, 3), removeNear(-1));
+  assert.deepEqual(layout(removed.state), ["[a v b]"]);
+  // Copying whole media gives the pictures with their kind and length; an image
+  // still has exactly its four fields (Rust's Picture rejects unknown ones).
+  const d = doc(img("a"), video("v"), row("x"), audio("s", true));
+  const copied = selectedImages(new BlockRange(d.resolve(0), d.resolve(4)));
+  assert.deepEqual(copied.pictures, [
+    { id: "a", name: "a.png", width: 40, height: 30 },
+    { id: "v", name: "v.mp4", width: 640, height: 360, kind: "video", duration: 12.5 },
+    { id: "x", name: "x.png", width: 40, height: 30 },
+    { id: "s", name: "s.mp3", width: 0, height: 0, kind: "audio", duration: 61 },
+  ]);
+  assert.deepEqual(copied.rows, [false, false, true, true]);
+});
+
+test("混合选区里的视频 / 音频：blocks 原样带 kind，粘贴回来的节点不变", () => {
+  const d = doc("A", video("v"), audio("s"), "B");
+  const blocks = sliceBlocks(mixedSlice(stateOf(d, new AllSelection(d))));
+  assert.deepEqual(blocks[1], {
+    type: "images",
+    images: [
+      { id: "v", name: "v.mp4", width: 640, height: 360, kind: "video", duration: 12.5 },
+      { id: "s", name: "s.mp3", width: 0, height: 0, kind: "audio", duration: 61 },
+    ],
+  });
+  assert.deepEqual(clipboardBlocks(JSON.stringify({ v: 1, blocks })), blocks);
+  const nodes = blockNodes(schema, blocks);
+  assert.deepEqual(
+    nodes.filter((n) => n.type.name === "image").map((n) => [n.attrs.kind, n.attrs.duration]),
+    [["video", 12.5], ["audio", 61]],
+  );
+  const empty = doc("");
+  const tr = text(empty, 1).tr;
+  insertBlocks(tr, nodes);
+  assert.deepEqual(layout(stateOf(tr.doc)), ["A", "[v s]", "B"]);
 });

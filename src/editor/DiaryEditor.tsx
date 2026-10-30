@@ -27,15 +27,18 @@ import {
   lineOf,
 } from "./image-view";
 import {
+  PLACEHOLDER,
   fromEditor,
   fromText,
+  kindOf,
   toEditor,
   type Block,
   type Diary,
   type Picture,
 } from "../core/document";
 import { letterOf } from "../core/keys";
-import { imageUrl } from "../core/native";
+import { isMediaFile } from "../core/media-probe";
+import { imageUrl, mediaUrl } from "../core/native";
 export interface DiaryEditorHandle {
   reserveInsertion: () => {
     cancel: () => void;
@@ -74,10 +77,12 @@ export interface EditorImages {
   /** See ImageOptions.stage. */
   stage: (pictures: Picture[]) => void;
 }
-// Files without a MIME type still go to Rust, which rejects anything that is not an image.
+// Images, videos and recordings (by MIME type or extension). Files without a
+// MIME type still go to Rust, which rejects anything that is not an image.
 const imageFiles = (files: FileList | undefined) =>
   Array.from(files ?? []).filter(
-    (file) => !file.type || file.type.startsWith("image/"),
+    (file) =>
+      !file.type || file.type.startsWith("image/") || isMediaFile(file),
   );
 
 function DiaryEditor(props: Props) {
@@ -101,6 +106,7 @@ function DiaryEditor(props: Props) {
     extensions: extensions({
       preview: (pic) => latest.current.onPreview(pic),
       source: (pic) => imageUrl(latest.current.tab, pic),
+      media: (pic) => mediaUrl(latest.current.tab, pic.id),
       copy: (pictures, rows) => latest.current.images.copy(pictures, rows),
       stage: (pictures) => latest.current.images.stage(pictures),
     }),
@@ -118,9 +124,12 @@ function DiaryEditor(props: Props) {
         let images = false;
         slice.content.forEach((node: PmNode) => {
           const image = node.type.name === "image";
+          const text = image
+            ? `[${PLACEHOLDER[kindOf(node.attrs)]}]`
+            : node.textContent;
           if (image && images && !node.attrs.newline)
-            lines[lines.length - 1] += " [图片]";
-          else lines.push(image ? "[图片]" : node.textContent);
+            lines[lines.length - 1] += ` ${text}`;
+          else lines.push(text);
           images = image;
         });
         return lines.join("\n");

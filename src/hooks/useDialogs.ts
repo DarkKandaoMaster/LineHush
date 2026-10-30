@@ -31,7 +31,8 @@ interface Options {
  *   页面其余部分的 inert 与 DOM 一致，关掉后立刻能拿回焦点）；
  * - 打开后下一帧把它的位置报给 Rust（`revealRect`），露不全时把窗口挪进屏幕；
  * - Esc（挂在 window 上：点过标题栏、焦点不在对话框里也有效）关掉最上面那个；
- * - `mask`：点遮罩关掉设置 / 预览，保存询问与发现新版本不响应（都是要回答的问题）；
+ * - `mask`：点遮罩关掉设置 / 预览，保存询问与发现新版本不响应（都是要回答的问题）；双击的
+ *   第二下不算（第一下可能正是打开它的那一下）；
  * - `closeWindow`：标题栏 ×，保存询问开着时等于“取消”，否则先关掉对话框再走关窗流程；
  * - 更新对话框下载 / 安装期间（`updateBusy`）Esc 与标题栏 × 都不响应。
  */
@@ -85,7 +86,9 @@ export function useDialogs(options: Options) {
     };
   }, [reveal]);
 
-  const mask = () => {
+  const mask = (event?: { detail: number }) => {
+    // 双击的第二下：第一下刚打开了对话框（如视频的播放角标，单击即打开预览），不是要关掉它。
+    if (event && event.detail > 1) return;
     const { dialogs } = latest.current;
     const kind = ORDER.find((kind) => dialogs[kind].current?.open);
     if (kind && kind !== "unsaved" && kind !== "update") dismiss(kind);

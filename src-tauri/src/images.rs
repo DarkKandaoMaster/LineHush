@@ -1,6 +1,7 @@
-//! Image decoding and thumbnails. Pure functions: the originals are stored
+//! Image decoding and thumbnails, and the type of a video or audio clip (never
+//! decoded: the front end measures it and draws its cover). Pure functions: the originals are stored
 //! byte-for-byte by db.rs, thumbnails only live in memory (store.rs).
-use crate::model::{Picture, Result};
+use crate::model::{MediaKind, Picture, Result};
 use image::{
     codecs::{
         jpeg::JpegEncoder,
@@ -33,6 +34,28 @@ pub fn check_file_size(len: usize) -> Result<()> {
         return Err("图片文件过大（上限 256 MB）".into());
     }
     Ok(())
+}
+/// The same limit for a video or audio clip.
+pub fn check_media_size(len: usize) -> Result<()> {
+    check_file_size(len).map_err(|_| "媒体文件过大（上限 256 MB）".into())
+}
+/// MIME type of a video or audio clip from its first bytes (16 are enough), for
+/// the `linehush-media` protocol, which only knows the id. Covers the formats
+/// WebView2 plays; anything else is `application/octet-stream`.
+pub fn sniff_media_mime(head: &[u8]) -> &'static str {
+    match head {
+        [_, _, _, _, b'f', b't', b'y', b'p', b'M', b'4', b'A', ..] => "audio/mp4",
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => "video/mp4",
+        [0x1A, 0x45, 0xDF, 0xA3, ..] => "video/webm",
+        [b'I', b'D', b'3', ..] => "audio/mpeg",
+        // Frame sync; layer bits 00 mark an ADTS (AAC) header, the rest MPEG audio.
+        [0xFF, b, ..] if b & 0xF6 == 0xF0 => "audio/aac",
+        [0xFF, b, ..] if b & 0xE0 == 0xE0 => "audio/mpeg",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => "audio/wav",
+        [b'O', b'g', b'g', b'S', ..] => "audio/ogg",
+        [b'f', b'L', b'a', b'C', ..] => "audio/flac",
+        _ => "application/octet-stream",
+    }
 }
 /// Unsupported format, over a limit, or damaged.
 fn describe(e: ImageError) -> String {
@@ -94,6 +117,8 @@ pub fn prepare(bytes: &[u8]) -> Result<(Picture, Vec<u8>)> {
         name: String::new(),
         width: img.width(),
         height: img.height(),
+        kind: MediaKind::Image,
+        duration: None,
     };
     Ok((picture, encode_thumbnail(&img)?))
 }
@@ -242,5 +267,34 @@ mod tests {
             check_file_size(MAX_FILE_BYTES + 1).unwrap_err(),
             "图片文件过大（上限 256 MB）"
         );
+        assert!(check_media_size(MAX_FILE_BYTES).is_ok());
+        assert_eq!(
+            check_media_size(MAX_FILE_BYTES + 1).unwrap_err(),
+            "媒体文件过大（上限 256 MB）"
+        );
+    }
+    #[test]
+    fn media_types_are_sniffed_from_the_first_bytes() {
+        let cases: [(&[u8], &str); 14] = [
+            (b"\0\0\0\x20ftypisom\0\0\x02\0", "video/mp4"),
+            (b"\0\0\0\x18ftypmp42", "video/mp4"),
+            (b"\0\0\0\x20ftypM4V \0\0\0\0", "video/mp4"),
+            (b"\0\0\0\x20ftypM4A \0\0\0\0", "audio/mp4"),
+            (b"\x1A\x45\xDF\xA3\x9F\x42\x86\x81", "video/webm"),
+            (b"ID3\x04\0\0\0\0\0\0", "audio/mpeg"),
+            (b"\xFF\xFB\x90\x64", "audio/mpeg"),
+            (b"\xFF\xF3\x90\x64", "audio/mpeg"),
+            (b"\xFF\xF1\x50\x80", "audio/aac"),
+            (b"RIFF\x24\0\0\0WAVEfmt ", "audio/wav"),
+            (b"RIFF\x24\0\0\0AVI LIST", "application/octet-stream"),
+            (b"OggS\0\x02\0\0", "audio/ogg"),
+            (b"fLaC\0\0\0\x22", "audio/flac"),
+            (b"\x89PNG\r\n\x1a\n", "application/octet-stream"),
+        ];
+        for (head, mime) in cases {
+            assert_eq!(sniff_media_mime(head), mime, "{head:?}");
+        }
+        assert_eq!(sniff_media_mime(b""), "application/octet-stream");
+        assert_eq!(sniff_media_mime(b"\0\0\0"), "application/octet-stream");
     }
 }

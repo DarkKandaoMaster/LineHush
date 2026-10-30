@@ -12,7 +12,10 @@ import {
   exportImages,
   firstLineName,
   suggestedName,
+  stats,
+  formatDuration,
 } from "../../src/core/document.ts";
+import { isMediaFile } from "../../src/core/media-probe.ts";
 
 const idA = "a".repeat(12) + "0".repeat(52);
 const idB = "b".repeat(12) + "1".repeat(52);
@@ -281,4 +284,95 @@ test("建议文件名：日期为 YYYY-MM-DD，首行文字为空时退回日期
   assert.equal(suggestedName(fromText("\n\n"), "firstLine", now), "2026-10-08");
   assert.equal(suggestedName(fromText("<>"), "firstLine", now), "2026-10-08");
   assert.match(suggestedName(doc, "date"), /^\d{4}-\d{2}-\d{2}$/);
+});
+
+// ---- Videos and recordings (2026-10-31): pictures of kind "video" / "audio". ----
+
+const idV = "c".repeat(12) + "2".repeat(52);
+const idS = "d".repeat(12) + "3".repeat(52);
+const pic = { id: idA, name: "图.png", width: 20, height: 10 };
+const clip = { id: idV, name: "片 <1>.mp4", width: 1920, height: 1080, kind: "video", duration: 75.4 };
+const memo = { id: idS, name: "语音.m4a", width: 0, height: 0, kind: "audio", duration: 3 };
+
+test("视频 / 音频：kind 与时长经编辑器往返不变，图片仍只有四个字段", () => {
+  const doc = { blocks: [{ type: "images", images: [pic, clip, memo] }, { type: "line", text: "" }] };
+  const editor = toEditor(doc);
+  assert.deepEqual(editor.content[1].attrs, { ...clip, newline: false });
+  assert.deepEqual(editor.content[0].attrs, { ...pic, newline: true });
+  assert.deepEqual(fromEditor(editor), doc);
+  // The editor's JSON carries every attribute (kind "image", duration null for
+  // an image); an image still writes only its four fields, so an older
+  // document saves (and compares for the dirty mark) unchanged.
+  const full = {
+    type: "doc",
+    content: editor.content.map((node) =>
+      node.type === "image"
+        ? { ...node, attrs: { kind: "image", duration: null, ...node.attrs } }
+        : node,
+    ),
+  };
+  assert.equal(JSON.stringify(fromEditor(full)), JSON.stringify(doc));
+  assert.deepEqual(Object.keys(fromEditor(full).blocks[0].images[0]), ["id", "name", "width", "height"]);
+});
+
+test("视频 / 音频：TXT 占位文字、状态栏只数图片、时长 m:ss", () => {
+  const doc = { blocks: [{ type: "line", text: "甲" }, { type: "images", images: [pic, clip, memo] }] };
+  assert.equal(toText(doc), "甲\n[图片：图.png] [视频：片 <1>.mp4] [音频：语音.m4a]");
+  assert.deepEqual(stats(doc), { characters: 1, images: 1 });
+  assert.equal(formatDuration(0), "0:00");
+  assert.equal(formatDuration(3), "0:03");
+  assert.equal(formatDuration(59.6), "1:00");
+  assert.equal(formatDuration(75.4), "1:15");
+  assert.equal(formatDuration(3725), "62:05");
+  assert.equal(formatDuration(undefined), "0:00");
+  assert.equal(formatDuration(NaN), "0:00");
+});
+
+test("视频 / 音频：HTML 导出用 <video> / <audio> 引用附件，打印页视频放封面与时长、音频为一行文字", () => {
+  const doc = { blocks: [{ type: "images", images: [pic, clip, memo] }] };
+  const html = toHtml(doc);
+  assert.ok(
+    html.includes(
+      `<video controls preload="metadata" src="附件/${encodeURIComponent(exportFile(clip))}" title="片 &lt;1&gt;.mp4" width="1920" height="1080"></video>`,
+    ),
+  );
+  assert.ok(
+    html.includes(
+      `<audio controls preload="metadata" src="附件/${encodeURIComponent(exportFile(memo))}" title="语音.m4a"></audio>`,
+    ),
+  );
+  assert.ok(html.includes(`<img src="附件/${encodeURIComponent(exportFile(pic))}"`));
+  // Every original goes to 附件/, media too.
+  assert.deepEqual(exportImages(doc).map((x) => x.id), [idA, idV, idS]);
+  const print = toPrintHtml(doc, { fontFamily: "sans-serif", fontSizePt: 10, title: "t" });
+  assert.ok(
+    print.includes(
+      `<span class="video"><img src="/poster/${idV}" alt="片 &lt;1&gt;.mp4" width="1920" height="1080"><span class="duration">1:15</span></span>`,
+    ),
+  );
+  assert.ok(print.includes('<div class="audio">🔊 语音.m4a（0:03）</div>'));
+  assert.ok(print.includes(`<img src="/image/${idA}"`));
+  assert.ok(!print.includes("<video") && !print.includes("<audio"));
+});
+
+test("媒体文件：按 MIME 或（没有可信 MIME 时）扩展名认出视频 / 音频", () => {
+  const yes = [
+    { name: "a.bin", type: "video/mp4" },
+    { name: "a", type: "audio/x-m4a" },
+    { name: "录音.MP3", type: "" },
+    ...["mp4", "m4v", "webm", "mp3", "m4a", "aac", "wav", "ogg", "oga", "opus", "flac"].map((ext) => ({
+      name: `x.${ext}`,
+      type: "",
+    })),
+    { name: "x.webm", type: "application/octet-stream" },
+  ];
+  for (const file of yes) assert.equal(isMediaFile(file), true, file.name);
+  const no = [
+    { name: "a.png", type: "image/png" },
+    { name: "a.mp4", type: "image/png" },
+    { name: "a.heic", type: "" },
+    { name: "mp4", type: "" },
+    { name: "a.txt", type: "text/plain" },
+  ];
+  for (const file of no) assert.equal(isMediaFile(file), false, file.name);
 });

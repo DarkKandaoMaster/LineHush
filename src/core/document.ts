@@ -1,13 +1,36 @@
 import type { JSONContent } from "@tiptap/core";
 import type { DefaultFileName } from "./settings.ts";
 
+/** What a picture is: an image, a video or an audio recording (the last two "media"). */
+export type PictureKind = "image" | "video" | "audio";
 export interface Picture {
   /** SHA-256 of the original bytes, which the .hush file stores unchanged. */
   id: string;
   name: string;
+  /** Pixels of the image or of the video's frame; 0 for audio. */
   width: number;
   height: number;
+  /** Absent for an image, so older documents read and write unchanged. */
+  kind?: PictureKind;
+  /** Seconds, video and audio only. */
+  duration?: number;
 }
+export const kindOf = (pic: { kind?: PictureKind | null }): PictureKind =>
+  pic.kind ?? "image";
+/** A video's or a recording's length as m:ss (minutes not capped at 59). */
+export function formatDuration(seconds: number | null | undefined): string {
+  const total =
+    typeof seconds === "number" && Number.isFinite(seconds)
+      ? Math.max(0, Math.round(seconds))
+      : 0;
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+/** What a picture is called in text (TXT export, a plain-text copy): 图片 / 视频 / 音频. */
+export const PLACEHOLDER: Record<PictureKind, string> = {
+  image: "图片",
+  video: "视频",
+  audio: "音频",
+};
 export type Block =
   { type: "line"; text: string } | { type: "images"; images: Picture[] };
 export interface Diary {
@@ -27,7 +50,9 @@ export function toText(doc: Diary): string {
     .map((block) =>
       block.type === "line"
         ? block.text
-        : block.images.map((pic) => `[图片：${pic.name}]`).join(" "),
+        : block.images
+            .map((pic) => `[${PLACEHOLDER[kindOf(pic)]}：${pic.name}]`)
+            .join(" "),
     )
     .join("\n");
 }
@@ -53,9 +78,17 @@ export function toEditor(doc: Diary): JSONContent {
                 : {}),
             },
           ]
-        : block.images.map(({ id, name, width, height }, i) => ({
+        : block.images.map(({ id, name, width, height, kind, duration }, i) => ({
             type: "image",
-            attrs: { id, name, width, height, newline: i === 0 },
+            attrs: {
+              id,
+              name,
+              width,
+              height,
+              ...(kind ? { kind } : {}),
+              ...(duration != null ? { duration } : {}),
+              newline: i === 0,
+            },
           })),
     ),
   };
@@ -65,8 +98,13 @@ export function fromEditor(doc: JSONContent): Diary {
   let previous: JSONContent | undefined;
   for (const node of doc.content ?? []) {
     if (node.type === "image") {
-      const { id, name, width, height, newline } = node.attrs ?? {};
+      const { id, name, width, height, kind, duration, newline } =
+        node.attrs ?? {};
       const pic: Picture = { id, name, width, height };
+      // Only media carry these, so an image (and an older document) writes
+      // exactly what it read.
+      if (kind && kind !== "image") pic.kind = kind;
+      if (typeof duration === "number") pic.duration = duration;
       const last = blocks[blocks.length - 1];
       if (previous?.type === "image" && !newline && last?.type === "images")
         last.images.push(pic);
@@ -80,13 +118,17 @@ export function fromEditor(doc: JSONContent): Diary {
   }
   return { blocks };
 }
-/** Status bar counts: characters are Unicode code points in text lines. */
+/**
+ * Status bar counts: characters are Unicode code points in text lines; images
+ * are images alone, not videos or recordings.
+ */
 export function stats(doc: Diary): { characters: number; images: number } {
   let characters = 0;
   let images = 0;
   for (const block of doc.blocks) {
     if (block.type === "line") characters += Array.from(block.text).length;
-    else images += block.images.length;
+    else
+      images += block.images.filter((pic) => kindOf(pic) === "image").length;
   }
   return { characters, images };
 }
@@ -166,24 +208,34 @@ export function exportImages(doc: Diary): { id: string; file: string }[] {
       }
   return [...images.values()];
 }
-/** The exported body: a div per line, a div of images per row, each image's `src` from `src`. */
-function bodyHtml(doc: Diary, src: (pic: Picture) => string): string {
+/** The exported body: a div per line, a div per row of pictures, each made by `item`. */
+function bodyHtml(doc: Diary, item: (pic: Picture) => string): string {
   return doc.blocks
     .map((block) =>
       block.type === "line"
         ? `<div class="line">${escapeHtml(block.text) || "<br>"}</div>`
-        : `<div class="images">${block.images.map((pic) => `<img src="${src(pic)}" alt="${escapeHtml(pic.name)}" width="${pic.width}" height="${pic.height}">`).join("")}</div>`,
+        : `<div class="images">${block.images.map(item).join("")}</div>`,
     )
     .join("\n");
 }
+const imgHtml = (pic: Picture, src: string) =>
+  `<img src="${src}" alt="${escapeHtml(pic.name)}" width="${pic.width}" height="${pic.height}">`;
 export function toHtml(doc: Diary): string {
-  const body = bodyHtml(
-    doc,
-    (pic) => `附件/${escapeHtml(encodeURIComponent(exportFile(pic)))}`,
-  );
+  const body = bodyHtml(doc, (pic) => {
+    const src = `附件/${escapeHtml(encodeURIComponent(exportFile(pic)))}`;
+    const title = escapeHtml(pic.name);
+    switch (kindOf(pic)) {
+      case "video":
+        return `<video controls preload="metadata" src="${src}" title="${title}" width="${pic.width}" height="${pic.height}"></video>`;
+      case "audio":
+        return `<audio controls preload="metadata" src="${src}" title="${title}"></audio>`;
+      default:
+        return imgHtml(pic, src);
+    }
+  });
   return (
     '<!doctype html>\n<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LineHush 笔记</title>\n' +
-    '<style>body{background:#f9f9f9;color:#202020;font:16px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;margin:24px}.line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1.6em}.images{display:flex;flex-wrap:wrap;gap:8px}.images+.images{margin-top:16px}img{max-width:280px;max-height:200px;object-fit:contain;width:auto;height:auto}</style>\n<body>' +
+    '<style>body{background:#f9f9f9;color:#202020;font:16px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;margin:24px}.line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1.6em}.images{display:flex;flex-wrap:wrap;gap:8px}.images+.images{margin-top:16px}img,video{max-width:280px;max-height:200px;object-fit:contain;width:auto;height:auto}audio{max-width:100%}</style>\n<body>' +
     body +
     "</body></html>"
   );
@@ -198,17 +250,31 @@ export interface PrintOptions {
 /**
  * Rust 在隐藏窗口里加载并用 WebView2 PrintToPdf 打印成 PDF 的页面。文字行与编辑区
  * 一致（同字体、字号、字体自然行高）；图片从 `/image/<id>` 读原图（由 Rust 的
- * 自定义协议提供），等比缩小到不超出 A4 版心，且不跨页拆开。
+ * 自定义协议提供），等比缩小到不超出 A4 版心，且不跨页拆开。视频放 `/poster/<id>` 的
+ * 封面并在右下角叠时长；音频为一行文字“🔊 名字（m:ss）”。
  */
 export function toPrintHtml(doc: Diary, options: PrintOptions): string {
-  const body = bodyHtml(doc, (pic) => `/image/${encodeURIComponent(pic.id)}`);
+  const body = bodyHtml(doc, (pic) => {
+    const id = encodeURIComponent(pic.id);
+    switch (kindOf(pic)) {
+      case "video":
+        return `<span class="video">${imgHtml(pic, `/poster/${id}`)}<span class="duration">${formatDuration(pic.duration)}</span></span>`;
+      case "audio":
+        return `<div class="audio">🔊 ${escapeHtml(pic.name)}（${formatDuration(pic.duration)}）</div>`;
+      default:
+        return imgHtml(pic, `/image/${id}`);
+    }
+  });
   // 字体列表里若有 `</` 会提前结束 <style>，转成 CSS 转义。
   const font = options.fontFamily.replace(/</g, "\\3c ");
   return (
     `<!doctype html>\n<html lang="zh-CN"><meta charset="utf-8"><title>${escapeHtml(options.title)}</title>\n` +
     `<style>@page{size:A4;margin:15mm}html,body{background:#fff}body{color:#202020;margin:0;font-family:${font};font-size:${options.fontSizePt}pt;line-height:normal}` +
     ".line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1lh}.images{display:flex;flex-wrap:wrap;gap:8px;break-inside:avoid}.images+.images{margin-top:16px}" +
-    "img{max-width:100%;max-height:160mm;width:auto;height:auto;object-fit:contain;break-inside:avoid}</style>\n<body>" +
+    "img{max-width:100%;max-height:160mm;width:auto;height:auto;object-fit:contain;break-inside:avoid}" +
+    ".video{position:relative;display:block;max-width:100%;break-inside:avoid}.video img{display:block}" +
+    ".duration{position:absolute;right:4px;bottom:4px;padding:0 4px;border-radius:3px;background:#000a;color:#fff;font-size:9pt}" +
+    ".audio{white-space:pre-wrap;overflow-wrap:anywhere}</style>\n<body>" +
     body +
     "</body></html>"
   );

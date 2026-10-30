@@ -1,8 +1,12 @@
-//! The `.hush` container: one SQLite file holding the body JSON and the original
-//! image bytes. Every SQLite read and write goes through this module.
+//! The `.hush` container: one SQLite file holding the body JSON, the original
+//! bytes of its images, videos and audio clips, and the covers of its videos.
+//! Every SQLite read and write goes through this module.
 //!
 //! The working copy in the app data folder uses the same schema. Its `doc` row
 //! exists only while it holds a stashed (unsaved) body.
+//!
+//! Format v1 had no `posters` table. A v1 file is not changed when opened; the
+//! first save (or save as) adds the table and sets `user_version` to 2.
 use crate::errors::describe;
 use crate::fsx::{shown, sidecar};
 use crate::model::{Diary, Result};
@@ -11,7 +15,9 @@ use std::{collections::HashSet, fs, path::Path};
 
 /// "HUSH" in the SQLite header, so the file can be identified without opening it.
 const APPLICATION_ID: u32 = 0x4855_5348;
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
+/// Video covers, keyed like `images`. Missing from files (and working copies) of v1.
+const CREATE_POSTERS: &str = "CREATE TABLE IF NOT EXISTS {db}.posters (id TEXT PRIMARY KEY, data BLOB NOT NULL)";
 /// Writes the body, inserting the row when the working copy has none yet.
 const WRITE_BODY: &str = "INSERT OR REPLACE INTO main.doc (id, body) VALUES (1, ?1)";
 
@@ -45,6 +51,24 @@ fn read_body(conn: &Connection) -> rusqlite::Result<Option<String>> {
 fn parse_body(body: &str, what: &str) -> Result<Diary> {
     serde_json::from_str(body).map_err(|e| format!("{what}（{e}）"))
 }
+/// Brings database `db` ("main", or an attached one) to the current format:
+/// the `posters` table and `user_version`. Does nothing to a current one.
+fn upgrade(conn: &Connection, db: &str) -> rusqlite::Result<()> {
+    conn.execute_batch(&format!(
+        "{}; PRAGMA {db}.user_version = {FORMAT_VERSION};",
+        CREATE_POSTERS.replace("{db}", db)
+    ))
+}
+/// Whether database `db` has the `posters` table (a v1 file has not).
+fn has_posters(conn: &Connection, db: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        &format!("SELECT 1 FROM {db}.sqlite_master WHERE type = 'table' AND name = 'posters'"),
+        [],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|row| row.is_some())
+}
 
 pub struct Db {
     conn: Connection,
@@ -62,6 +86,7 @@ impl Db {
              PRAGMA user_version = {FORMAT_VERSION};
              CREATE TABLE doc (id INTEGER PRIMARY KEY CHECK (id = 1), body TEXT NOT NULL);
              CREATE TABLE images (id TEXT PRIMARY KEY, data BLOB NOT NULL);
+             CREATE TABLE posters (id TEXT PRIMARY KEY, data BLOB NOT NULL);
              COMMIT;"
         ))
         .map_err(sql)?;
@@ -120,8 +145,9 @@ impl Db {
             .map(drop)
             .map_err(sql)
     }
-    /// In one transaction, copies every image of the working copy at `work` that
-    /// this file lacks and rewrites the body.
+    /// In one transaction, brings this file to the current format, copies every
+    /// image and cover of the working copy at `work` that it lacks and rewrites
+    /// the body.
     pub fn save_with_images(&self, doc: &Diary, work: &Path) -> Result<()> {
         let body = body_json(doc)?;
         self.conn
@@ -129,10 +155,18 @@ impl Db {
             .map_err(sql)?;
         let result = (|| {
             let tx = self.conn.unchecked_transaction()?;
+            upgrade(&tx, "main")?;
             tx.execute(
                 "INSERT OR IGNORE INTO main.images (id, data) SELECT id, data FROM work.images",
                 [],
             )?;
+            // A working copy left by format v1 has no covers.
+            if has_posters(&tx, "work")? {
+                tx.execute(
+                    "INSERT OR IGNORE INTO main.posters (id, data) SELECT id, data FROM work.posters",
+                    [],
+                )?;
+            }
             tx.execute(WRITE_BODY, [&body])?;
             tx.commit()
         })()
@@ -169,6 +203,62 @@ impl Db {
             .optional()
             .map_err(sql)
     }
+    /// Size in bytes of an original, without reading it.
+    pub fn image_len(&self, id: &str) -> Result<Option<u64>> {
+        self.conn
+            .query_row("SELECT length(data) FROM images WHERE id = ?1", [id], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()
+            .map(|len| len.map(|len| len as u64))
+            .map_err(sql)
+    }
+    /// Up to `len` bytes of an original from byte `start` on (fewer at its end),
+    /// read without loading the rest of it.
+    pub fn image_range(&self, id: &str, start: u64, len: usize) -> Result<Option<Vec<u8>>> {
+        let rowid = self
+            .conn
+            .query_row("SELECT rowid FROM images WHERE id = ?1", [id], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()
+            .map_err(sql)?;
+        let Some(rowid) = rowid else {
+            return Ok(None);
+        };
+        let blob = self
+            .conn
+            .blob_open("main", "images", "data", rowid, true)
+            .map_err(sql)?;
+        let start = (start as usize).min(blob.len());
+        let mut bytes = vec![0; len.min(blob.len() - start)];
+        blob.read_at_exact(&mut bytes, start).map_err(sql)?;
+        Ok(Some(bytes))
+    }
+    /// Stores the cover of a video under the video's id, upgrading a working
+    /// copy left by format v1 first.
+    pub fn insert_poster(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        upgrade(&self.conn, "main").map_err(sql)?;
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO posters (id, data) VALUES (?1, ?2)",
+                rusqlite::params![id, bytes],
+            )
+            .map(drop)
+            .map_err(sql)
+    }
+    /// The cover of video `id`; None also for a v1 file, which has no covers.
+    pub fn poster(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        if !has_posters(&self.conn, "main").map_err(sql)? {
+            return Ok(None);
+        }
+        self.conn
+            .query_row("SELECT data FROM posters WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(sql)
+    }
     /// Writes a compacted copy holding `doc` to `target`, replacing any file there,
     /// plus the images of the working copy at `work` when given.
     /// The open file itself is not modified.
@@ -183,6 +273,7 @@ impl Db {
             let copy = Self {
                 conn: connect(&tmp)?,
             };
+            upgrade(&copy.conn, "main").map_err(sql)?;
             match work {
                 Some(work) => copy.save_with_images(doc, work)?,
                 None => copy.save(doc)?,
@@ -201,30 +292,39 @@ impl Db {
         }
         result
     }
-    /// Deletes images the saved body no longer references and returns the space
-    /// to the file system. Only run when leaving a document, so undo within a
-    /// session can always bring an image back.
+    /// Deletes images (and covers) the saved body no longer references and
+    /// returns the space to the file system. Only run when leaving a document, so
+    /// undo within a session can always bring an image back.
     pub fn collect_garbage(&self) -> Result<()> {
         let body = self.body()?;
         let referenced: HashSet<&str> = body.pictures().map(|p| p.id.as_str()).collect();
-        let stored = self
-            .conn
-            .prepare("SELECT id FROM images")
-            .and_then(|mut stmt| {
-                stmt.query_map([], |row| row.get::<_, String>(0))?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .map_err(sql)?;
-        let unused: Vec<_> = stored
-            .iter()
-            .filter(|id| !referenced.contains(id.as_str()))
-            .collect();
+        let mut tables = vec!["images"];
+        if has_posters(&self.conn, "main").map_err(sql)? {
+            tables.push("posters");
+        }
+        let mut unused = Vec::new();
+        for table in tables {
+            let stored = self
+                .conn
+                .prepare(&format!("SELECT id FROM {table}"))
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| row.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .map_err(sql)?;
+            unused.extend(
+                stored
+                    .into_iter()
+                    .filter(|id| !referenced.contains(id.as_str()))
+                    .map(|id| (table, id)),
+            );
+        }
         if unused.is_empty() {
             return Ok(());
         }
         let tx = self.conn.unchecked_transaction().map_err(sql)?;
-        for id in unused {
-            tx.execute("DELETE FROM images WHERE id = ?1", [id])
+        for (table, id) in unused {
+            tx.execute(&format!("DELETE FROM {table} WHERE id = ?1"), [id])
                 .map_err(sql)?;
         }
         tx.commit().map_err(sql)?;

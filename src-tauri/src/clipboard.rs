@@ -1,11 +1,11 @@
-//! Copying images to the Windows clipboard as they are.
+//! Copying images (and videos and audio clips) to the Windows clipboard as they are.
 //!
 //! One copy puts on the clipboard, all at once:
 //! - the originals as files (CF_HDROP), written byte for byte to a temporary
 //!   folder as `<first 12 hex digits of the id>-<original name>`, so Explorer
 //!   pastes the very same files;
-//! - an HTML fragment with one `<img>` per image, its `file:` URL, for programs
-//!   such as Word;
+//! - when all of them are images, an HTML fragment with one `<img>` per image,
+//!   its `file:` URL, for programs such as Word;
 //! - for a single image, its pixels as CF_DIB and PNG, for Paint, chat programs
 //!   and the like.
 //!
@@ -18,7 +18,7 @@
 use crate::errors::describe;
 use crate::fsx::shown;
 use crate::images;
-use crate::model::{Picture, Result};
+use crate::model::{MediaKind, Picture, Result};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -27,9 +27,10 @@ use std::{
 /// How many hex digits of the id prefix a staged file name.
 pub const ID_PREFIX: usize = 12;
 
-/// `name` with the characters Windows forbids in file names replaced.
-fn safe_name(name: &str) -> String {
-    let name: String = name
+/// The name of `pic` with the characters Windows forbids in file names replaced.
+fn safe_name(pic: &Picture) -> String {
+    let name: String = pic
+        .name
         .chars()
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
@@ -38,13 +39,22 @@ fn safe_name(name: &str) -> String {
         })
         .collect();
     let name = name.trim_end_matches(['.', ' ']).trim();
-    if name.is_empty() { "图片" } else { name }.to_owned()
+    if !name.is_empty() {
+        return name.to_owned();
+    }
+    match pic.kind {
+        MediaKind::Image => "图片",
+        MediaKind::Video => "视频",
+        MediaKind::Audio => "音频",
+    }
+    .to_owned()
 }
-/// Where `stage` puts the original of `pic`. A name without an extension gets
-/// one from the content, so the file opens in the right program.
+/// Where `stage` puts the original of `pic`. An image named without an
+/// extension gets one from its content, so the file opens in the right program;
+/// a video or audio clip keeps the extension of its name, if any.
 pub fn staged_path(dir: &Path, pic: &Picture, bytes: &[u8]) -> PathBuf {
-    let mut name = safe_name(&pic.name);
-    if Path::new(&name).extension().is_none() {
+    let mut name = safe_name(pic);
+    if pic.kind.is_image() && Path::new(&name).extension().is_none() {
         if let Some(ext) = image::guess_format(bytes)
             .ok()
             .and_then(|format| format.extensions_str().first())
@@ -104,25 +114,31 @@ fn file_url(path: &Path) -> String {
     }
     url
 }
-/// One `<img>` per staged original, for programs that paste HTML. LineHush
-/// itself never sees it: WebView2 offers a paste that has files only as those
-/// files (see `copied_images` in lib.rs for how LineHush pastes its own copy).
-pub fn html(items: &[(Picture, PathBuf)]) -> String {
-    items
-        .iter()
-        .map(|(pic, path)| {
-            format!(
-                r#"<img src="{}" alt="{}">"#,
-                escape(&file_url(path)),
-                escape(&pic.name),
-            )
-        })
-        .collect()
+/// One `<img>` per staged original, for programs that paste HTML; None when a
+/// video or audio clip is among them. LineHush itself never sees it: WebView2
+/// offers a paste that has files only as those files (see `copied_images` in
+/// lib.rs for how LineHush pastes its own copy).
+pub fn html(items: &[(Picture, PathBuf)]) -> Option<String> {
+    if !items.iter().all(|(pic, _)| pic.kind.is_image()) {
+        return None;
+    }
+    Some(
+        items
+            .iter()
+            .map(|(pic, path)| {
+                format!(
+                    r#"<img src="{}" alt="{}">"#,
+                    escape(&file_url(path)),
+                    escape(&pic.name),
+                )
+            })
+            .collect(),
+    )
 }
 /// Everything one copy puts on the clipboard.
 pub struct Content {
     pub files: Vec<PathBuf>,
-    pub html: String,
+    pub html: Option<String>,
     /// DIB and PNG of a single image (see `images::clipboard_pixels`).
     pub pixels: Option<(Vec<u8>, Vec<u8>)>,
 }
@@ -179,8 +195,8 @@ mod system {
         if let Some(effect) = raw::register_format("Preferred DropEffect") {
             raw::set_without_clear(effect.get(), &1u32.to_le_bytes()).map_err(fail)?;
         }
-        if let Some(html) = formats::Html::new() {
-            raw::set_html(html.code(), &content.html).map_err(fail)?;
+        if let (Some(format), Some(html)) = (formats::Html::new(), &content.html) {
+            raw::set_html(format.code(), html).map_err(fail)?;
         }
         if let Some((dib, png)) = &content.pixels {
             raw::set_without_clear(formats::CF_DIB, dib).map_err(fail)?;
@@ -202,7 +218,40 @@ mod tests {
             name: name.into(),
             width: 3,
             height: 2,
+            kind: MediaKind::Image,
+            duration: None,
         }
+    }
+    fn media(id: &str, name: &str, kind: MediaKind) -> Picture {
+        Picture {
+            kind,
+            duration: Some(1.5),
+            ..picture(id, name)
+        }
+    }
+    #[test]
+    fn media_keep_the_extension_of_their_name() {
+        let dir = Path::new(r"C:\T");
+        let id = "0123456789abcdef";
+        // An MP4 is never named after what the image decoder makes of it.
+        let mp4 = b"\0\0\0\x20ftypisom\0\0\x02\0";
+        let video = media(id, "旅行.mp4", MediaKind::Video);
+        assert_eq!(staged_path(dir, &video, mp4), dir.join("0123456789ab-旅行.mp4"));
+        let unnamed = media(id, "", MediaKind::Audio);
+        assert_eq!(staged_path(dir, &unnamed, b"ID3"), dir.join("0123456789ab-音频"));
+        let bare = media(id, "语音", MediaKind::Audio);
+        assert_eq!(staged_path(dir, &bare, b"\x89PNG\r\n\x1a\n"), dir.join("0123456789ab-语音"));
+    }
+    #[test]
+    fn html_is_left_out_when_media_are_copied() {
+        let path = PathBuf::from(r"C:\T\x.mp4");
+        assert_eq!(
+            html(&[
+                (picture("ab", "a.png"), path.clone()),
+                (media("cd", "x.mp4", MediaKind::Video), path),
+            ]),
+            None
+        );
     }
     #[test]
     fn staged_originals_are_found_again_by_id() {
@@ -239,7 +288,7 @@ mod tests {
             (picture("cd", "c.png"), PathBuf::from(r"C:\T\cd-c.png")),
         ]);
         assert_eq!(
-            html,
+            html.unwrap(),
             concat!(
                 r#"<img src="file:///C:/Temp/linehush-clipboard/ab-a%20%23b.png" alt="a &quot;b&quot;.png">"#,
                 r#"<img src="file:///C:/T/cd-c.png" alt="c.png">"#

@@ -118,6 +118,41 @@ export const importImage = (tab: string, bytes: ArrayBuffer) =>
   invoke<Picture>("import_image", bytes, {
     headers: { "x-linehush-tab": tab },
   });
+/** What the page learned of a video or recording before importing it (core/media-probe.ts). */
+export interface MediaMeta {
+  kind: "video" | "audio";
+  /** The video's frame in pixels; 0 for audio. */
+  width: number;
+  height: number;
+  /** Seconds. */
+  duration: number;
+}
+/**
+ * Stores a video or recording unchanged in the tab's document (Rust does not
+ * decode it); as with `importImage` the bytes are the raw body, the rest goes
+ * in headers, and the returned name is empty.
+ */
+export const importMedia = (tab: string, bytes: ArrayBuffer, meta: MediaMeta) =>
+  invoke<Picture>("import_media", bytes, {
+    headers: {
+      "x-linehush-tab": tab,
+      "x-linehush-kind": meta.kind,
+      "x-linehush-width": String(meta.width),
+      "x-linehush-height": String(meta.height),
+      "x-linehush-duration": String(meta.duration),
+    },
+  });
+/** Stores a video's cover frame (PNG or JPEG bytes as the raw body), shown as its thumbnail. */
+export const mediaPoster = (tab: string, id: string, bytes: ArrayBuffer) =>
+  invoke<void>("media_poster", bytes, {
+    headers: { "x-linehush-tab": tab, "x-linehush-id": id },
+  });
+/**
+ * Where the media element plays a video or recording of the tab's document
+ * from: Rust's `linehush-media` protocol, which answers range requests.
+ */
+export const mediaUrl = (tab: string, id: string) =>
+  `http://linehush-media.localhost/${tab}/${id}`;
 /** Writes the original bytes of an image unchanged to `path`. */
 export const exportImage = (tab: string, id: string, path: string) =>
   invoke<void>("export_image", { tab, id, path });
@@ -259,7 +294,10 @@ export const stashFlushed = (round: number, error: string | null) =>
  */
 export const caretMetrics = () => invoke<CaretMetrics>("caret_metrics");
 
-/** Reads a thumbnail (or the original) of the tab's document into a Blob URL the caller must revoke. */
+/**
+ * Reads a thumbnail (or the original) of the tab's document into a Blob URL the
+ * caller must revoke. A video's thumbnail is its cover frame; audio has none.
+ */
 export async function imageUrl(
   tab: string,
   pic: Picture,

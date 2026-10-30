@@ -1,13 +1,14 @@
 import { useCallback, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
-import type { Picture } from "../core/document";
-import { exportImage, imageUrl } from "../core/native";
+import { kindOf, type Picture } from "../core/document";
+import { exportImage, imageUrl, mediaUrl } from "../core/native";
 import type { Session } from "../core/session";
 
 /**
  * Original-image preview in a <dialog> (non-modal, see useDialogs), one per window; `show` names the
  * tab (session) the image belongs to. Stale reads are dropped and every Blob URL
- * is revoked.
+ * is revoked. A video plays there instead, straight from the media protocol
+ * (`mediaUrl`), its bytes never read into the page.
  */
 export function useImagePreview() {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -34,6 +35,10 @@ export function useImagePreview() {
       dialog.current?.show();
       // The dialog itself takes focus, not a button (see ImagePreviewDialog).
       dialog.current?.focus({ preventScroll: true });
+      if (kindOf(pic) === "video") {
+        setSource(mediaUrl(session.tab, pic.id));
+        return;
+      }
       try {
         const url = await imageUrl(session.tab, pic, true);
         if (version !== current.version) URL.revokeObjectURL(url);
@@ -53,21 +58,23 @@ export function useImagePreview() {
   const saveOriginal = useCallback(async () => {
     if (!shown) return;
     const { session, picture } = shown;
+    const action = kindOf(picture) === "image" ? "保存原图" : "保存原文件";
     try {
       const target = await save({
-        title: "保存原图",
+        title: action,
         defaultPath: picture.name || picture.id.slice(0, 12),
       });
       if (!target) return;
       await exportImage(session.tab, picture.id, target);
     } catch (e) {
-      session.setError(`保存原图失败：${e}`);
+      session.setError(`${action}失败：${e}`);
     }
   }, [shown]);
   return {
     dialog,
     source,
     name: shown?.picture.name ?? "",
+    video: !!shown && kindOf(shown.picture) === "video",
     show,
     close,
     closed,
