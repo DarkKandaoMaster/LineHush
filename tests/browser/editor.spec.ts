@@ -312,6 +312,14 @@ test("有选区时按下被系统记为双击第二下：与从光标开始的�
   expect(errors).toEqual([]);
 });
 
+/** The DOM selection's anchor and focus, as ProseMirror positions. */
+const domEnds = (page: Page) =>
+  editorOf(page).evaluate((el: any) => {
+    const view = el.editor.view;
+    const dom = getSelection()!;
+    return [view.posAtDOM(dom.anchorNode, dom.anchorOffset), view.posAtDOM(dom.focusNode, dom.focusOffset)];
+  });
+
 /** The editor's selection while the button is still held (`selection` reads it the same). */
 const held = (page: Page) =>
   editorOf(page).evaluate((el: any) => {
@@ -319,10 +327,12 @@ const held = (page: Page) =>
     return { anchor, head };
   });
 
-// Below the last text line (the editor's bottom padding) a press is at the
+// Below the last text line (the editor's bottom padding) a click is at the
 // document's end whatever its x, as in Notepad / VS Code (image-view's
 // belowLastLine); the browser would put it in the last line under the pointer.
-test("末行下方空白：单击落到文末，与 x 无关；Shift+单击扩到文末；从那里拖动 anchor 固定在文末", async ({ page }) => {
+// A drag pressed there has its ends at the pointer's x in the last line
+// (lastLineAt); one pressed in the text still ends at the end below it.
+test("末行下方空白：单击落到文末，与 x 无关；Shift+单击扩到文末；从那里拖动两端按 x 落到末行", async ({ page }) => {
   const errors = await load(page);
   const editor = editorOf(page);
   await setDoc(page, ["第一行文字内容", "第二行文字内容", "第三行文字内容", "第四行文字内容"]);
@@ -366,51 +376,53 @@ test("末行下方空白：单击落到文末，与 x 无关；Shift+单击扩�
   expect(await selection(page)).toMatchObject({ anchor, head: 35 });
   await page.waitForTimeout(600);
 
-  // Pressed below and dragged left along the last line: the anchor stays at
-  // the end, the head follows the pointer, before and after the release.
+  // Pressed below and dragged left along the last line: the anchor is the
+  // point in the last line under the press, the head follows the pointer,
+  // before and after the release.
+  const from = await posAt(page, last.x + 75, mid(last));
   const at = await posAt(page, last.x + 45, mid(last));
-  expect(at).toBeGreaterThan(28);
-  expect(at).toBeLessThan(35);
-  await page.mouse.move(last.x + 30, below);
+  const back = await posAt(page, last.x + 20, mid(last));
+  expect(from).toBeLessThan(35);
+  expect(at).toBeLessThan(from);
+  expect(back).toBeLessThan(at);
+  expect(back).toBeGreaterThan(28);
+  await page.mouse.move(last.x + 75, below);
   await page.mouse.down();
   await page.mouse.move(last.x + 60, mid(last), { steps: 4 });
   await page.mouse.move(last.x + 45, mid(last), { steps: 4 });
   await page.waitForTimeout(50);
-  expect(await held(page)).toEqual({ anchor: 35, head: at });
-  // Back below the last line: the end again (nothing selected).
-  await page.mouse.move(last.x + 30, below, { steps: 4 });
+  expect(await held(page)).toEqual({ anchor: from, head: at });
+  // Back below the last line: the head is at the pointer's x in the line.
+  await page.mouse.move(last.x + 20, below, { steps: 4 });
   await page.waitForTimeout(50);
-  expect(await held(page)).toEqual({ anchor: 35, head: 35 });
+  expect(await held(page)).toEqual({ anchor: from, head: back });
   await page.mouse.move(last.x + 45, mid(last), { steps: 4 });
   await page.waitForTimeout(50);
-  expect(await held(page)).toEqual({ anchor: 35, head: at });
-  // To the far left (over the left margin): the whole line.
+  expect(await held(page)).toEqual({ anchor: from, head: at });
+  // To the far left (over the left margin): to the line's start.
   await page.mouse.move(last.x - 30, mid(last), { steps: 6 });
   await page.waitForTimeout(50);
-  expect(await held(page)).toEqual({ anchor: 35, head: 28 });
+  expect(await held(page)).toEqual({ anchor: from, head: 28 });
   await page.mouse.up();
   await page.waitForTimeout(50);
-  expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: 28 });
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: from, head: 28 });
   // The browser's DOM selection agrees, and it is drawn.
   await frames(page);
-  expect(
-    await editor.evaluate((el: any) => {
-      const view = el.editor.view;
-      const dom = getSelection()!;
-      return [view.posAtDOM(dom.anchorNode, dom.anchorOffset), view.posAtDOM(dom.focusNode, dom.focusOffset)];
-    }),
-  ).toEqual([35, 28]);
+  expect(await domEnds(page)).toEqual([from, 28]);
   expect(
     await editor.evaluate((el) => !!el.parentElement!.querySelector(".selection-layer path")!.getAttribute("d")),
   ).toBe(true);
   await page.waitForTimeout(600);
 
-  // Up into the lines above: still from the end.
+  // Up into the lines above: from the point in the last line under the press.
   await page.mouse.move(last.x + 30, below);
   await page.mouse.down();
   await page.mouse.move(second.x + 30, mid(second), { steps: 8 });
   await page.mouse.up();
-  expect(await selection(page)).toMatchObject({ anchor: 35, head: await posAt(page, second.x + 30, mid(second)) });
+  expect(await selection(page)).toMatchObject({
+    anchor: await posAt(page, last.x + 30, mid(last)),
+    head: await posAt(page, second.x + 30, mid(second)),
+  });
   await page.waitForTimeout(600);
 
   // Dragged from a line above (outside the selection) down below the last
@@ -423,6 +435,85 @@ test("末行下方空白：单击落到文末，与 x 无关；Shift+单击扩�
   expect((await held(page)).head).toBe(35);
   await page.mouse.up();
   expect(await selection(page)).toMatchObject({ anchor: await posAt(page, first.x + 30, mid(first)), head: 35 });
+  expect(errors).toEqual([]);
+});
+
+// A drag pressed below the last line and kept there selects in the line, by
+// the pointer's x at both ends (image-view's lastLineAt); a press moved no
+// more than ProseMirror's click slop is still a click (to the end).
+test("末行下方空白：从右侧按下往左横拖到文字下方，松开后选中末行那一段，DOM 选区一致", async ({ page }) => {
+  const errors = await load(page);
+  const editor = editorOf(page);
+  await setDoc(page, ["第一行文字内容", "第二行文字内容", "第三行文字内容", "第四行文字内容"]);
+  // "第四行文字内容" 27-36, its text 28-35.
+  const lines = editor.locator(":scope > p");
+  const second = (await lines.nth(1).boundingBox())!;
+  const last = (await lines.nth(3).boundingBox())!;
+  const mid = last.y + last.height / 2;
+  const below = last.y + last.height + 60;
+  await page.mouse.click(second.x + 30, second.y + second.height / 2);
+  await page.waitForTimeout(600);
+
+  // Right of the text (its end), along under it to the left.
+  const to = await posAt(page, last.x + 40, mid);
+  expect(to).toBeGreaterThan(28);
+  expect(to).toBeLessThan(35);
+  await page.mouse.move(last.x + 400, below);
+  await page.mouse.down();
+  await page.mouse.move(last.x + 40, below + 5, { steps: 10 });
+  await page.waitForTimeout(50);
+  expect(await held(page)).toEqual({ anchor: 35, head: to });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: to });
+  await frames(page);
+  expect(await domEnds(page)).toEqual([35, to]);
+  const text = await editor.evaluate((el: any) => {
+    const { state } = el.editor;
+    return state.doc.textBetween(state.selection.from, state.selection.to);
+  });
+  expect(text).toBe("第四行文字内容".slice(to - 28));
+  expect(await page.evaluate(() => getSelection()!.toString())).toBe(text);
+  expect(
+    await editor.evaluate((el) => !!el.parentElement!.querySelector(".selection-layer path")!.getAttribute("d")),
+  ).toBe(true);
+  await page.waitForTimeout(600);
+
+  // Left to right under the text: from the press's x to the pointer's.
+  const start = await posAt(page, last.x + 15, mid);
+  const end = await posAt(page, last.x + 70, mid);
+  expect(start).toBeLessThan(end);
+  await page.mouse.move(last.x + 15, below);
+  await page.mouse.down();
+  await page.mouse.move(last.x + 70, below, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: start, head: end });
+  await frames(page);
+  expect(await domEnds(page)).toEqual([start, end]);
+  await page.waitForTimeout(600);
+
+  // Moved within the click slop: a click, at the end.
+  await page.mouse.move(last.x + 30, below);
+  await page.mouse.down();
+  await page.mouse.move(last.x + 33, below + 1, { steps: 2 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: 35 });
+  await page.waitForTimeout(600);
+
+  // With Shift: the anchor stays, the head is at the pointer's x.
+  await page.mouse.click(second.x + 30, second.y + second.height / 2);
+  const { anchor } = await selection(page);
+  await page.waitForTimeout(600);
+  await page.keyboard.down("Shift");
+  await page.mouse.move(last.x + 400, below);
+  await page.mouse.down();
+  await page.mouse.move(last.x + 40, below, { steps: 10 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ anchor, head: to });
   expect(errors).toEqual([]);
 });
 
