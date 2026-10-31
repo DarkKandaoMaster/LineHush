@@ -8,6 +8,7 @@ mod fsx;
 mod images;
 mod media;
 mod model;
+mod open_with;
 mod pdf;
 mod explorer;
 mod session;
@@ -43,7 +44,7 @@ use tauri_plugin_window_state::{StateFlags, WindowExt};
 const OPEN_REQUESTED: &str = "open-requested";
 /// Tells one window to switch to a tab (`{ tab }`): the file asked for is open there.
 const ACTIVATE_TAB: &str = "activate-tab";
-/// `import_image`, `import_media` and `media_poster` send the file as the raw
+/// `import_image`, `import_media`, `import_file` and `media_poster` send the file as the raw
 /// body, so its tab comes in this header.
 const TAB_HEADER: &str = "x-linehush-tab";
 /// `import_media`: `video` or `audio`, and what the front end measured
@@ -720,7 +721,7 @@ async fn import_image(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resul
         .and_then(|value| value.to_str().ok())
         .ok_or("图片数据缺少所属标签页")?
         .to_owned();
-    images::check_file_size(bytes.len())?;
+    images::check_image_size(bytes.len())?;
     let bytes = bytes.clone();
     blocking(move || {
         // Decoding happens outside the lock so stashing is never held up by it.
@@ -776,7 +777,52 @@ async fn import_media(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resul
             height,
             kind,
             duration,
+            size: None,
         })
+    })
+    .await
+}
+/// Stores any other file (the raw body) as it is in the working copy of the tab
+/// in `x-linehush-tab`: never decoded nor sniffed, empty files included (see
+/// `Store::add_file`). `name` is left to the caller, as in `import_image`.
+#[tauri::command]
+async fn import_file(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<Picture> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("文件数据无效".into());
+    };
+    let tab = header(&request, TAB_HEADER)
+        .ok_or("文件数据缺少所属标签页")?
+        .to_owned();
+    images::check_file_size(bytes.len())?;
+    let bytes = bytes.clone();
+    with_tab(app, tab, move |store| store.add_file(&bytes)).await
+}
+/// Opens the attached file `id` (named `name`) of the tab in the program Windows
+/// has for it, or lets the user pick one: written to `%TEMP%\linehush-open\`
+/// first (see open_with.rs). Returns the reason when it fails; the front end
+/// shows it as `无法打开文件“<name>”：<reason>`.
+#[tauri::command]
+async fn open_attachment(
+    tab: String,
+    id: String,
+    name: String,
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<()> {
+    // The window owns the “选择打开方式” dialog; a handle is not Send, its number is.
+    let owner = window.hwnd().map_or(0, |hwnd| hwnd.0 as isize);
+    blocking(move || {
+        let bytes = {
+            let store = lock_tab(&app, &tab)?;
+            let store = lock(&store);
+            if !store.has_image(&id)? {
+                return Err("文件不存在于文档中".into());
+            }
+            store.image(&id)?
+        };
+        let dir = &app.state::<open_with::OpenDir>().0;
+        let path = open_with::write_temp(dir, &id, &name, &bytes)?;
+        open_with::launch(&path, owner)
     })
     .await
 }
@@ -1121,14 +1167,21 @@ pub fn run() {
                 app.handle().cleanup_before_exit();
                 std::process::exit(0);
             }
-            // Tests keep copied images out of the user's temporary folder.
-            let clipboard_dir = if test_data_dir_set {
-                root.join("clipboard")
+            // Tests keep copied images and opened attachments out of the user's
+            // temporary folder.
+            let (clipboard_dir, open_dir) = if test_data_dir_set {
+                (root.join("clipboard"), root.join("open"))
             } else {
-                std::env::temp_dir().join("linehush-clipboard")
+                let temp = std::env::temp_dir();
+                (temp.join("linehush-clipboard"), temp.join(open_with::OPEN_FOLDER))
             };
-            let sweep = clipboard_dir.clone();
-            std::thread::spawn(move || sweep_staged(&sweep, &HashSet::new(), STAGED_KEPT_AT_START));
+            let sweep = [clipboard_dir.clone(), open_dir.clone()];
+            std::thread::spawn(move || {
+                for dir in &sweep {
+                    sweep_staged(dir, &HashSet::new(), STAGED_KEPT_AT_START);
+                }
+            });
+            app.manage(open_with::OpenDir(open_dir));
             app.manage(ClipboardState {
                 dir: clipboard_dir,
                 latest: AtomicU64::new(0),
@@ -1203,6 +1256,8 @@ pub fn run() {
             export_document,
             import_image,
             import_media,
+            import_file,
+            open_attachment,
             media_poster,
             read_image,
             export_image,

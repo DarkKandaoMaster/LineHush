@@ -124,7 +124,7 @@ export default function App() {
       </div>
       {dimmed && (
         <div
-          className={`dialog-mask${dialogs.top === "preview" ? " dark" : ""}`}
+          className={`dialog-mask${dialogs.top === "preview" && preview.kind !== "file" ? " dark" : ""}`}
           aria-hidden="true"
           // 按在遮罩上不把焦点从对话框拿走（双击的第二下落在刚打开的预览的遮罩上时，见 useDialogs 的 mask）。
           onMouseDown={(event) => event.preventDefault()}
@@ -135,7 +135,9 @@ export default function App() {
         dialogRef={preview.dialog}
         name={preview.name}
         source={preview.source}
-        video={preview.video}
+        kind={preview.kind}
+        size={preview.size}
+        onOpen={() => void preview.openOriginal()}
         onSave={() => void preview.saveOriginal()}
         onClose={preview.close}
         onClosed={preview.closed}

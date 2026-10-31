@@ -148,6 +148,22 @@ export const mediaPoster = (tab: string, id: string, bytes: ArrayBuffer) =>
     headers: { "x-linehush-tab": tab, "x-linehush-id": id },
   });
 /**
+ * Stores any other file unchanged in the tab's document (Rust only hashes it);
+ * as with `importImage` the bytes are the raw body and the returned name is
+ * empty. The picture is `kind: "file"` with its `size` in bytes.
+ */
+export const importFile = (tab: string, bytes: ArrayBuffer) =>
+  invoke<Picture>("import_file", bytes, {
+    headers: { "x-linehush-tab": tab },
+  });
+/**
+ * Opens an attached file of the tab's document with the program Windows
+ * associates with `name`; rejects with the reason in Chinese. Not `open_file`,
+ * which opens a document in a tab.
+ */
+export const openAttachment = (tab: string, id: string, name: string) =>
+  invoke<void>("open_attachment", { tab, id, name });
+/**
  * Where the media element plays a video or recording of the tab's document
  * from: Rust's `linehush-media` protocol, which answers range requests.
  */

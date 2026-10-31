@@ -1,7 +1,8 @@
 // Videos and recordings are probed in the page before they are imported: Rust
 // stores them unchanged and decodes nothing, so whatever WebView2 can read the
 // metadata of is what LineHush takes (and can play). The functions below use
-// browser APIs (media elements, canvas); only `isMediaFile` runs under Node.
+// browser APIs (media elements, canvas); only `isMediaFile` and `isImageFile`
+// run under Node.
 import type { MediaMeta } from "./native.ts";
 
 /** Extensions of the formats WebView2 plays, for files that come without a MIME type. */
@@ -31,6 +32,21 @@ export function isMediaFile(file: { name: string; type: string }): boolean {
   if (file.type.startsWith("image/")) return false;
   const ext = /\.([^.\\/]+)$/.exec(file.name)?.[1]?.toLowerCase();
   return !!ext && MEDIA_EXTENSIONS.includes(ext);
+}
+
+/** Extensions of the image formats Rust decodes, for files that come without a MIME type. */
+export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+
+/**
+ * An image by its MIME type or its extension. Any `image/*` counts (Rust turns
+ * away what it cannot decode, HEIC say, as an image); anything neither an
+ * image nor media is attached as a file.
+ */
+export function isImageFile(file: { name: string; type: string }): boolean {
+  if (file.type.startsWith("image/")) return true;
+  if (/^(video|audio)\//.test(file.type)) return false;
+  const ext = /\.([^.\\/]+)$/.exec(file.name)?.[1]?.toLowerCase();
+  return !!ext && IMAGE_EXTENSIONS.includes(ext);
 }
 
 /** Why a file is turned away: the media element could not read it. */

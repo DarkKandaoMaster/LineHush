@@ -8,7 +8,6 @@ import {
 } from "react";
 import type { Picture } from "../core/document";
 import { stats } from "../core/document";
-import { MEDIA_ACCEPT } from "../core/media-probe";
 import type { Session } from "../core/session";
 import type { Tab } from "../core/tabs";
 import DiaryEditor, { type DiaryEditorHandle } from "../editor/DiaryEditor";
@@ -87,11 +86,10 @@ export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) 
         images={counts.images}
         zoom={zoom}
       />
-      {/* 工具栏已无“插入图片”按钮，界面上无法打开此选择框；保留它只因 tests/native/native.mjs 经它导入图片（浏览器测试也经它导入音频）。 */}
+      {/* 工具栏已无“插入图片”按钮，界面上无法打开此选择框；保留它只因 tests/native/native.mjs 经它导入图片（浏览器测试也经它导入音频与任意文件）。不限类型：图片、媒体之外的文件作为文件块插入。 */}
       <input
         className="visually-hidden"
         type="file"
-        accept={`image/png,image/jpeg,image/gif,image/webp,image/bmp,${MEDIA_ACCEPT}`}
         multiple
         tabIndex={-1}
         onChange={(event) => {

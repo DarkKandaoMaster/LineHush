@@ -1,14 +1,15 @@
 import { useCallback, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { kindOf, type Picture } from "../core/document";
-import { exportImage, imageUrl, mediaUrl } from "../core/native";
+import { exportImage, imageUrl, mediaUrl, openAttachment } from "../core/native";
 import type { Session } from "../core/session";
 
 /**
  * Original-image preview in a <dialog> (non-modal, see useDialogs), one per window; `show` names the
  * tab (session) the image belongs to. Stale reads are dropped and every Blob URL
  * is revoked. A video plays there instead, straight from the media protocol
- * (`mediaUrl`), its bytes never read into the page.
+ * (`mediaUrl`), its bytes never read into the page. A file shows only its name
+ * and size, with 打开 (its default program) and 保存原文件; nothing is read.
  */
 export function useImagePreview() {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -39,6 +40,7 @@ export function useImagePreview() {
         setSource(mediaUrl(session.tab, pic.id));
         return;
       }
+      if (kindOf(pic) === "file") return;
       try {
         const url = await imageUrl(session.tab, pic, true);
         if (version !== current.version) URL.revokeObjectURL(url);
@@ -70,11 +72,24 @@ export function useImagePreview() {
       session.setError(`${action}失败：${e}`);
     }
   }, [shown]);
+  /** A file: opens it with its default program; the dialog closes either way, a failure shows in the tab. */
+  const openOriginal = useCallback(async () => {
+    if (!shown) return;
+    const { session, picture } = shown;
+    close();
+    try {
+      await openAttachment(session.tab, picture.id, picture.name);
+    } catch (e) {
+      session.setError(`无法打开文件“${picture.name}”：${e}`);
+    }
+  }, [shown, close]);
   return {
     dialog,
     source,
     name: shown?.picture.name ?? "",
-    video: !!shown && kindOf(shown.picture) === "video",
+    kind: shown ? kindOf(shown.picture) : "image",
+    size: shown?.picture.size,
+    openOriginal,
     show,
     close,
     closed,

@@ -1,19 +1,24 @@
 import type { JSONContent } from "@tiptap/core";
 import type { DefaultFileName } from "./settings.ts";
 
-/** What a picture is: an image, a video or an audio recording (the last two "media"). */
-export type PictureKind = "image" | "video" | "audio";
+/**
+ * What a picture is: an image, a video or an audio recording (the two
+ * "media"), or any other file, attached as it is.
+ */
+export type PictureKind = "image" | "video" | "audio" | "file";
 export interface Picture {
   /** SHA-256 of the original bytes, which the .hush file stores unchanged. */
   id: string;
   name: string;
-  /** Pixels of the image or of the video's frame; 0 for audio. */
+  /** Pixels of the image or of the video's frame; 0 for audio and a file. */
   width: number;
   height: number;
   /** Absent for an image, so older documents read and write unchanged. */
   kind?: PictureKind;
   /** Seconds, video and audio only. */
   duration?: number;
+  /** Bytes, a file only. */
+  size?: number;
 }
 export const kindOf = (pic: { kind?: PictureKind | null }): PictureKind =>
   pic.kind ?? "image";
@@ -25,11 +30,30 @@ export function formatDuration(seconds: number | null | undefined): string {
       : 0;
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
-/** What a picture is called in text (TXT export, a plain-text copy): 图片 / 视频 / 音频. */
+/**
+ * A file's size as Explorer would round it: bytes below 1 KB, else KB / MB / GB
+ * with one decimal, a trailing `.0` dropped (`356 KB`, `1.2 MB`, `12 MB`).
+ */
+export function formatSize(bytes: number | null | undefined): string {
+  let value =
+    typeof bytes === "number" && Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+  if (value < 1024) return `${Math.round(value)} B`;
+  const units = ["KB", "MB", "GB"];
+  let unit = 0;
+  value /= 1024;
+  // 1023.96 KB rounds to 1024.0: show it as the next unit.
+  while (unit < units.length - 1 && Math.round(value * 10) / 10 >= 1024) {
+    value /= 1024;
+    unit++;
+  }
+  return `${String(Math.round(value * 10) / 10)} ${units[unit]}`;
+}
+/** What a picture is called in text (TXT export, a plain-text copy): 图片 / 视频 / 音频 / 文件. */
 export const PLACEHOLDER: Record<PictureKind, string> = {
   image: "图片",
   video: "视频",
   audio: "音频",
+  file: "文件",
 };
 export type Block =
   { type: "line"; text: string } | { type: "images"; images: Picture[] };
@@ -78,7 +102,7 @@ export function toEditor(doc: Diary): JSONContent {
                 : {}),
             },
           ]
-        : block.images.map(({ id, name, width, height, kind, duration }, i) => ({
+        : block.images.map(({ id, name, width, height, kind, duration, size }, i) => ({
             type: "image",
             attrs: {
               id,
@@ -87,6 +111,7 @@ export function toEditor(doc: Diary): JSONContent {
               height,
               ...(kind ? { kind } : {}),
               ...(duration != null ? { duration } : {}),
+              ...(size != null ? { size } : {}),
               newline: i === 0,
             },
           })),
@@ -98,13 +123,14 @@ export function fromEditor(doc: JSONContent): Diary {
   let previous: JSONContent | undefined;
   for (const node of doc.content ?? []) {
     if (node.type === "image") {
-      const { id, name, width, height, kind, duration, newline } =
+      const { id, name, width, height, kind, duration, size, newline } =
         node.attrs ?? {};
       const pic: Picture = { id, name, width, height };
-      // Only media carry these, so an image (and an older document) writes
-      // exactly what it read.
+      // Only media and files carry these, so an image (and an older document)
+      // writes exactly what it read.
       if (kind && kind !== "image") pic.kind = kind;
       if (typeof duration === "number") pic.duration = duration;
+      if (kind === "file" && typeof size === "number") pic.size = size;
       const last = blocks[blocks.length - 1];
       if (previous?.type === "image" && !newline && last?.type === "images")
         last.images.push(pic);
@@ -120,7 +146,7 @@ export function fromEditor(doc: JSONContent): Diary {
 }
 /**
  * Status bar counts: characters are Unicode code points in text lines; images
- * are images alone, not videos or recordings.
+ * are images alone, not videos, recordings or files.
  */
 export function stats(doc: Diary): { characters: number; images: number } {
   let characters = 0;
@@ -229,13 +255,15 @@ export function toHtml(doc: Diary): string {
         return `<video controls preload="metadata" src="${src}" title="${title}" width="${pic.width}" height="${pic.height}"></video>`;
       case "audio":
         return `<audio controls preload="metadata" src="${src}" title="${title}"></audio>`;
+      case "file":
+        return `<a class="file" href="${src}" download="${title}">📎 ${title}（${formatSize(pic.size)}）</a>`;
       default:
         return imgHtml(pic, src);
     }
   });
   return (
     '<!doctype html>\n<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LineHush 笔记</title>\n' +
-    '<style>body{background:#f9f9f9;color:#202020;font:16px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;margin:24px}.line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1.6em}.images{display:flex;flex-wrap:wrap;gap:8px}.images+.images{margin-top:16px}img,video{max-width:280px;max-height:200px;object-fit:contain;width:auto;height:auto}audio{max-width:100%}</style>\n<body>' +
+    '<style>body{background:#f9f9f9;color:#202020;font:16px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;margin:24px}.line{white-space:pre-wrap;overflow-wrap:anywhere;min-height:1.6em}.images{display:flex;flex-wrap:wrap;gap:8px}.images+.images{margin-top:16px}img,video{max-width:280px;max-height:200px;object-fit:contain;width:auto;height:auto}audio{max-width:100%}a.file{align-self:center;color:inherit}</style>\n<body>' +
     body +
     "</body></html>"
   );
@@ -251,7 +279,7 @@ export interface PrintOptions {
  * Rust 在隐藏窗口里加载并用 WebView2 PrintToPdf 打印成 PDF 的页面。文字行与编辑区
  * 一致（同字体、字号、字体自然行高）；图片从 `/image/<id>` 读原图（由 Rust 的
  * 自定义协议提供），等比缩小到不超出 A4 版心，且不跨页拆开。视频放 `/poster/<id>` 的
- * 封面并在右下角叠时长；音频为一行文字“🔊 名字（m:ss）”。
+ * 封面并在右下角叠时长；音频为一行文字“🔊 名字（m:ss）”，文件为“📎 名字（大小）”。
  */
 export function toPrintHtml(doc: Diary, options: PrintOptions): string {
   const body = bodyHtml(doc, (pic) => {
@@ -261,6 +289,8 @@ export function toPrintHtml(doc: Diary, options: PrintOptions): string {
         return `<span class="video">${imgHtml(pic, `/poster/${id}`)}<span class="duration">${formatDuration(pic.duration)}</span></span>`;
       case "audio":
         return `<div class="audio">🔊 ${escapeHtml(pic.name)}（${formatDuration(pic.duration)}）</div>`;
+      case "file":
+        return `<div class="file">📎 ${escapeHtml(pic.name)}（${formatSize(pic.size)}）</div>`;
       default:
         return imgHtml(pic, `/image/${id}`);
     }
@@ -274,7 +304,7 @@ export function toPrintHtml(doc: Diary, options: PrintOptions): string {
     "img{max-width:100%;max-height:160mm;width:auto;height:auto;object-fit:contain;break-inside:avoid}" +
     ".video{position:relative;display:block;max-width:100%;break-inside:avoid}.video img{display:block}" +
     ".duration{position:absolute;right:4px;bottom:4px;padding:0 4px;border-radius:3px;background:#000a;color:#fff;font-size:9pt}" +
-    ".audio{white-space:pre-wrap;overflow-wrap:anywhere}</style>\n<body>" +
+    ".audio,.file{white-space:pre-wrap;overflow-wrap:anywhere}</style>\n<body>" +
     body +
     "</body></html>"
   );

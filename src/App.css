@@ -674,7 +674,9 @@ input:focus-visible {
 .tiptap .ProseMirror-selectednode .image-tile::after,
 .tiptap .image-selected .image-tile::after,
 .tiptap .ProseMirror-selectednode .audio-chip::after,
-.tiptap .image-selected .audio-chip::after {
+.tiptap .image-selected .audio-chip::after,
+.tiptap .ProseMirror-selectednode .file-chip::after,
+.tiptap .image-selected .file-chip::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -900,6 +902,69 @@ input:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 /*
+ * Any other file: a chip like a recording's, with square-ish corners (6px) to
+ * tell them apart, a document icon (a button that opens the file's dialog),
+ * its name (cut short) and size.
+ */
+.file-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 32px;
+  max-width: min(280px, 100%);
+  padding: 0 10px 0 3px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #f0f0f0;
+  font:
+    13px/1 "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+  color: #303030;
+  white-space: nowrap;
+}
+.file-chip::after {
+  border-radius: inherit;
+}
+/*
+ * A chip's percentage max-width does not count when the inline-block item
+ * sizes itself to its content, which would then be as wide as the whole name
+ * (blank beside the chip, its halves off for a click): the item is capped
+ * instead, and the chip fills it. Recordings and files alike.
+ */
+.image-item:has(> .audio-chip, > .file-chip) {
+  max-width: min(280px, 100%);
+}
+.file-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: #0067c0;
+  color: #fff;
+  cursor: pointer;
+}
+.file-icon:hover {
+  background: #1975c5;
+}
+.file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-size {
+  flex: none;
+  color: #5e5e5e;
+  font-variant-numeric: tabular-nums;
+}
+/*
  * 对话框用非模态的 show() 打开（标题栏照常可用，见 useDialogs）：不在顶层、没有
  * ::backdrop，所以自己在整个窗口视口里居中（与模态相同，不用 transform，免得 150%
  * 缩放下发糊），盖在遮罩之上；遮罩从标题栏下缘盖到窗口底。保存询问可能出现在设置 /
@@ -1021,6 +1086,34 @@ input:focus-visible {
 }
 .image-preview p {
   padding: 24px;
+}
+/* A file: compact, its icon, name (two lines at most) and size, then 打开 / 保存原文件 / 关闭. */
+.image-preview.file-preview {
+  width: min(360px, 94vw);
+  box-sizing: border-box;
+  padding: 20px 20px 16px;
+  box-shadow: 0 8px 24px #0002;
+}
+.file-preview-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 20px;
+  text-align: center;
+}
+.file-preview-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.file-preview-size {
+  color: #5e5e5e;
+  font-variant-numeric: tabular-nums;
 }
 .export-menu {
   position: relative;

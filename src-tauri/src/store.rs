@@ -3,14 +3,15 @@
 //!
 //! The user's file changes only on `save` / `save_as`. Everything in between
 //! lives in the tab's working copy `tabs/<id>.hush`: the stashed body (present
-//! only while there are unsaved changes) and the images, videos, audio clips and
-//! video covers imported since the last save. For an unnamed document the working copy is the whole draft. Which file
+//! only while there are unsaved changes) and the images, videos, audio clips,
+//! attached files and video covers imported since the last save. For an unnamed document the working copy is the whole draft. Which file
 //! a working copy belongs to is recorded in session.json (see session.rs).
 use crate::db::Db;
 use crate::errors::describe;
 use crate::fsx::{ensure_extension, shown};
+use crate::images;
 use crate::lock;
-use crate::model::{Diary, ExportImage, Result};
+use crate::model::{Diary, ExportImage, MediaKind, Picture, Result};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -269,6 +270,22 @@ impl Store {
             self.thumbnails.insert(id.to_owned(), Ok(thumbnail));
         }
         Ok(())
+    }
+    /// Stores any other file as it is in the working copy (the `import_file`
+    /// command, after its size check): its entry for the body, without a name
+    /// (the caller adds it), 0 × 0, with its size in bytes.
+    pub fn add_file(&mut self, bytes: &[u8]) -> Result<Picture> {
+        let id = images::hash(bytes);
+        self.add_image(&id, bytes, None)?;
+        Ok(Picture {
+            id,
+            name: String::new(),
+            width: 0,
+            height: 0,
+            kind: MediaKind::File,
+            duration: None,
+            size: Some(bytes.len() as u64),
+        })
     }
     /// Stores the cover of video `id` in the working copy, so it is saved with
     /// this document, and shows it as the video's thumbnail from now on.

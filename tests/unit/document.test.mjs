@@ -14,8 +14,9 @@ import {
   suggestedName,
   stats,
   formatDuration,
+  formatSize,
 } from "../../src/core/document.ts";
-import { isMediaFile } from "../../src/core/media-probe.ts";
+import { isImageFile, isMediaFile } from "../../src/core/media-probe.ts";
 
 const idA = "a".repeat(12) + "0".repeat(52);
 const idB = "b".repeat(12) + "1".repeat(52);
@@ -375,4 +376,89 @@ test("媒体文件：按 MIME 或（没有可信 MIME 时）扩展名认出视�
     { name: "a.txt", type: "text/plain" },
   ];
   for (const file of no) assert.equal(isMediaFile(file), false, file.name);
+});
+
+// ---- Files (2026-11-01): pictures of kind "file", any other file attached as it is. ----
+
+const idF = "e".repeat(12) + "4".repeat(52);
+const attached = { id: idF, name: "报告 <终稿>.docx", width: 0, height: 0, kind: "file", size: 364544 };
+
+test("文件：大小按 B / KB / MB / GB 一位小数、去掉末尾 .0", () => {
+  assert.equal(formatSize(0), "0 B");
+  assert.equal(formatSize(1), "1 B");
+  assert.equal(formatSize(1023), "1023 B");
+  assert.equal(formatSize(1024), "1 KB");
+  assert.equal(formatSize(1536), "1.5 KB");
+  assert.equal(formatSize(364544), "356 KB");
+  assert.equal(formatSize(1258291), "1.2 MB");
+  assert.equal(formatSize(12 * 1024 * 1024), "12 MB");
+  assert.equal(formatSize(1024 * 1024 - 1), "1 MB");
+  assert.equal(formatSize(3.5 * 1024 ** 3), "3.5 GB");
+  assert.equal(formatSize(2048 * 1024 ** 3), "2048 GB");
+  assert.equal(formatSize(undefined), "0 B");
+  assert.equal(formatSize(NaN), "0 B");
+});
+
+test("文件：size 经编辑器往返不变，图片 / 媒体不写 size", () => {
+  const doc = { blocks: [{ type: "images", images: [pic, attached, memo] }, { type: "line", text: "" }] };
+  const editor = toEditor(doc);
+  assert.deepEqual(editor.content[1].attrs, { ...attached, newline: false });
+  assert.deepEqual(fromEditor(editor), doc);
+  // The editor's JSON carries every attribute (size null unless a file).
+  const full = {
+    type: "doc",
+    content: editor.content.map((node) =>
+      node.type === "image"
+        ? { ...node, attrs: { kind: "image", duration: null, size: null, ...node.attrs } }
+        : node,
+    ),
+  };
+  assert.equal(JSON.stringify(fromEditor(full)), JSON.stringify(doc));
+  const [image, file, audio] = fromEditor(full).blocks[0].images;
+  assert.deepEqual(Object.keys(image), ["id", "name", "width", "height"]);
+  assert.deepEqual(Object.keys(file), ["id", "name", "width", "height", "kind", "size"]);
+  assert.ok(!("size" in audio));
+  // A stray size on an image is not written.
+  const stray = { type: "doc", content: [{ type: "image", attrs: { ...pic, size: 5, newline: true } }] };
+  assert.deepEqual(Object.keys(fromEditor(stray).blocks[0].images[0]), ["id", "name", "width", "height"]);
+});
+
+test("文件：TXT 占位、HTML 写附件链接、打印页一行文字；状态栏不数文件", () => {
+  const doc = { blocks: [{ type: "line", text: "甲" }, { type: "images", images: [pic, attached] }] };
+  assert.equal(toText(doc), "甲\n[图片：图.png] [文件：报告 <终稿>.docx]");
+  assert.deepEqual(stats(doc), { characters: 1, images: 1 });
+  const html = toHtml(doc);
+  const href = `附件/${encodeURIComponent(exportFile(attached))}`;
+  assert.ok(
+    html.includes(
+      `<div class="images"><img src="附件/${encodeURIComponent(exportFile(pic))}" alt="图.png" width="20" height="10"><a class="file" href="${href}" download="报告 &lt;终稿&gt;.docx">📎 报告 &lt;终稿&gt;.docx（356 KB）</a></div>`,
+    ),
+  );
+  assert.deepEqual(exportImages(doc), [
+    { id: idA, file: exportFile(pic) },
+    { id: idF, file: `${"e".repeat(12)}-报告 <终稿>.docx` },
+  ]);
+  const print = toPrintHtml(doc, { fontFamily: "sans-serif", fontSizePt: 10, title: "t" });
+  assert.ok(print.includes('<div class="file">📎 报告 &lt;终稿&gt;.docx（356 KB）</div>'));
+  assert.ok(!print.includes(`/image/${idF}`) && !print.includes(`/poster/${idF}`));
+});
+
+test("文件：图片按 MIME 或扩展名认出，其余（非媒体）都是文件", () => {
+  const images = [
+    { name: "a", type: "image/png" },
+    { name: "a.heic", type: "image/heic" },
+    ...["png", "jpg", "jpeg", "gif", "webp", "BMP"].map((ext) => ({ name: `x.${ext}`, type: "" })),
+    { name: "x.png", type: "application/octet-stream" },
+  ];
+  for (const file of images) assert.equal(isImageFile(file), true, file.name);
+  const others = [
+    { name: "a.txt", type: "text/plain" },
+    { name: "a.docx", type: "" },
+    { name: "笔记.hush", type: "" },
+    { name: "a.bin", type: "" },
+    { name: "png", type: "" },
+    { name: "a.png", type: "video/mp4" },
+    { name: "a.mp4", type: "" },
+  ];
+  for (const file of others) assert.equal(isImageFile(file), false, file.name);
 });

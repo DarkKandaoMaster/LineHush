@@ -130,6 +130,8 @@ test("音频：胶囊显示名字与时长、与图片并排；播放按钮就�
   const s = await itemBox(page, 1);
   expect(Math.abs(s.y - a.y)).toBeLessThan(1);
   expect(s.x).toBeGreaterThan(a.x + a.width);
+  // The item is as wide as the chip, not as the whole name (clicks go by its halves).
+  expect(Math.abs(s.width - box.width)).toBeLessThan(1);
   // The hidden <audio> loads nothing until played.
   const audio = chip.locator("audio");
   expect(await audio.evaluate((el: HTMLAudioElement) => [el.preload, el.hidden, el.src])).toEqual([

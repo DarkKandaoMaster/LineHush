@@ -37,6 +37,7 @@ import {
   blockNodes,
   blockPictures,
   clipboardBlocks,
+  clipboardText,
   insertBlocks,
   mixedSlice,
   sliceBlocks,
@@ -1255,4 +1256,47 @@ test("混合选区里的视频 / 音频：blocks 原样带 kind，粘贴回来�
   const tr = text(empty, 1).tr;
   insertBlocks(tr, nodes);
   assert.deepEqual(layout(stateOf(tr.doc)), ["A", "[v s]", "B"]);
+});
+
+// ---- Files (2026-11-01): image nodes of kind "file". ----
+
+const fileNode = (id, newline = false) =>
+  img(id, newline, { name: `${id}.docx`, width: 0, height: 0, kind: "file", size: 2048 });
+
+test("复制为纯文本：文件写作 [文件]，与图片 / 视频 / 音频同一行；混合选区的 blocks 带 size", () => {
+  const d = doc("甲", img("a", true), video("v"), audio("s"), fileNode("f"), fileNode("g", true));
+  const all = d.slice(0, d.content.size);
+  assert.equal(clipboardText(all), "甲\n[图片] [视频] [音频] [文件]\n[文件]");
+  // copyText writes what the serializer gives and the blocks with the file's size.
+  const staged = [];
+  const mixedPlugin = imagePlugin(
+    () => assert.fail("not copied by Rust"),
+    (pictures) => staged.push(...pictures.map((p) => p.id)),
+  );
+  const view = fakeView(stateOf(d, new BlockRange(d.resolve(1), d.resolve(d.content.size))));
+  view.someProp = (name, f) => (name === "clipboardTextSerializer" ? f(clipboardText) : undefined);
+  const written = {};
+  const event = {
+    clipboardData: {
+      clearData() {},
+      setData(type, value) {
+        written[type] = value;
+      },
+    },
+    preventDefault() {},
+  };
+  assert.equal(mixedPlugin.props.handleDOMEvents.copy.call(mixedPlugin, view, event), true);
+  assert.equal(written["text/plain"], "甲\n[图片] [视频] [音频] [文件]\n[文件]");
+  const blocks = JSON.parse(written[BLOCKS_MIME]).blocks;
+  assert.deepEqual(blocks.at(-1), {
+    type: "images",
+    images: [{ id: "g", name: "g.docx", width: 0, height: 0, kind: "file", size: 2048 }],
+  });
+  assert.deepEqual(blocks[1].images.map((p) => p.size), [undefined, undefined, undefined, 2048]);
+  assert.deepEqual(staged, ["a", "v", "s", "f", "g"]);
+  // Pasted back the nodes keep the size.
+  const [node] = blockNodes(schema, [blocks.at(-1)]);
+  assert.equal(node.attrs.size, 2048);
+  assert.equal(node.attrs.kind, "file");
+  assert.equal(img("a").attrs.size, null);
 });

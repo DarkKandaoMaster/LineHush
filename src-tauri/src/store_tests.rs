@@ -809,6 +809,7 @@ fn import_clip(store: &mut Store, bytes: &[u8], kind: MediaKind) -> Picture {
         height: 360,
         kind,
         duration: Some(3.5),
+        size: None,
     }
 }
 /// A small PNG standing in for the cover the front end draws.
@@ -1009,4 +1010,78 @@ fn v1_files_are_upgraded_by_their_first_save_only() {
     drop(store);
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(draft_root).unwrap();
+}
+#[test]
+fn attached_files_are_kept_byte_for_byte_with_their_size() {
+    let root = temp();
+    let file = root.join("附件.hush");
+    let mut store = session(&root);
+    store.save_as(&file, &diary("")).unwrap();
+    // What the import_file command does, minus the IPC: no decoding, any bytes.
+    let bytes = clip(5, 70_000);
+    images::check_file_size(bytes.len()).unwrap();
+    let mut pic = store.add_file(&bytes).unwrap();
+    assert_eq!(pic.id, images::hash(&bytes));
+    assert_eq!((pic.name.as_str(), pic.width, pic.height), ("", 0, 0));
+    assert_eq!((pic.kind, pic.duration, pic.size), (MediaKind::File, None, Some(70_000)));
+    pic.name = "报告.docx".into();
+    // read_image(original = true) hands the bytes back unchanged.
+    assert_eq!(store.image(&pic.id).unwrap(), bytes);
+    // An empty file is a file too.
+    let mut empty = store.add_file(b"").unwrap();
+    assert_eq!(empty.size, Some(0));
+    assert_eq!(store.image(&empty.id).unwrap(), Vec::<u8>::new());
+    empty.name = "空.txt".into();
+    // Importing the same content again keeps one copy.
+    assert_eq!(store.add_file(&bytes).unwrap().id, pic.id);
+    assert_eq!(rows(&working(&root), "images"), 2);
+
+    let doc = with_pictures("附件", &[&pic, &empty]);
+    store.save(&doc).unwrap();
+    assert_eq!(rows(&file, "images"), 2);
+    let body: String = Connection::open(&file)
+        .unwrap()
+        .query_row("SELECT body FROM doc", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        body.contains(r#""name":"报告.docx","width":0,"height":0,"kind":"file","size":70000}"#),
+        "{body}"
+    );
+    assert!(body.contains(r#""kind":"file","size":0}"#), "{body}");
+    assert_eq!(reopen(&file), doc);
+    let reader = other(&root, &file);
+    assert_eq!(reader.image(&pic.id).unwrap(), bytes);
+    assert_eq!(reader.image(&empty.id).unwrap(), Vec::<u8>::new());
+    drop(reader);
+
+    // 保存原文件 and the HTML export write the original as it is.
+    let out = root.join("导出");
+    fs::create_dir_all(&out).unwrap();
+    store.export_image(&pic.id, &out.join("报告.docx")).unwrap();
+    assert_eq!(fs::read(out.join("报告.docx")).unwrap(), bytes);
+    let attachment = format!("{}-报告.docx", &pic.id[..12]);
+    store
+        .export(
+            &out.join("附件.html"),
+            "<html></html>",
+            &[ExportImage {
+                id: pic.id.clone(),
+                file: attachment.clone(),
+            }],
+        )
+        .unwrap();
+    assert_eq!(fs::read(out.join("附件").join(&attachment)).unwrap(), bytes);
+
+    // Leaving the file drops the files the saved body no longer references.
+    let only_empty = with_pictures("", &[&empty]);
+    store.save(&only_empty).unwrap();
+    assert_eq!(store.close(), None);
+    assert_eq!(rows(&file, "images"), 1);
+    assert_eq!(reopen(&file), only_empty);
+    let reader = other(&root, &file);
+    assert!(reader.image(&pic.id).is_err());
+    assert_eq!(reader.image(&empty.id).unwrap(), Vec::<u8>::new());
+    drop(reader);
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
 }

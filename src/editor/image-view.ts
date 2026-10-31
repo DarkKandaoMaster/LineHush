@@ -20,8 +20,11 @@ import type { Mappable } from "@tiptap/pm/transform";
 import { dropPoint } from "@tiptap/pm/transform";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import {
+  PLACEHOLDER,
   formatDuration,
+  formatSize,
   fromEditor,
+  kindOf,
   toEditor,
   type Block,
   type Picture,
@@ -820,7 +823,7 @@ const isImageSlice = (slice: Slice) =>
     slice.content.child(i),
   ).every(isImage);
 
-/** The node's picture as the document model has it (`kind` / `duration` only for media). */
+/** The node's picture as the document model has it (`kind` / `duration` only for media, `size` for a file). */
 const pictureOf = (node: PmNode): Picture => ({
   id: node.attrs.id,
   name: node.attrs.name,
@@ -829,6 +832,9 @@ const pictureOf = (node: PmNode): Picture => ({
   ...(node.attrs.kind !== "image" ? { kind: node.attrs.kind } : {}),
   ...(typeof node.attrs.duration === "number"
     ? { duration: node.attrs.duration }
+    : {}),
+  ...(node.attrs.kind === "file" && typeof node.attrs.size === "number"
+    ? { size: node.attrs.size }
     : {}),
 });
 
@@ -1005,6 +1011,24 @@ export function mixedSlice(state: EditorState): Slice | null {
 /** A slice of the document as blocks of the document model (partial lines cut). */
 export const sliceBlocks = (slice: Slice): Block[] =>
   fromEditor({ type: "doc", content: slice.content.toJSON() ?? [] }).blocks;
+
+/**
+ * A slice as plain text (the editor's `clipboardTextSerializer`): a line per
+ * text line or row of images, each picture a placeholder ([图片] [视频] [音频]
+ * [文件]) as the TXT export writes them, without the name.
+ */
+export function clipboardText(slice: Slice): string {
+  const lines: string[] = [];
+  let images = false;
+  slice.content.forEach((node: PmNode) => {
+    const image = node.type.name === "image";
+    const text = image ? `[${PLACEHOLDER[kindOf(node.attrs)]}]` : node.textContent;
+    if (image && images && !node.attrs.newline) lines[lines.length - 1] += ` ${text}`;
+    else lines.push(text);
+    images = image;
+  });
+  return lines.join("\n");
+}
 
 /** The pictures of `blocks`, each id once. */
 export function blockPictures(blocks: Block[]): Picture[] {
@@ -2127,8 +2151,8 @@ export function imagePlugin(
       handleClick: (view, _pos, event) => clickBesideImages(view, event),
       // The first click placed the caret; the second must not select a word
       // next to the image. The tile's own dblclick listener opens the preview
-      // (an image's, a video's); a recording has none and is selected, as
-      // beside it.
+      // (an image's, a video's, a file's); a recording has none and is
+      // selected, as beside it.
       handleDoubleClickOn: (view, _pos, node, nodePos, event, direct) =>
         direct &&
         isImage(node) &&
@@ -2266,11 +2290,11 @@ function dropMixed(
 }
 
 export interface ImageOptions {
-  /** Opens the original (double click), a video to play. */
+  /** Opens the original (double click), a video to play, a file's dialog (open / save). */
   preview: (pic: Picture) => void;
   /**
    * A Blob URL of the picture's thumbnail (a video's cover frame), which the
-   * image revokes when it goes. Not asked for audio.
+   * image revokes when it goes. Not asked for audio or a file.
    */
   source: (pic: Picture) => Promise<string>;
   /** Where a recording plays from (`mediaUrl`). */
@@ -2287,7 +2311,7 @@ export interface ImageOptions {
   stage: (pictures: Picture[]) => void;
 }
 
-/** Whether `target` is (in) a control of a video or recording: its play button or badge. */
+/** Whether `target` is (in) a control of a video, recording or file: its play / open button or badge. */
 function mediaControl(target: EventTarget | null) {
   return !!(target as Element | null)?.closest?.("[data-media-control]");
 }
@@ -2449,6 +2473,47 @@ function audioChip(pic: Picture, src: string): PictureView {
   };
 }
 
+const FILE_ICON =
+  '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4 1.5h5.2L12.5 4.8v9.7h-8.5z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9 1.5v3.5h3.5" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+
+/**
+ * Any other file: a chip with a document icon (a button that opens the file's
+ * dialog, as a double click on the chip does), its name and size. The button
+ * keeps the focus and the caret where they are, as a recording's play button
+ * does; the rest of the chip is pressed like an image.
+ */
+function fileChip(pic: Picture, preview: ImageOptions["preview"]): PictureView {
+  const chip = document.createElement("div");
+  chip.className = "file-chip";
+  chip.title = pic.name;
+  chip.setAttribute("role", "group");
+  chip.setAttribute("aria-label", `文件 ${pic.name}`);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "file-icon";
+  button.tabIndex = -1;
+  button.draggable = false;
+  button.dataset.mediaControl = "";
+  button.setAttribute("aria-label", `打开文件 ${pic.name}`);
+  button.innerHTML = FILE_ICON;
+  const name = document.createElement("span");
+  name.className = "file-name";
+  name.textContent = pic.name;
+  const size = document.createElement("span");
+  size.className = "file-size";
+  size.textContent = formatSize(pic.size);
+  button.addEventListener("mousedown", (event) => event.preventDefault());
+  button.addEventListener("dragstart", (event) => event.preventDefault());
+  button.addEventListener("click", (event) => {
+    if (event.button === 0 && event.detail <= 1) preview(pic);
+  });
+  chip.addEventListener("dblclick", (event) => {
+    if (!mediaControl(event.target)) preview(pic);
+  });
+  chip.append(button, name, size);
+  return { element: chip, destroy: () => {} };
+}
+
 /**
  * One picture per node. Neighbouring image nodes share a row, which CSS wraps
  * where it does not fit; an image with `newline` starts a new row after the
@@ -2469,10 +2534,12 @@ export function image({ preview, source, media, copy, stage }: ImageOptions) {
       name: { default: "", rendered: false },
       width: { default: 0, rendered: false },
       height: { default: 0, rendered: false },
-      // "image", "video" or "audio": all lay out alike, as images.
+      // "image", "video", "audio" or "file": all lay out alike, as images.
       kind: { default: "image", rendered: false },
       // Seconds, for a video or a recording.
       duration: { default: null, rendered: false },
+      // Bytes, for a file.
+      size: { default: null, rendered: false },
       // A line break before this image, if an image comes before it; no
       // meaning after a text line or at the document's start.
       newline: { default: false, rendered: false },
@@ -2518,7 +2585,7 @@ export function image({ preview, source, media, copy, stage }: ImageOptions) {
         const pic = pictureOf(node);
         const same = (other: PmNode) =>
           other.type === node.type &&
-          (["id", "name", "width", "height", "kind", "duration"] as const).every(
+          (["id", "name", "width", "height", "kind", "duration", "size"] as const).every(
             (key) => other.attrs[key] === node.attrs[key],
           );
         const dom = document.createElement("div");
@@ -2527,7 +2594,9 @@ export function image({ preview, source, media, copy, stage }: ImageOptions) {
         const content =
           node.attrs.kind === "audio"
             ? audioChip(pic, media(pic))
-            : pictureTile(pic, node.attrs.kind, source, preview);
+            : node.attrs.kind === "file"
+              ? fileChip(pic, preview)
+              : pictureTile(pic, node.attrs.kind, source, preview);
         dom.append(content.element);
         return {
           dom,

@@ -28,12 +28,17 @@ const UNSUPPORTED: &str = "不支持的图片格式（仅支持 JPG、PNG、GIF�
 const TOO_LARGE: &str = "图片尺寸过大（上限 16000 像素）";
 const TOO_MUCH_MEMORY: &str = "图片尺寸过大（解码所需内存超过 256 MB）";
 
-/// Rejects a file too large to import, before it is copied or decoded.
+/// Rejects a file too large to import, before it is copied or decoded: the
+/// limit for an attached file (`import_file`), which is never decoded.
 pub fn check_file_size(len: usize) -> Result<()> {
     if len > MAX_FILE_BYTES {
-        return Err("图片文件过大（上限 256 MB）".into());
+        return Err("文件过大（上限 256 MB）".into());
     }
     Ok(())
+}
+/// The same limit for an image.
+pub fn check_image_size(len: usize) -> Result<()> {
+    check_file_size(len).map_err(|_| "图片文件过大（上限 256 MB）".into())
 }
 /// The same limit for a video or audio clip.
 pub fn check_media_size(len: usize) -> Result<()> {
@@ -119,6 +124,7 @@ pub fn prepare(bytes: &[u8]) -> Result<(Picture, Vec<u8>)> {
         height: img.height(),
         kind: MediaKind::Image,
         duration: None,
+        size: None,
     };
     Ok((picture, encode_thumbnail(&img)?))
 }
@@ -262,10 +268,17 @@ mod tests {
     }
     #[test]
     fn files_over_256_mb_are_rejected_before_decoding() {
+        assert!(check_image_size(MAX_FILE_BYTES).is_ok());
+        assert_eq!(
+            check_image_size(MAX_FILE_BYTES + 1).unwrap_err(),
+            "图片文件过大（上限 256 MB）"
+        );
+        // An attached file of any size up to the limit, empty included.
+        assert!(check_file_size(0).is_ok());
         assert!(check_file_size(MAX_FILE_BYTES).is_ok());
         assert_eq!(
             check_file_size(MAX_FILE_BYTES + 1).unwrap_err(),
-            "图片文件过大（上限 256 MB）"
+            "文件过大（上限 256 MB）"
         );
         assert!(check_media_size(MAX_FILE_BYTES).is_ok());
         assert_eq!(

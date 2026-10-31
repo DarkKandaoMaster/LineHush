@@ -7,14 +7,15 @@ import { expect, type Locator, type Page } from "@playwright/test";
 export const editorOf = (page: Page) =>
   page.getByRole("textbox", { name: "笔记正文" });
 
-/** A picture as Rust hands it out; videos and recordings carry `kind` and `duration`. */
+/** A picture as Rust hands it out; videos and recordings carry `kind` and `duration`, files `kind` and `size`. */
 export interface TestPicture {
   id: string;
   name: string;
   width: number;
   height: number;
-  kind?: "image" | "video" | "audio";
+  kind?: "image" | "video" | "audio" | "file";
   duration?: number;
+  size?: number;
 }
 type Block = { type: "line"; text: string } | { type: "images"; images: TestPicture[] };
 
@@ -68,6 +69,10 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       media: 0,
       /** media_poster 存过封面的 id。 */
       posters: [] as string[],
+      /** import_file 交出的文件个数（id 为 63 个 f 加序号）。 */
+      files: 0,
+      /** plugin:dialog|save 交出的路径（测试放进来）；null 为用户取消。 */
+      savePath: null as string | null,
       releaseSave: () => {},
       /** take_update 交出一次的新版本说明（`announceUpdate` 放进来）。 */
       update: null as unknown,
@@ -102,7 +107,7 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       },
       unregisterCallback: (id: number) => state.callbacks.delete(id),
       invoke: async (cmd: string, args: any, invokeOptions?: { headers?: HeadersInit }) => {
-        // Raw-body commands (import_image, import_media, media_poster) are
+        // Raw-body commands (import_image, import_media, media_poster, import_file) are
         // recorded by their size and headers.
         const raw = args instanceof ArrayBuffer;
         const headers = Object.fromEntries(new Headers(invokeOptions?.headers ?? {}));
@@ -121,6 +126,22 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
           case "media_poster":
             state.posters.push(headers["x-linehush-id"]);
             return;
+          // 照 Rust：原样存任意文件，按字节数交回 size（名字为空）。
+          case "import_file":
+            return {
+              id: `${"f".repeat(63)}${++state.files}`,
+              name: "",
+              width: 0,
+              height: 0,
+              kind: "file",
+              size: args.byteLength,
+            };
+          // 名字里带“坏”的文件打不开（Rust 的中文原因）。
+          case "open_attachment":
+            if (String(args.name).includes("坏")) throw "找不到打开它的程序";
+            return;
+          case "plugin:dialog|save":
+            return state.savePath;
           case "restore_window": {
             const tabs = options.tabs ?? [{ id: "t1", path: null }];
             return {

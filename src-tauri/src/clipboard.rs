@@ -1,4 +1,5 @@
-//! Copying images (and videos and audio clips) to the Windows clipboard as they are.
+//! Copying images (and videos, audio clips and attached files) to the Windows
+//! clipboard as they are.
 //!
 //! One copy puts on the clipboard, all at once:
 //! - the originals as files (CF_HDROP), written byte for byte to a temporary
@@ -46,12 +47,14 @@ fn safe_name(pic: &Picture) -> String {
         MediaKind::Image => "图片",
         MediaKind::Video => "视频",
         MediaKind::Audio => "音频",
+        MediaKind::File => "文件",
     }
     .to_owned()
 }
 /// Where `stage` puts the original of `pic`. An image named without an
 /// extension gets one from its content, so the file opens in the right program;
-/// a video or audio clip keeps the extension of its name, if any.
+/// a video, audio clip or attached file keeps the extension of its name, if any.
+/// Also where `open_attachment` (open_with.rs) writes a file to be opened.
 pub fn staged_path(dir: &Path, pic: &Picture, bytes: &[u8]) -> PathBuf {
     let mut name = safe_name(pic);
     if pic.kind.is_image() && Path::new(&name).extension().is_none() {
@@ -220,6 +223,7 @@ mod tests {
             height: 2,
             kind: MediaKind::Image,
             duration: None,
+            size: None,
         }
     }
     fn media(id: &str, name: &str, kind: MediaKind) -> Picture {
@@ -228,6 +232,33 @@ mod tests {
             duration: Some(1.5),
             ..picture(id, name)
         }
+    }
+    fn attached(id: &str, name: &str, size: u64) -> Picture {
+        Picture {
+            width: 0,
+            height: 0,
+            kind: MediaKind::File,
+            size: Some(size),
+            ..picture(id, name)
+        }
+    }
+    #[test]
+    fn attached_files_keep_the_extension_of_their_name() {
+        let dir = Path::new(r"C:\T");
+        let id = "0123456789abcdef";
+        // Content that looks like a PNG does not give a file an extension.
+        let png = b"\x89PNG\r\n\x1a\n";
+        let docx = attached(id, "报告.docx", 8);
+        assert_eq!(staged_path(dir, &docx, png), dir.join("0123456789ab-报告.docx"));
+        let bare = attached(id, "README", 8);
+        assert_eq!(staged_path(dir, &bare, png), dir.join("0123456789ab-README"));
+        let unnamed = attached(id, " ..", 0);
+        assert_eq!(staged_path(dir, &unnamed, b""), dir.join("0123456789ab-文件"));
+        let path = PathBuf::from(r"C:\T\x.docx");
+        assert_eq!(
+            html(&[(picture("ab", "a.png"), path.clone()), (docx, path)]),
+            None
+        );
     }
     #[test]
     fn media_keep_the_extension_of_their_name() {

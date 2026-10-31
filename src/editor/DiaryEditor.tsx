@@ -22,22 +22,20 @@ import {
   blockNodes,
   blockPictures,
   clipboardBlocks,
+  clipboardText,
   insertBlocks,
   insertImages,
   lineOf,
 } from "./image-view";
 import {
-  PLACEHOLDER,
   fromEditor,
   fromText,
-  kindOf,
   toEditor,
   type Block,
   type Diary,
   type Picture,
 } from "../core/document";
 import { letterOf } from "../core/keys";
-import { isMediaFile } from "../core/media-probe";
 import { imageUrl, mediaUrl } from "../core/native";
 export interface DiaryEditorHandle {
   reserveInsertion: () => {
@@ -67,6 +65,8 @@ interface Props {
 export interface EditorImages {
   /** Dropped or pasted files; `fromClipboard`: pasted, possibly the files of a LineHush copy. */
   importFiles: (files: File[], fromClipboard?: boolean) => void;
+  /** Dropped folders (by name), which cannot go in. */
+  rejectFolders: (names: string[]) => void;
   /**
    * Images with text lines copied in LineHush, some of whose images this
    * document may not hold yet (copied from another one).
@@ -77,13 +77,26 @@ export interface EditorImages {
   /** See ImageOptions.stage. */
   stage: (pictures: Picture[]) => void;
 }
-// Images, videos and recordings (by MIME type or extension). Files without a
-// MIME type still go to Rust, which rejects anything that is not an image.
-const imageFiles = (files: FileList | undefined) =>
-  Array.from(files ?? []).filter(
-    (file) =>
-      !file.type || file.type.startsWith("image/") || isMediaFile(file),
-  );
+/**
+ * The files of a drop or a paste, every kind (images, media, anything else
+ * attached as a file), and the names of folders among them, which are left
+ * out. Read while the event runs: the data is gone afterwards. Without entries
+ * (a paste, say) every file counts as one.
+ */
+function droppedFiles(data: DataTransfer | null | undefined) {
+  const files: File[] = [];
+  const folders: string[] = [];
+  if (!data) return { files, folders };
+  const items = Array.from(data.items ?? []).filter((item) => item.kind === "file");
+  if (!items.length) return { files: Array.from(data.files ?? []), folders };
+  for (const item of items) {
+    const entry = item.webkitGetAsEntry?.();
+    const file = item.getAsFile();
+    if (entry?.isDirectory) folders.push(entry.name || file?.name || "");
+    else if (file) files.push(file);
+  }
+  return { files, folders };
+}
 
 function DiaryEditor(props: Props) {
   // Handlers below are created once and read the latest callbacks through this ref,
@@ -119,21 +132,7 @@ function DiaryEditor(props: Props) {
         spellcheck: "false",
       },
       // One line per text line or row of images, like the TXT export.
-      clipboardTextSerializer: (slice) => {
-        const lines: string[] = [];
-        let images = false;
-        slice.content.forEach((node: PmNode) => {
-          const image = node.type.name === "image";
-          const text = image
-            ? `[${PLACEHOLDER[kindOf(node.attrs)]}]`
-            : node.textContent;
-          if (image && images && !node.attrs.newline)
-            lines[lines.length - 1] += ` ${text}`;
-          else lines.push(text);
-          images = image;
-        });
-        return lines.join("\n");
-      },
+      clipboardTextSerializer: (slice) => clipboardText(slice),
       handleDOMEvents: {
         // Undo / redo are bound here as well as in UndoRedo's keymap, by the
         // letter or, when an input method reports the key as "Process", by its
@@ -171,13 +170,16 @@ function DiaryEditor(props: Props) {
           else latest.current.images.pasteBlocks(blocks);
           return true;
         }
-        // Images alone, also those copied in LineHush (Rust writes them as
-        // files; importFiles recognises its own copy and keeps the same images).
-        const files = imageFiles(data.files);
+        // Files alone (images, media, anything else as an attached file), also
+        // those copied in LineHush (Rust writes them as files; importFiles
+        // recognises its own copy and keeps the same pictures). Folders do not go in.
+        const { files, folders } = droppedFiles(data);
+        if (folders.length) latest.current.images.rejectFolders(folders);
         if (files.length) {
           latest.current.images.importFiles(files, true);
           return true;
         }
+        if (folders.length) return true;
         const nodes = fromText(data.getData("text/plain")).blocks.map((block) =>
           view.state.schema.nodes.paragraph.create(
             null,
@@ -195,7 +197,9 @@ function DiaryEditor(props: Props) {
       },
       handleDrop(_view, event) {
         // Always consume drops: dropped HTML or text must not enter the document.
-        const files = imageFiles(event.dataTransfer?.files);
+        // Any file goes in (an image, media, else as an attached file); folders do not.
+        const { files, folders } = droppedFiles(event.dataTransfer);
+        if (folders.length) latest.current.images.rejectFolders(folders);
         if (files.length) latest.current.images.importFiles(files);
         return true;
       },
