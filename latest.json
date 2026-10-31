@@ -1,6 +1,6 @@
 {
-  "version": "0.10.0",
-  "notes": "",
-  "pub_date": "2026-10-30T17:08:50Z",
-  "url": "https://github.com/DarkKandaoMaster/LineHush/releases/download/LineHush_v0.10.0/LineHush_0.10.0_x64-setup.exe"
+  "version": "0.11.0",
+  "notes": "支持任意文件附件块：拖放 / 粘贴进笔记即嵌进 .hush，可打开或保存原文件；修正音频胶囊过宽。",
+  "pub_date": "2026-10-31T17:01:26Z",
+  "url": "https://github.com/DarkKandaoMaster/LineHush/releases/download/LineHush_v0.11.0/LineHush_0.11.0_x64-setup.exe"
 }
