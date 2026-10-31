@@ -1570,11 +1570,12 @@ async function imagesCase() {
   expect((await readFile(working)).subarray(0, 16).toString("latin1")).toBe(
     "SQLite format 3\0",
   );
+  // Format v2 (2026-10-31): the v1 file writeHush made is upgraded by its first save.
   for (const target of [file, working]) {
     expect(query(target, "PRAGMA application_id")[0].application_id).toBe(
       0x48555348,
     );
-    expect(query(target, "PRAGMA user_version")[0].user_version).toBe(1);
+    expect(query(target, "PRAGMA user_version")[0].user_version).toBe(2);
     expect(query(target, "PRAGMA auto_vacuum")[0].auto_vacuum).toBe(2);
   }
 
