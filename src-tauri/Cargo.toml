@@ -34,18 +34,25 @@ tauri-plugin-single-instance = "2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 semver = "1"
-clipboard-win = "5.4"
+# std：读剪贴板里的文件列表（CF_HDROP）为 PathBuf（粘贴文件夹，`clipboard::folders`）。
+clipboard-win = { version = "5.4", features = ["std"] }
+# 文件夹打成 zip 附件（archive.rs）：只用 store（不压缩）写入，测试里读回；不要任何压缩 / 加密 / 时间特性。
+zip = { version = "9", default-features = false }
+# 解 `zip_add` 里按 encodeURIComponent 编码的相对路径（header 只能是 ASCII）；Cargo.lock 里本来就有。
+percent-encoding = "2"
 # 导出 PDF 调用 WebView2 的 PrintToPdf。版本须与 wry 所用的一致（webview2-com 0.38 / windows 0.61），
 # 否则 Tauri 给出的 WebView2 接口类型对不上。
 webview2-com = "0.38"
 # 自绘标题栏的最大化按钮覆盖窗口（caption.rs）、“打开文件所在位置”（explorer.rs，Shell）与
-# 用默认程序打开附件（open_with.rs，ShellExecuteExW；它的结构体要 Registry 模块）另需这些 Win32 模块。
+# 用默认程序打开附件（open_with.rs，ShellExecuteExW；它的结构体要 Registry 模块）与 zip 条目的本地时间
+# （archive.rs，GetLocalTime，SystemInformation 模块）另需这些 Win32 模块。
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_System_Com",
   "Win32_System_LibraryLoader",
   "Win32_System_Registry",
+  "Win32_System_SystemInformation",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
   "Win32_UI_Shell_Common",

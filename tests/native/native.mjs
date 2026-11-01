@@ -5,11 +5,11 @@
 //
 //   node tests/native/native.mjs [--only 名称] [--release]   整套只在发布前跑；--only 只跑一项（名称见文末 `cases`）
 //
-// 注意：会弹出 / 移动 / 最大化 LineHush 窗口，并改写系统剪贴板（“图片复制粘贴”“右键菜单”）；
+// 注意：会弹出 / 移动 / 最大化 LineHush 窗口，并改写系统剪贴板（“图片复制粘贴”“右键菜单”“文件夹粘贴”）；
 // “对话框挪进屏幕”会移动真实鼠标（按住标题栏拖动）并发送真实 Esc 键，运行时不要动鼠标键盘。
 import { chromium, expect } from "@playwright/test";
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import {
   copyFile,
@@ -21,6 +21,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { crc32 } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 const root = path.resolve("test-results/native-" + Date.now());
 await mkdir(root, { recursive: true });
@@ -2049,6 +2050,276 @@ async function contextMenuCase() {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 文件夹打成 zip 附件（拖放 / 粘贴文件夹，docs/proposals/folder-zip-2026-11-01.md）。
+/** Creates folder `root` from `tree`: name → Buffer / string (a file) or object (a folder). */
+async function makeTree(root, tree) {
+  await mkdir(root, { recursive: true });
+  for (const [name, value] of Object.entries(tree)) {
+    const at = path.join(root, name);
+    if (Buffer.isBuffer(value) || typeof value === "string") await writeFile(at, value);
+    else await makeTree(at, value);
+  }
+  return root;
+}
+/** A test folder: subfolders, empty ones, a Chinese-named text file, an empty file and a small PNG. */
+async function makeAlbum(page, root) {
+  const png = await page.screenshot({ clip: { x: 0, y: 0, width: 40, height: 30 } });
+  return makeTree(root, {
+    "说明 文档.txt": "第一行\r\n第二行，中文与 emoji 🌙\r\n",
+    "零字节.bin": Buffer.alloc(0),
+    子目录: { "截图.png": png, 孙: { "深.txt": "deep" } },
+    空目录: {},
+    空嵌套: { 更空: {} },
+  });
+}
+/** 50 files of 1 MB of random bytes in 5 subfolders (about 50 MB). */
+async function makeLarge(root) {
+  const tree = {};
+  for (let d = 0; d < 5; d++) {
+    const sub = {};
+    for (let f = 0; f < 10; f++) sub[`随机-${f}.bin`] = randomBytes(1024 * 1024);
+    tree[`目录 ${d}`] = sub;
+  }
+  return makeTree(root, tree);
+}
+/** What a zip of folder `root` must hold: entry name → bytes (folders `…/`, empty). */
+async function expectedEntries(root, prefix = path.basename(root)) {
+  const out = new Map([[`${prefix}/`, Buffer.alloc(0)]]);
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const at = path.join(root, entry.name);
+    const name = `${prefix}/${entry.name}`;
+    if (entry.isDirectory())
+      for (const [k, v] of await expectedEntries(at, name)) out.set(k, v);
+    else out.set(name, await readFile(at));
+  }
+  return out;
+}
+/** The entries of a zip, read by its central directory (LineHush only stores, never compresses). */
+function zipEntries(zip) {
+  let end = zip.length - 22;
+  while (end >= 0 && zip.readUInt32LE(end) !== 0x06054b50) end--;
+  if (end < 0) throw Error("不是 zip：没有中央目录结尾");
+  const count = zip.readUInt16LE(end + 10);
+  let at = zip.readUInt32LE(end + 16);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    if (zip.readUInt32LE(at) !== 0x02014b50) throw Error("中央目录损坏");
+    const nameLength = zip.readUInt16LE(at + 28);
+    const local = zip.readUInt32LE(at + 42);
+    if (zip.readUInt32LE(local) !== 0x04034b50) throw Error("本地文件头损坏");
+    const start =
+      local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+    const size = zip.readUInt32LE(at + 20);
+    out.push({
+      name: zip.toString("utf8", at + 46, at + 46 + nameLength),
+      utf8: Boolean(zip.readUInt16LE(at + 8) & 0x800),
+      method: zip.readUInt16LE(at + 10),
+      crc: zip.readUInt32LE(at + 16),
+      size,
+      unpacked: zip.readUInt32LE(at + 24),
+      data: zip.subarray(start, start + size),
+    });
+    at +=
+      46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
+  }
+  return out;
+}
+/** Checks that `zip` holds folder `root` exactly: names, stored, CRC, every byte. */
+async function expectZipOf(zip, root) {
+  const entries = zipEntries(zip);
+  const expected = await expectedEntries(root);
+  expect(entries.map((e) => e.name).sort()).toEqual([...expected.keys()].sort());
+  for (const entry of entries) {
+    expect(entry.method, entry.name).toBe(0);
+    expect(entry.unpacked, entry.name).toBe(entry.size);
+    if (/[^\x20-\x7e]/.test(entry.name)) expect(entry.utf8, entry.name).toBe(true);
+    expect(entry.crc, entry.name).toBe(crc32(entry.data));
+    expect(entry.data.equals(expected.get(entry.name)), entry.name).toBe(true);
+  }
+  return entries.length;
+}
+/** Records when the next drop / paste reaches the page (`window.__t0`). */
+const armTimer = (page) =>
+  page.evaluate(() => {
+    if (window.__armed) return;
+    window.__armed = true;
+    for (const type of ["drop", "paste"])
+      window.addEventListener(type, () => (window.__t0 = performance.now()), true);
+  });
+/** Waits for `n` file chips in the current tab; ms from the drop / paste until they show. */
+const chipsAfter = (page, n, timeout = 120000) =>
+  page
+    .waitForFunction(
+      (n) =>
+        document.querySelectorAll(".tab-pane:not([hidden]) .file-chip").length >= n &&
+        Math.round(performance.now() - window.__t0),
+      n,
+      { polling: 10, timeout },
+    )
+    .then((handle) => handle.jsonValue());
+const chipNames = (page) =>
+  editor(page).locator(".file-chip .file-name").allTextContents();
+/**
+ * Drops `paths` (files or folders on disk) onto the editor the way Chromium's
+ * own drag and drop does, through CDP (no real mouse, no OS drag).
+ */
+async function dropPaths(page, paths) {
+  const box = await editor(page).boundingBox();
+  const x = box.x + 80;
+  const y = box.y + 20;
+  const session = await context.newCDPSession(page);
+  const data = { items: [], files: paths, dragOperationsMask: 1 };
+  for (const type of ["dragEnter", "dragOver", "drop"])
+    await session.send("Input.dispatchDragEvent", { type, x, y, data });
+  await session.detach();
+}
+/** Puts `paths` on the system clipboard as copied files (CF_HDROP), as Explorer's copy does. */
+const clipboardPaths = (paths) =>
+  powershell(
+    "Set-Clipboard -LiteralPath ($env:LINEHUSH_PATHS | ConvertFrom-Json)",
+    { LINEHUSH_PATHS: JSON.stringify(paths) },
+  );
+/**
+ * The attached files of tab `id` once its stash holds `n`, with their bytes
+ * as stored in its working copy.
+ */
+async function attachedFiles(id, n) {
+  const files = (doc) => pictures(doc).filter((p) => p.kind === "file");
+  await stashed(id, (doc) => files(doc).length === n);
+  return files(stash(workOf(id))).map((picture) => ({
+    picture,
+    bytes: stored(workOf(id), picture.id),
+  }));
+}
+/** The id of the current (last opened) tab, once session.json lists `count` tabs. */
+async function lastTab(count) {
+  await expect.poll(() => tabIds().length).toBe(count);
+  return tabIds()[count - 1];
+}
+/** No zip being built is left in the data folder's `zip\`. */
+async function expectNoZipLeft() {
+  const folder = path.join(appData, "zip");
+  const left = existsSync(folder) ? await readdir(folder) : [];
+  expect(left).toEqual([]);
+}
+/**
+ * One way of putting folders in (`put`: drop or paste), in a new tab each: a
+ * folder with subfolders and empty ones, an empty folder, two folders at once
+ * (two zips in their order), about 50 MB (timed). Every zip is read back from
+ * the working copy and compared with the folder byte for byte.
+ */
+async function folderScenarios(page, put, tag) {
+  const src = path.join(dir, "源");
+  const album = await makeAlbum(page, path.join(src, `相册 ${tag}`));
+  const empty = await makeTree(path.join(src, "空文件夹"), {});
+  const first = await makeTree(path.join(src, "甲"), { "a.txt": "甲的文件" });
+  const second = await makeTree(path.join(src, "乙"), { 子: { "b.txt": "乙的文件" } });
+  const large = await makeLarge(path.join(src, "大文件夹"));
+  const timings = {};
+  let tabs = 1;
+  const scenario = async (name, folders, expectedNames) => {
+    if (tabs > 1) await pressNewTab(page);
+    const id = await lastTab(tabs++);
+    await editor(page).click();
+    await armTimer(page);
+    await put(folders);
+    timings[name] = await chipsAfter(page, expectedNames.length);
+    expect(await chipNames(page)).toEqual(expectedNames);
+    const files = await attachedFiles(id, expectedNames.length);
+    expect(files.map((f) => f.picture.name)).toEqual(expectedNames);
+    for (const [i, { picture, bytes }] of files.entries()) {
+      expect(picture.size).toBe(bytes.length);
+      expect(sha256(bytes)).toBe(picture.id);
+      await expectZipOf(bytes, folders[i]);
+    }
+    return files;
+  };
+  const [albumZip] = await scenario("相册", [album], [`相册 ${tag}.zip`]);
+  const albumNames = zipEntries(albumZip.bytes).map((e) => e.name);
+  expect(albumNames).toContain(`相册 ${tag}/空嵌套/更空/`);
+  expect(albumNames).toContain(`相册 ${tag}/子目录/孙/深.txt`);
+  passed(`${tag}文件夹：子目录、空目录与中文名逐字节进 zip（store、UTF-8 名）`);
+  const [emptyZip] = await scenario("空文件夹", [empty], ["空文件夹.zip"]);
+  expect(zipEntries(emptyZip.bytes).map((e) => e.name)).toEqual(["空文件夹/"]);
+  passed(`${tag}空文件夹：zip 里只有“空文件夹/”`);
+  await scenario("两个文件夹", [first, second], ["甲.zip", "乙.zip"]);
+  passed(`${tag}两个文件夹：各一个 zip，顺序不变`);
+  const [largeZip] = await scenario("约 50 MB", [large], ["大文件夹.zip"]);
+  passed(`${tag}约 50 MB：${timings["约 50 MB"]} ms，zip ${largeZip.bytes.length} 字节`);
+  await expectNoZipLeft();
+  passed(`${tag}后数据目录 zip\\ 下没有残留`);
+  return timings;
+}
+
+/** 文件夹拖放：经 CDP 的拖放（Chromium 自己的 DataTransfer 与目录 entry）把文件夹拖进正文。 */
+async function folderDropCase() {
+  const page = await start();
+  const timings = await folderScenarios(page, (folders) => dropPaths(page, folders), "拖放");
+  await kill();
+  return { timings };
+}
+
+/**
+ * 文件夹粘贴：Set-Clipboard 把文件夹（CF_HDROP）放上剪贴板后 Ctrl+V；另试文件与文件夹
+ * 混在一起（文件在前、zip 在后，没有 0 字节的同名假文件）。注意：会改写系统剪贴板。
+ */
+async function folderPasteCase() {
+  const page = await start();
+  // What Chromium hands the page for copied folders, recorded for the report.
+  await page.evaluate(() => {
+    window.__pastes = [];
+    document.addEventListener(
+      "paste",
+      (e) => {
+        const data = e.clipboardData;
+        window.__pastes.push({
+          types: [...data.types],
+          files: [...data.files].map((f) => ({ name: f.name, size: f.size, type: f.type })),
+          items: [...data.items].map((item) => {
+            const entry = item.webkitGetAsEntry?.();
+            return {
+              kind: item.kind,
+              type: item.type,
+              entry: entry ? (entry.isDirectory ? "directory" : "file") : null,
+            };
+          }),
+        });
+      },
+      true,
+    );
+  });
+  const timings = await folderScenarios(
+    page,
+    async (folders) => {
+      await clipboardPaths(folders);
+      await page.keyboard.press("Control+v");
+    },
+    "粘贴",
+  );
+  // A file and a folder copied together: the file first, then the zip.
+  const note = path.join(dir, "源", "附带.txt");
+  await writeFile(note, "一个普通文件");
+  const folder = path.join(dir, "源", "甲");
+  await pressNewTab(page);
+  const id = await lastTab(5);
+  await editor(page).click();
+  await clipboardPaths([folder, note]);
+  await page.keyboard.press("Control+v");
+  await chipsAfter(page, 2);
+  await sleep(500);
+  expect(await chipNames(page)).toEqual(["附带.txt", "甲.zip"]);
+  const files = await attachedFiles(id, 2);
+  expect(files[0].bytes.toString()).toBe("一个普通文件");
+  await expectZipOf(files[1].bytes, folder);
+  passed("文件与文件夹一起粘贴：文件在前、zip 在后，没有 0 字节的同名文件块");
+  const pastes = await page.evaluate(() => window.__pastes);
+  console.log("粘贴时页面看到的剪贴板：" + JSON.stringify(pastes));
+  await expectNoZipLeft();
+  await kill();
+  return { timings, pastes };
+}
+
 const cases = {
   启动与窗口: startupCase,
   标签页快捷键: tabKeysCase,
@@ -2069,6 +2340,8 @@ const cases = {
   图片复制粘贴: copyPasteCase,
   导出: exportCase,
   右键菜单: contextMenuCase,
+  文件夹拖放: folderDropCase,
+  文件夹粘贴: folderPasteCase,
 };
 /** Runs one case in its own folders; whatever happens, no LineHush is left running. */
 async function runCase(name) {

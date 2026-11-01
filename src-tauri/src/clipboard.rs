@@ -150,8 +150,8 @@ mod system {
     use super::Content;
     use crate::fsx::shown;
     use crate::model::Result;
-    use clipboard_win::{formats, raw, Clipboard};
-    use std::time::Duration;
+    use clipboard_win::{formats, raw, Clipboard, Getter};
+    use std::{path::PathBuf, time::Duration};
 
     /// How often, and how long apart, opening the clipboard is tried again while
     /// another program holds it (some open it to read every change at once).
@@ -190,6 +190,19 @@ mod system {
     fn fail(e: clipboard_win::ErrorCode) -> String {
         format!("无法写入剪贴板（{e}）")
     }
+    /// The files and folders on the clipboard (CF_HDROP, e.g. copied in Explorer), in
+    /// its order; empty when it holds none.
+    pub fn files() -> Result<Vec<PathBuf>> {
+        let _open = open().map_err(|_| "无法读取剪贴板".to_owned())?;
+        if !raw::is_format_avail(formats::CF_HDROP) {
+            return Ok(Vec::new());
+        }
+        let mut files: Vec<PathBuf> = Vec::new();
+        formats::FileList
+            .read_clipboard(&mut files)
+            .map_err(|e| format!("无法读取剪贴板（{e}）"))?;
+        Ok(files)
+    }
     fn fill(content: &Content) -> Result<()> {
         raw::empty().map_err(fail)?;
         let files: Vec<String> = content.files.iter().map(|path| shown(path)).collect();
@@ -211,6 +224,36 @@ mod system {
     }
 }
 pub use system::{sequence, write};
+
+/// A folder on the clipboard, for pasting it as a zip (`clipboard_folders` in lib.rs).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardFolder {
+    /// Its last component, the name of the zip without `.zip`.
+    pub name: String,
+    pub path: String,
+}
+/// The folders among `files` (from the clipboard), in their order; files and paths
+/// that are gone are left out.
+pub fn folders(files: Vec<PathBuf>) -> Vec<ClipboardFolder> {
+    files
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .map(|path| ClipboardFolder {
+            name: folder_name(&path),
+            path: shown(&path),
+        })
+        .collect()
+}
+/// The name a zip of folder `path` gets: its last component; a drive root (`D:\`),
+/// which has none, is named after its letter.
+pub fn folder_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || shown(path).trim_end_matches(['\\', '/', ':']).to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+pub use system::files;
 
 #[cfg(test)]
 mod tests {
@@ -325,5 +368,29 @@ mod tests {
                 r#"<img src="file:///C:/T/cd-c.png" alt="c.png">"#
             )
         );
+    }
+    #[test]
+    fn only_folders_on_the_clipboard_are_offered_for_zipping() {
+        let dir = std::env::temp_dir().join(format!("linehush-test-folders-{}", std::process::id()));
+        fs::create_dir_all(dir.join("旅行 照片")).unwrap();
+        fs::create_dir_all(dir.join("b")).unwrap();
+        fs::write(dir.join("a.txt"), b"x").unwrap();
+        let found = folders(vec![
+            dir.join("b"),
+            dir.join("a.txt"),
+            dir.join("不存在"),
+            dir.join("旅行 照片"),
+        ]);
+        assert_eq!(
+            found,
+            [
+                ClipboardFolder { name: "b".into(), path: shown(&dir.join("b")) },
+                ClipboardFolder { name: "旅行 照片".into(), path: shown(&dir.join("旅行 照片")) },
+            ]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+        let root = folders(vec![PathBuf::from(std::env::var("SystemDrive").unwrap() + "\\")]);
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].name.len(), 1, "{:?}", root[0]);
     }
 }

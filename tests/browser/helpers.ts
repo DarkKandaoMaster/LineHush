@@ -71,6 +71,13 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       posters: [] as string[],
       /** import_file 交出的文件个数（id 为 63 个 f 加序号）。 */
       files: 0,
+      /** zip_begin 开过的 zip（id 为 zip1、zip2…）：文件夹名与 zip_add 收到的字节数之和。 */
+      zips: {} as Record<string, { name: string; size: number }>,
+      zipCount: 0,
+      /** zip_finish / import_folder 交出的 zip 个数（id 为 63 个 d 加序号）。 */
+      folders: 0,
+      /** clipboard_folders 交出的剪贴板文件夹（测试放进来）。 */
+      clipboardFolders: [] as { name: string; path: string }[],
       /** plugin:dialog|save 交出的路径（测试放进来）；null 为用户取消。 */
       savePath: null as string | null,
       releaseSave: () => {},
@@ -107,7 +114,7 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       },
       unregisterCallback: (id: number) => state.callbacks.delete(id),
       invoke: async (cmd: string, args: any, invokeOptions?: { headers?: HeadersInit }) => {
-        // Raw-body commands (import_image, import_media, media_poster, import_file) are
+        // Raw-body commands (import_image, import_media, media_poster, import_file, zip_add) are
         // recorded by their size and headers.
         const raw = args instanceof ArrayBuffer;
         const headers = Object.fromEntries(new Headers(invokeOptions?.headers ?? {}));
@@ -135,6 +142,52 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
               height: 0,
               kind: "file",
               size: args.byteLength,
+            };
+          // 照 Rust：文件夹逐个文件打包成 zip（store），结束时作为附件交回（名字为空）；
+          // 相对路径里带“坏”的文件写不进去，超过 256 MB 报文件夹过大。
+          case "zip_begin": {
+            const id = `zip${++state.zipCount}`;
+            state.zips[id] = { name: args.name, size: 0 };
+            return id;
+          }
+          case "zip_add": {
+            const zip = state.zips[headers["x-linehush-zip"]];
+            if (!zip) throw "测试：没有这个 zip";
+            if (decodeURIComponent(headers["x-linehush-path"]).includes("坏"))
+              throw "写入压缩包失败：拒绝访问";
+            zip.size += args.byteLength;
+            if (zip.size > 256 * 1024 * 1024) throw "文件夹过大（上限 256 MB）";
+            return;
+          }
+          case "zip_add_dir":
+            return;
+          case "zip_finish": {
+            const zip = state.zips[args.zipId];
+            delete state.zips[args.zipId];
+            return {
+              id: `${"d".repeat(63)}${++state.folders}`,
+              name: "",
+              width: 0,
+              height: 0,
+              kind: "file",
+              size: zip.size,
+            };
+          }
+          case "zip_abort":
+            delete state.zips[args.zipId];
+            return;
+          case "clipboard_folders":
+            return state.clipboardFolders;
+          // 路径里带“坏”的文件夹读不了（Rust 的中文原因）。
+          case "import_folder":
+            if (String(args.path).includes("坏")) throw "无法读取文件夹：拒绝访问";
+            return {
+              id: `${"d".repeat(63)}${++state.folders}`,
+              name: "",
+              width: 0,
+              height: 0,
+              kind: "file",
+              size: 4096,
             };
           // 名字里带“坏”的文件打不开（Rust 的中文原因）。
           case "open_attachment":

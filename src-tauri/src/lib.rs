@@ -1,3 +1,4 @@
+mod archive;
 mod caption;
 mod caret;
 mod clipboard;
@@ -18,6 +19,7 @@ mod store;
 mod store_tests;
 mod update;
 
+use archive::ZipBuilder;
 use model::{Diary, ExportImage, MediaKind, Picture, Result};
 use serde::Serialize;
 use session::{Session, TabEntry, WINDOW_PREFIX};
@@ -55,6 +57,10 @@ const HEIGHT_HEADER: &str = "x-linehush-height";
 const DURATION_HEADER: &str = "x-linehush-duration";
 /// `media_poster`: the video the cover belongs to.
 const ID_HEADER: &str = "x-linehush-id";
+/// `zip_add`: the zip (`zip_begin`) a file of a folder goes into, and its path
+/// inside the folder, encoded with `encodeURIComponent` (header values are ASCII).
+const ZIP_HEADER: &str = "x-linehush-zip";
+const PATH_HEADER: &str = "x-linehush-path";
 /// What the window-state plugin remembers. Not VISIBLE: `create_window` shows the
 /// window itself once the rest is restored.
 const WINDOW_STATE: StateFlags = StateFlags::SIZE
@@ -118,6 +124,51 @@ impl ClipboardState {
             .map(|(_, store)| store.clone())
             .collect();
         adopt_images(&self.dir, &target, &others, ids)
+    }
+}
+/// Folders being zipped from files the front end sends one by one (`zip_begin`,
+/// `zip_add`, `zip_add_dir`, `zip_finish`, `zip_abort`), by zip id; see archive.rs.
+struct ZipJobs {
+    /// Where zips are written while they are built: `zip\` in the data folder.
+    dir: PathBuf,
+    next: AtomicU64,
+    /// The tab each zip goes into, and the zip; None once it is finished or given up.
+    jobs: Mutex<HashMap<String, (String, Arc<Mutex<Option<ZipBuilder>>>)>>,
+}
+/// What a step of a zip no longer being built reports.
+const ZIP_GONE: &str = "文件夹打包已取消";
+impl ZipJobs {
+    /// Starts a zip of a folder named `name` for tab `tab`; returns its id.
+    fn begin(&self, tab: String, name: &str) -> Result<String> {
+        let builder = ZipBuilder::create(&self.dir, name)?;
+        let id = format!("zip-{}", self.next.fetch_add(1, Ordering::Relaxed) + 1);
+        lock(&self.jobs).insert(id.clone(), (tab, Arc::new(Mutex::new(Some(builder)))));
+        Ok(id)
+    }
+    /// Takes zip `id` out of the table (None when there is no such zip).
+    fn take(&self, id: &str) -> Option<(String, ZipBuilder)> {
+        let (tab, job) = lock(&self.jobs).remove(id)?;
+        let builder = lock(&job).take()?;
+        Some((tab, builder))
+    }
+    /// Runs `step` on zip `id`; when it fails, the zip is given up (its temporary file
+    /// removed), so the front end need not call `zip_abort` after an error.
+    fn step(&self, id: &str, step: impl FnOnce(&mut ZipBuilder) -> Result<()>) -> Result<()> {
+        let job = lock(&self.jobs).get(id).map(|(_, job)| job.clone()).ok_or(ZIP_GONE)?;
+        let result = match lock(&job).as_mut() {
+            Some(builder) => step(builder),
+            None => Err(ZIP_GONE.into()),
+        };
+        if result.is_err() {
+            self.abort(id);
+        }
+        result
+    }
+    /// Gives zip `id` up, if there is one.
+    fn abort(&self, id: &str) {
+        if let Some((_, builder)) = self.take(id) {
+            builder.abort();
+        }
     }
 }
 /// Makes sure `target` holds each image: an image from another document is read
@@ -797,6 +848,98 @@ async fn import_file(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result
     let bytes = bytes.clone();
     with_tab(app, tab, move |store| store.add_file(&bytes)).await
 }
+/// Finishes `zip` and stores it in the tab's `store` like `import_file`, named
+/// `<folder>.zip`; its temporary file is removed either way.
+fn store_zip(store: &Mutex<Store>, zip: ZipBuilder) -> Result<Picture> {
+    let name = format!("{}.zip", zip.name());
+    let path = zip.finish()?;
+    let bytes = fs::read(&path).map_err(|e| format!("无法读取临时文件：{}", errors::describe(e)));
+    let _ = fs::remove_file(&path);
+    let bytes = bytes?;
+    archive::check_total(bytes.len() as u64)?;
+    let mut picture = lock(store).add_file(&bytes)?;
+    picture.name = name;
+    Ok(picture)
+}
+/// Starts zipping a folder named `name` (dropped into the editor) for tab `tab`;
+/// the front end then sends its files (`zip_add`) and folders (`zip_add_dir`) and
+/// ends with `zip_finish` or `zip_abort`. Returns the zip's id.
+#[tauri::command]
+async fn zip_begin(tab: String, name: String, app: AppHandle) -> Result<String> {
+    blocking(move || {
+        lock_tab(&app, &tab)?;
+        app.state::<ZipJobs>().begin(tab, &name)
+    })
+    .await
+}
+/// One file of a folder being zipped (the raw body), at the path in
+/// `x-linehush-path` inside the folder, into the zip in `x-linehush-zip`.
+/// A failure (e.g. the folder is over 256 MB) gives the zip up.
+#[tauri::command]
+async fn zip_add(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<()> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("文件数据无效".into());
+    };
+    let zip = header(&request, ZIP_HEADER)
+        .ok_or("文件数据缺少所属压缩包")?
+        .to_owned();
+    let path = header(&request, PATH_HEADER).ok_or("文件数据缺少路径")?;
+    let path = percent_encoding::percent_decode_str(path)
+        .decode_utf8()
+        .map_err(|_| "文件路径无效")?
+        .into_owned();
+    let bytes = bytes.clone();
+    blocking(move || {
+        app.state::<ZipJobs>()
+            .step(&zip, |builder| builder.add_file(&path, &bytes))
+    })
+    .await
+}
+/// A folder (`path` inside the folder being zipped; empty ones included) in zip
+/// `zip_id`. A failure gives the zip up.
+#[tauri::command]
+async fn zip_add_dir(zip_id: String, path: String, app: AppHandle) -> Result<()> {
+    blocking(move || app.state::<ZipJobs>().step(&zip_id, |builder| builder.add_dir(&path))).await
+}
+/// Ends zip `zip_id` and stores it in its tab as an attached file `<folder>.zip`.
+#[tauri::command]
+async fn zip_finish(zip_id: String, app: AppHandle) -> Result<Picture> {
+    blocking(move || {
+        let (tab, builder) = app.state::<ZipJobs>().take(&zip_id).ok_or(ZIP_GONE)?;
+        let store = lock_tab(&app, &tab)?;
+        store_zip(&store, builder)
+    })
+    .await
+}
+/// Gives zip `zip_id` up; nothing happens when there is no such zip.
+#[tauri::command]
+async fn zip_abort(zip_id: String, app: AppHandle) -> Result<()> {
+    blocking(move || {
+        app.state::<ZipJobs>().abort(&zip_id);
+        Ok(())
+    })
+    .await
+}
+/// The folders on the system clipboard (copied in Explorer), in its order, for a
+/// paste to zip them with `import_folder`; empty when it holds no files.
+#[tauri::command]
+async fn clipboard_folders() -> Result<Vec<clipboard::ClipboardFolder>> {
+    blocking(|| Ok(clipboard::folders(clipboard::files()?))).await
+}
+/// Zips the folder `path` from disk (see `ZipBuilder::add_path`) and stores it in
+/// tab `tab` as an attached file `<folder>.zip`, as `zip_finish` does.
+#[tauri::command]
+async fn import_folder(tab: String, path: String, app: AppHandle) -> Result<Picture> {
+    blocking(move || {
+        let store = lock_tab(&app, &tab)?;
+        let root = PathBuf::from(&path);
+        let dir = &app.state::<ZipJobs>().dir;
+        let mut zip = ZipBuilder::create(dir, &clipboard::folder_name(&root))?;
+        zip.add_path(&root)?;
+        store_zip(&store, zip)
+    })
+    .await
+}
 /// Opens the attached file `id` (named `name`) of the tab in the program Windows
 /// has for it, or lets the user pick one: written to `%TEMP%\linehush-open\`
 /// first (see open_with.rs). Returns the reason when it fails; the front end
@@ -1182,6 +1325,15 @@ pub fn run() {
                 }
             });
             app.manage(open_with::OpenDir(open_dir));
+            // Zips of folders being built live in the data folder; ones left by a
+            // crash are removed before any window can start a new one.
+            let zip_dir = root.join(archive::ZIP_FOLDER);
+            sweep_staged(&zip_dir, &HashSet::new(), Duration::ZERO);
+            app.manage(ZipJobs {
+                dir: zip_dir,
+                next: AtomicU64::new(0),
+                jobs: Mutex::new(HashMap::new()),
+            });
             app.manage(ClipboardState {
                 dir: clipboard_dir,
                 latest: AtomicU64::new(0),
@@ -1257,6 +1409,13 @@ pub fn run() {
             import_image,
             import_media,
             import_file,
+            zip_begin,
+            zip_add,
+            zip_add_dir,
+            zip_finish,
+            zip_abort,
+            clipboard_folders,
+            import_folder,
             open_attachment,
             media_poster,
             read_image,
@@ -1285,7 +1444,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{adopt_images, hush_argument, stage_pictures, sweep_staged};
+    use super::{adopt_images, hush_argument, stage_pictures, store_zip, sweep_staged, ZipJobs};
     use crate::{clipboard, images, store::Store};
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
@@ -1300,6 +1459,87 @@ mod tests {
             .write_to(&mut out, image::ImageFormat::Png)
             .unwrap();
         out.into_inner()
+    }
+
+    /// `zip_begin` / `zip_add` / `zip_add_dir` / `zip_finish` and `import_folder`
+    /// without the IPC layer: the zip ends up in the tab's store as an attached
+    /// file, a valid store-only zip, and no temporary file is left behind.
+    #[test]
+    fn zipped_folders_are_stored_as_attached_files() {
+        use crate::model::MediaKind;
+        use std::io::Read;
+        let dir = std::env::temp_dir().join(format!("linehush-test-zipjobs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Mutex::new(Store::create(dir.join("tab.hush")).unwrap());
+        let jobs = ZipJobs {
+            dir: dir.join("zip"),
+            next: Default::default(),
+            jobs: Default::default(),
+        };
+        let read = |id: &str| {
+            let bytes = store.lock().unwrap().image(id).unwrap();
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+            (0..archive.len())
+                .map(|i| {
+                    let mut file = archive.by_index(i).unwrap();
+                    assert_eq!(file.compression(), zip::CompressionMethod::Stored);
+                    let mut content = Vec::new();
+                    file.read_to_end(&mut content).unwrap();
+                    (file.name().unwrap().into_owned(), content)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let id = jobs.begin("tab".into(), "相册").unwrap();
+        jobs.step(&id, |zip| zip.add_file("a/照片.jpg", b"jpeg")).unwrap();
+        jobs.step(&id, |zip| zip.add_dir("空")).unwrap();
+        let (tab, zip) = jobs.take(&id).unwrap();
+        assert_eq!(tab, "tab");
+        let pic = store_zip(&store, zip).unwrap();
+        assert_eq!(pic.name, "相册.zip");
+        assert_eq!(pic.kind, MediaKind::File);
+        let bytes = store.lock().unwrap().image(&pic.id).unwrap();
+        assert_eq!(pic.size, Some(bytes.len() as u64));
+        assert_eq!(pic.id, images::hash(&bytes));
+        assert_eq!(
+            read(&pic.id),
+            [
+                ("相册/".to_owned(), vec![]),
+                ("相册/a/".to_owned(), vec![]),
+                ("相册/a/照片.jpg".to_owned(), b"jpeg".to_vec()),
+                ("相册/空/".to_owned(), vec![]),
+            ]
+        );
+        // A finished zip is gone; a failing step gives the zip up.
+        assert!(jobs.take(&id).is_none());
+        assert_eq!(jobs.step(&id, |_| Ok(())).unwrap_err(), "文件夹打包已取消");
+        let bad = jobs.begin("tab".into(), "坏").unwrap();
+        assert!(jobs.step(&bad, |zip| zip.add_file("../x", b"")).is_err());
+        assert!(jobs.take(&bad).is_none());
+        let dropped = jobs.begin("tab".into(), "弃").unwrap();
+        jobs.abort(&dropped);
+        jobs.abort(&dropped);
+
+        // A folder on disk, as pasted.
+        let src = dir.join("源 文件夹");
+        std::fs::create_dir_all(src.join("子")).unwrap();
+        std::fs::write(src.join("子").join("x.txt"), b"x").unwrap();
+        let mut zip = crate::archive::ZipBuilder::create(&jobs.dir, &clipboard::folder_name(&src)).unwrap();
+        zip.add_path(&src).unwrap();
+        let pic = store_zip(&store, zip).unwrap();
+        assert_eq!(pic.name, "源 文件夹.zip");
+        assert_eq!(
+            read(&pic.id),
+            [
+                ("源 文件夹/".to_owned(), vec![]),
+                ("源 文件夹/子/".to_owned(), vec![]),
+                ("源 文件夹/子/x.txt".to_owned(), b"x".to_vec()),
+            ]
+        );
+        // No temporary zip is left behind.
+        assert_eq!(std::fs::read_dir(&jobs.dir).unwrap().count(), 0);
+        drop(store);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

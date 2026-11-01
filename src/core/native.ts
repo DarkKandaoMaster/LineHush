@@ -157,6 +157,49 @@ export const importFile = (tab: string, bytes: ArrayBuffer) =>
     headers: { "x-linehush-tab": tab },
   });
 /**
+ * Starts packing a dropped folder `name` into a zip (store, no compression)
+ * whose top level is `name/`; Rust writes it to a temporary file. Returns the
+ * id the other `zip*` commands take.
+ */
+export const zipBegin = (tab: string, name: string) =>
+  invoke<string>("zip_begin", { tab, name });
+/**
+ * Adds one file of the folder: the bytes are the raw body, its path below the
+ * folder (`/`-separated, without the folder's name) goes URI-encoded in a
+ * header. Rejects with "文件夹过大（上限 256 MB）" past the limit.
+ */
+export const zipAdd = (zipId: string, path: string, bytes: ArrayBuffer) =>
+  invoke<void>("zip_add", bytes, {
+    headers: {
+      "x-linehush-zip": zipId,
+      "x-linehush-path": encodeURIComponent(path),
+    },
+  });
+/** Adds a folder below it (empty or not; not the folder itself) by its plain path. */
+export const zipAddDir = (zipId: string, path: string) =>
+  invoke<void>("zip_add_dir", { zipId, path });
+/**
+ * Closes the zip and stores it in the tab's document as an attached file; as
+ * with `importFile` the picture is `kind: "file"` with its `size` and an empty
+ * name (`<folder name>.zip`, given by the page).
+ */
+export const zipFinish = (zipId: string) =>
+  invoke<Picture>("zip_finish", { zipId });
+/** Drops an unfinished zip (a file could not be read or sent). */
+export const zipAbort = (zipId: string) => invoke<void>("zip_abort", { zipId });
+/**
+ * The folders among the files on the system clipboard (CF_HDROP), in its
+ * order; a paste only shows the page files, maybe a folder as an empty one.
+ */
+export const clipboardFolders = () =>
+  invoke<{ name: string; path: string }[]>("clipboard_folders");
+/**
+ * Packs the folder at `path` (from `clipboardFolders`) into a zip and stores
+ * it like `zipFinish`; Rust reads it from disk itself.
+ */
+export const importFolder = (tab: string, path: string) =>
+  invoke<Picture>("import_folder", { tab, path });
+/**
  * Opens an attached file of the tab's document with the program Windows
  * associates with `name`; rejects with the reason in Chinese. Not `open_file`,
  * which opens a document in a tab.

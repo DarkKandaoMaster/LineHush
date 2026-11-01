@@ -1,16 +1,33 @@
 import { useCallback, useMemo, type RefObject } from "react";
 import type { Block, Picture } from "../core/document";
 import {
+  clipboardFolders,
   copiedImages,
   copyImages,
   importFile,
+  importFolder,
   importImage,
   importMedia,
   mediaPoster,
   pasteImages,
   stageImages,
+  zipAbort,
+  zipAdd,
+  zipAddDir,
+  zipBegin,
+  zipFinish,
 } from "../core/native";
 import { isImageFile, isMediaFile, probeMedia } from "../core/media-probe";
+import {
+  checkFolderSize,
+  folderSize,
+  isFolderItem,
+  readBytes,
+  withoutFolderStubs,
+  zipName,
+  type FolderItem,
+  type ImportItem,
+} from "../core/folder";
 import { blockPictures, withoutPictures } from "../editor/image-view";
 import type { Session } from "../core/session";
 import type { DiaryEditorHandle, EditorImages } from "../editor/DiaryEditor";
@@ -26,7 +43,9 @@ type Insertion = ReturnType<DiaryEditorHandle["reserveInsertion"]>;
  *   still LineHush's last copy are not imported but used as they are. Videos
  *   and recordings are read in the page first (`probeMedia`: length, frame
  *   size, a video's cover frame), which turns away what WebView2 cannot play;
- *   anything neither an image nor media goes in as a file, unchanged;
+ *   anything neither an image nor media goes in as a file, unchanged; a
+ *   folder (dropped, or found by Rust on the clipboard of a paste) goes in as
+ *   one file, `<folder name>.zip`, which Rust packs (`importFolderItem`);
  * - `pasteBlocks` pastes images with text lines copied in LineHush, also from
  *   another document, once Rust has made those images available here;
  * - `copy` puts selected images on the system clipboard, `stage` keeps copies
@@ -69,10 +88,12 @@ export function useImageImport(
     [session, editor],
   );
   const importFiles = useCallback(
-    (files: File[], fromClipboard = false) => {
-      if (!files.length) return;
+    (items: ImportItem[], fromClipboard = false) => {
+      // A paste without files may still hold folders (asked of Rust below).
+      if (!items.length && !fromClipboard) return;
       let current = "";
-      let image = false;
+      // What the failing item is ("图片", "文件夹" or "" for anything else).
+      let what = "";
       const images: Picture[] = [];
       // Which images start a new row; only a paste of copied rows has any.
       const rows: boolean[] = [];
@@ -85,10 +106,31 @@ export function useImageImport(
               rows.push(...copied.rows);
               return;
             }
+            // Copied folders: the page sees them at most as empty files, so
+            // Rust reads them from the clipboard and packs them from disk,
+            // after the files.
+            const folders = await clipboardFolders().catch(() => []);
+            items = [
+              ...withoutFolderStubs(items as File[], folders),
+              ...folders.map(({ name, path }) => ({ folder: name, path })),
+            ];
           }
-          for (const file of files) {
+          for (const item of items) {
+            if (isFolderItem(item)) {
+              current = item.folder;
+              what = "文件夹";
+              const stored = await importFolderItem(session.tab, item);
+              images.push({
+                ...stored,
+                name: zipName(item.folder),
+                kind: "file",
+              });
+              continue;
+            }
+            const file = item;
             current = file.name;
-            image = isImageFile(file);
+            const image = isImageFile(file);
+            what = image ? "图片" : "";
             let pic: Picture;
             if (image) pic = await importImage(session.tab, await file.arrayBuffer());
             else if (isMediaFile(file)) {
@@ -127,7 +169,6 @@ export function useImageImport(
         // which file.
         (e) => {
           const reason = e instanceof Error ? e.message : String(e);
-          const what = image ? "图片" : "";
           return current
             ? `无法插入${what}“${current}”：${reason}`
             : `无法插入${what}：${reason}`;
@@ -138,13 +179,6 @@ export function useImageImport(
       );
     },
     [locked, session],
-  );
-  const rejectFolders = useCallback(
-    (names: string[]) =>
-      session.setError(
-        `无法插入文件夹${names.map((name) => `“${name}”`).join("、")}`,
-      ),
-    [session],
   );
   const pasteBlocks = useCallback(
     (blocks: Block[]) => {
@@ -185,7 +219,29 @@ export function useImageImport(
     [session],
   );
   return useMemo(
-    () => ({ importFiles, rejectFolders, pasteBlocks, copy, stage }),
-    [importFiles, rejectFolders, pasteBlocks, copy, stage],
+    () => ({ importFiles, pasteBlocks, copy, stage }),
+    [importFiles, pasteBlocks, copy, stage],
   );
+}
+
+/**
+ * Packs a folder into `<name>.zip` in the tab's document: a pasted one Rust
+ * reads from disk; a dropped one is listed here, checked against the size
+ * limit before anything is sent, and sent to Rust one file at a time (only one
+ * file's bytes in memory at once). A failure drops the unfinished zip.
+ */
+async function importFolderItem(tab: string, item: FolderItem): Promise<Picture> {
+  if ("path" in item) return importFolder(tab, item.path);
+  const folder = await item.read();
+  checkFolderSize(folder);
+  const zip = await zipBegin(tab, item.folder);
+  try {
+    for (const dir of folder.dirs) await zipAddDir(zip, dir);
+    for (const file of folder.files) await zipAdd(zip, file.path, await readBytes(file));
+    const stored = await zipFinish(zip);
+    return { ...stored, size: stored.size ?? folderSize(folder) };
+  } catch (e) {
+    await zipAbort(zip).catch(() => {});
+    throw e;
+  }
 }
