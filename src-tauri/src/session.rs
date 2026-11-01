@@ -249,7 +249,8 @@ impl Session {
     pub fn focused(&self) -> Option<&str> {
         self.data.focused.as_deref()
     }
-    /// 记下 `file`（刚打开或另存为的文件）所在的文件夹；有变化时返回 true。
+    /// 记下 `file`（刚另存为 / 保存无标题笔记写到的文件）所在的文件夹；有变化时返回 true。
+    /// 打开文件不调用（2026-11-01）。
     pub fn set_last_dir(&mut self, file: &Path) -> bool {
         let Some(dir) = file.parent().filter(|dir| !dir.as_os_str().is_empty()) else {
             return false;
@@ -261,7 +262,7 @@ impl Session {
         self.data.last_dir = Some(dir);
         true
     }
-    /// 最近打开或另存为的文件所在的文件夹（可能已不存在）。
+    /// 最近一次另存为 / 保存无标题笔记时用户选的文件夹（可能已不存在）。
     pub fn last_dir(&self) -> Option<&Path> {
         self.data.last_dir.as_deref()
     }

@@ -577,10 +577,6 @@ async fn open_file(
                 reveal(&app, &owner);
                 let _ = app.emit_to(owner.as_str(), ACTIVATE_TAB, ActivateTab { tab: tab.clone() });
             }
-            let mut session = lock(&state.session);
-            if session.set_last_dir(&path) {
-                save_session(&session);
-            }
             return Ok(OpenOutcome::Existing { window: owner, tab });
         }
         let opened = match replace {
@@ -590,7 +586,6 @@ async fn open_file(
                 // recovery after a crash, so it is not reported as a failed open.
                 let mut session = lock(&state.session);
                 session.set_path(&id, opened.path.clone());
-                session.set_last_dir(&path);
                 save_session(&session);
                 TabOpened {
                     tab: id,
@@ -601,8 +596,6 @@ async fn open_file(
             None => {
                 let (id, work) = new_tab_id(&state);
                 let (store, opened) = Store::open_new(work, &path)?;
-                // Written together with the new tab by `add_tab`.
-                lock(&state.session).set_last_dir(&path);
                 let entry = TabEntry {
                     id: id.clone(),
                     path: opened.path.clone(),
@@ -633,7 +626,6 @@ fn adopt_tab(
     session.move_tab(&tab, label, after);
     session.set_path(&tab, opened.path.clone());
     session.set_active(label, &tab);
-    session.set_last_dir(path);
     save_session(&session);
     Ok(TabOpened { tab, opened, error })
 }
@@ -731,8 +723,9 @@ async fn save_as(tab: String, path: PathBuf, document: Diary, app: AppHandle) ->
     .await
 }
 /// 无标题笔记保存对话框的默认路径：`<文件夹>\<base>.hush`，名字已被占用时照资源管理器
-/// 改为 `<base> (2).hush`、`<base> (3).hush`…（`fsx::unique_path`）。文件夹是最近打开或
-/// 另存为的文件所在的文件夹；没有记录或它已不存在时为“文档”，连它也取不到时只给文件名。
+/// 改为 `<base> (2).hush`、`<base> (3).hush`…（`fsx::unique_path`）。文件夹是用户最近一次
+/// 另存为 / 保存无标题笔记时选的文件夹（打开文件不改它，2026-11-01）；没有记录或它已不存在时
+/// 为“文档”，连它也取不到时只给文件名。
 #[tauri::command]
 async fn suggest_save_path(base: String, app: AppHandle) -> String {
     let name = format!("{base}.{}", store::EXTENSION);
