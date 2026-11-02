@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { calls, content, editorOf, load } from "./helpers";
+import { calls, content, delay, editorOf, importBanners, load, watchImportBanner } from "./helpers";
 
 // ---- Folders (2026-11-01): a dropped or pasted folder goes in as one attached file, `<name>.zip`. ----
 
@@ -162,6 +162,42 @@ test("拖进文件夹：逐目录 / 逐文件交给 Rust 打包，与普通文�
   expect(errors).toEqual([]);
 });
 
+test("拖进文件夹：横幅从开始就显示“名字.zip”与按已打包字节算的百分比，结束后消失", async ({ page }) => {
+  const errors = await load(page);
+  // Slow enough for every file to show.
+  await delay(page, "zip_add", 200);
+  await watchImportBanner(page);
+  await drop(page, [
+    {
+      folder: {
+        name: "相册",
+        children: [
+          { name: "a.jpg", size: 1000 },
+          { name: "b.jpg", size: 3000 },
+          { name: "子", children: [{ name: "c.jpg", size: 500 }] },
+          { name: "d.jpg", size: 500 },
+        ],
+      },
+    },
+  ]);
+  await expect(chipNames(page)).toHaveText(["相册.zip"]);
+  await expect(page.locator(".import-banner")).toHaveCount(0);
+  const seen = await importBanners(page);
+  expect(seen.at(-1)!.text).toBeNull();
+  const shown = seen.slice(0, -1);
+  // While the folder is listed: its name only, no bar.
+  expect(shown[0]).toMatchObject({ text: "正在插入“相册.zip”…", width: null });
+  // Then a single item, no “n / m”: percent of the 5000 bytes zipped, the bar as wide.
+  const percents = shown.slice(1).map(({ text, width }) => {
+    const match = /^正在插入“相册\.zip”… (\d+)%$/.exec(text ?? "");
+    expect(match, text ?? "（隐藏）").not.toBeNull();
+    expect(width).toBe(`${match![1]}%`);
+    return Number(match![1]);
+  });
+  expect(percents).toEqual([0, 20, 80, 90, 100]);
+  expect(errors).toEqual([]);
+});
+
 test("拖进超过 256 MB 的文件夹：打包前按大小之和拒绝，不调 zip_begin", async ({ page }) => {
   const errors = await load(page);
   await drop(page, [
@@ -195,11 +231,18 @@ test("粘贴文件夹：剪贴板文件夹交给 import_folder，剔掉同名 0 
 }) => {
   const errors = await load(page);
   await setClipboardFolders(page, [{ name: "资料", path: "D:\\x\\资料" }]);
+  await delay(page, "import_folder", 200);
+  await watchImportBanner(page);
   await paste(page, [
     ["资料", 0, ""],
     ["a.txt", 10, "text/plain"],
   ]);
   await expect(chipNames(page)).toHaveText(["a.txt", "资料.zip"]);
+  // The banner counts the folder as one item, named as the zip; Rust packs it in one go: no percent.
+  await expect(page.locator(".import-banner")).toHaveCount(0);
+  const seen = await importBanners(page);
+  expect(seen).toContainEqual(expect.objectContaining({ text: "正在插入 2 / 2：“资料.zip”…", width: null }));
+  expect(seen.at(-1)!.text).toBeNull();
   await expect(editorOf(page).locator(".file-chip .file-size")).toHaveText(["10 B", "4 KB"]);
   expect(await calls(page, "import_file")).toEqual([{ size: 10, headers: { "x-linehush-tab": "t1" } }]);
   expect(await calls(page, "import_folder")).toEqual([{ tab: "t1", path: "D:\\x\\资料" }]);

@@ -5,12 +5,18 @@ import {
   copiedImages,
   copyImages,
   importFile,
+  importFileUpload,
   importFolder,
   importImage,
+  importImageUpload,
   importMedia,
+  importMediaUpload,
   mediaPoster,
   pasteImages,
   stageImages,
+  uploadAbort,
+  uploadBegin,
+  uploadChunk,
   zipAbort,
   zipAdd,
   zipAddDir,
@@ -28,6 +34,16 @@ import {
   type FolderItem,
   type ImportItem,
 } from "../core/folder";
+import {
+  checkFileSize,
+  chunkRanges,
+  folderPercent,
+  isChunked,
+  sameProgress,
+  showsProgress,
+  uploadPercent,
+  type ImportProgress,
+} from "../core/upload";
 import { blockPictures, withoutPictures } from "../editor/image-view";
 import type { Session } from "../core/session";
 import type { DiaryEditorHandle, EditorImages } from "../editor/DiaryEditor";
@@ -45,7 +61,11 @@ type Insertion = ReturnType<DiaryEditorHandle["reserveInsertion"]>;
  *   size, a video's cover frame), which turns away what WebView2 cannot play;
  *   anything neither an image nor media goes in as a file, unchanged; a
  *   folder (dropped, or found by Rust on the clipboard of a paste) goes in as
- *   one file, `<folder name>.zip`, which Rust packs (`importFolderItem`);
+ *   one file, `<folder name>.zip`, which Rust packs (`importFolderItem`).
+ *   A file over 256 MB is turned away before anything is sent; one larger
+ *   than `CHUNK_BYTES` is sent in pieces (`sendFile`). A batch holding such
+ *   a file or a folder shows the import banner from its start to its end
+ *   (`batchProgress`);
  * - `pasteBlocks` pastes images with text lines copied in LineHush, also from
  *   another document, once Rust has made those images available here;
  * - `copy` puts selected images on the system clipboard, `stage` keeps copies
@@ -99,70 +119,11 @@ export function useImageImport(
       const rows: boolean[] = [];
       return locked(
         async () => {
-          if (fromClipboard) {
-            const copied = await copiedImages(session.tab);
-            if (copied) {
-              images.push(...copied.pictures);
-              rows.push(...copied.rows);
-              return;
-            }
-            // Copied folders: the page sees them at most as empty files, so
-            // Rust reads them from the clipboard and packs them from disk,
-            // after the files.
-            const folders = await clipboardFolders().catch(() => []);
-            items = [
-              ...withoutFolderStubs(items as File[], folders),
-              ...folders.map(({ name, path }) => ({ folder: name, path })),
-            ];
-          }
-          for (const item of items) {
-            if (isFolderItem(item)) {
-              current = item.folder;
-              what = "文件夹";
-              const stored = await importFolderItem(session.tab, item);
-              images.push({
-                ...stored,
-                name: zipName(item.folder),
-                kind: "file",
-              });
-              continue;
-            }
-            const file = item;
-            current = file.name;
-            const image = isImageFile(file);
-            what = image ? "图片" : "";
-            let pic: Picture;
-            if (image) pic = await importImage(session.tab, await file.arrayBuffer());
-            else if (isMediaFile(file)) {
-              const probe = await probeMedia(file);
-              const { poster, ...meta } = probe;
-              const stored = await importMedia(
-                session.tab,
-                await file.arrayBuffer(),
-                meta,
-              );
-              pic = {
-                ...stored,
-                kind: stored.kind ?? meta.kind,
-                duration: stored.duration ?? meta.duration,
-              };
-              // Before the node is made, which reads it as the thumbnail.
-              if (poster)
-                await mediaPoster(session.tab, pic.id, await poster.arrayBuffer());
-            } else {
-              const stored = await importFile(session.tab, await file.arrayBuffer());
-              pic = {
-                ...stored,
-                kind: "file",
-                size: stored.size ?? file.size,
-              };
-            }
-            // A file a LineHush copy left (e.g. from an earlier session) keeps
-            // its original name.
-            const staged = STAGED.exec(file.name);
-            const name =
-              staged && pic.id.startsWith(staged[1]) ? staged[2] : file.name;
-            images.push({ ...pic, name });
+          const progress = batchProgress(session);
+          try {
+            await importAll(progress);
+          } finally {
+            progress.end();
           }
         },
         // Rust (or the probe) says why (format, damage, size); the name says
@@ -177,6 +138,94 @@ export function useImageImport(
         (insertion) =>
           images.length ? insertion.insert(images, rows) : insertion.cancel(),
       );
+      async function importAll(progress: BatchProgress) {
+        if (fromClipboard) {
+          const copied = await copiedImages(session.tab);
+          if (copied) {
+            images.push(...copied.pictures);
+            rows.push(...copied.rows);
+            return;
+          }
+          // Copied folders: the page sees them at most as empty files, so
+          // Rust reads them from the clipboard and packs them from disk,
+          // after the files.
+          const folders = await clipboardFolders().catch(() => []);
+          items = [
+            ...withoutFolderStubs(items as File[], folders),
+            ...folders.map(({ name, path }) => ({ folder: name, path })),
+          ];
+        }
+        // Known only now (a paste may add folders): small files alone show nothing.
+        progress.start(showsProgress(items));
+        for (const [i, item] of items.entries()) {
+          // The banner names a folder by the file it becomes.
+          progress.item(isFolderItem(item) ? zipName(item.folder) : item.name, i + 1, items.length);
+          if (isFolderItem(item)) {
+            current = item.folder;
+            what = "文件夹";
+            const stored = await importFolderItem(session.tab, item, progress.percent);
+            images.push({
+              ...stored,
+              name: zipName(item.folder),
+              kind: "file",
+            });
+            continue;
+          }
+          const file = item;
+          current = file.name;
+          const image = isImageFile(file);
+          what = image ? "图片" : "";
+          checkFileSize(file.size);
+          /** Sends the file whole, or in pieces when large (see `sendFile`). */
+          const send = (
+            whole: (bytes: ArrayBuffer) => Promise<Picture>,
+            uploaded: (upload: string) => Promise<Picture>,
+          ) =>
+            isChunked(file.size)
+              ? sendFile(session.tab, file, progress.percent, uploaded)
+              : file.arrayBuffer().then(whole);
+          const tab = session.tab;
+          let pic: Picture;
+          if (image)
+            pic = await send(
+              (bytes) => importImage(tab, bytes),
+              (upload) => importImageUpload(tab, upload),
+            );
+          else if (isMediaFile(file)) {
+            // Reads the file through a blob URL, not into memory.
+            const probe = await probeMedia(file);
+            const { poster, ...meta } = probe;
+            const stored = await send(
+              (bytes) => importMedia(tab, bytes, meta),
+              (upload) => importMediaUpload(tab, upload, meta),
+            );
+            pic = {
+              ...stored,
+              kind: stored.kind ?? meta.kind,
+              duration: stored.duration ?? meta.duration,
+            };
+            // Before the node is made, which reads it as the thumbnail.
+            if (poster)
+              await mediaPoster(session.tab, pic.id, await poster.arrayBuffer());
+          } else {
+            const stored = await send(
+              (bytes) => importFile(tab, bytes),
+              (upload) => importFileUpload(tab, upload),
+            );
+            pic = {
+              ...stored,
+              kind: "file",
+              size: stored.size ?? file.size,
+            };
+          }
+          // A file a LineHush copy left (e.g. from an earlier session) keeps
+          // its original name.
+          const staged = STAGED.exec(file.name);
+          const name =
+            staged && pic.id.startsWith(staged[1]) ? staged[2] : file.name;
+          images.push({ ...pic, name });
+        }
+      }
     },
     [locked, session],
   );
@@ -224,20 +273,107 @@ export function useImageImport(
   );
 }
 
+interface BatchProgress {
+  /** The items are known: whether the banner shows (see `showsProgress`). */
+  start(shown: boolean): void;
+  /** Item `index` of `total` (from 1), named `name`, starts; it has no percent yet. */
+  item(name: string, index: number, total: number): void;
+  /** How far the current item has got. */
+  percent(percent: number): void;
+  /** The batch is over (done or failed): the banner goes. */
+  end(): void;
+}
+
+/**
+ * The import banner of one batch (2026-11-03): when the batch holds a file
+ * sent in pieces or a folder (`showsProgress`) it shows the current item from
+ * the first one on, small files too, until `end`; otherwise the session is
+ * left alone. The session changes only
+ * when what the banner shows does.
+ */
+function batchProgress(session: Session): BatchProgress {
+  let state: ImportProgress | null = null;
+  let shown = false;
+  const publish = () => {
+    const next = shown ? state : null;
+    if (!sameProgress(session.getSnapshot().importProgress, next))
+      session.setImportProgress(next);
+  };
+  return {
+    start(show) {
+      shown = show;
+    },
+    item(name, index, total) {
+      state = { name, index, total, percent: null };
+      publish();
+    },
+    percent(percent) {
+      if (!state) return;
+      state = { ...state, percent };
+      publish();
+    },
+    end() {
+      state = null;
+      publish();
+    },
+  };
+}
+
+/**
+ * Sends a file larger than one piece to Rust piece by piece (only one piece in
+ * memory at once), telling `progress` the percent sent (100 while Rust stores
+ * it), then has `store` import it. A failure drops the unfinished upload.
+ */
+async function sendFile(
+  tab: string,
+  file: File,
+  progress: (percent: number) => void,
+  store: (upload: string) => Promise<Picture>,
+): Promise<Picture> {
+  progress(0);
+  const upload = await uploadBegin(tab);
+  try {
+    for (const [start, end] of chunkRanges(file.size)) {
+      await uploadChunk(upload, await file.slice(start, end).arrayBuffer());
+      progress(uploadPercent(end, file.size));
+    }
+    return await store(upload);
+  } catch (e) {
+    await uploadAbort(upload).catch(() => {});
+    throw e;
+  }
+}
+
 /**
  * Packs a folder into `<name>.zip` in the tab's document: a pasted one Rust
- * reads from disk; a dropped one is listed here, checked against the size
- * limit before anything is sent, and sent to Rust one file at a time (only one
- * file's bytes in memory at once). A failure drops the unfinished zip.
+ * reads from disk (no percent); a dropped one is listed here, checked against
+ * the size limit before anything is sent, and sent to Rust one file at a time
+ * (only one file's bytes in memory at once), telling `progress` the percent of
+ * its bytes sent (`folderPercent`). A failure drops the unfinished zip.
  */
-async function importFolderItem(tab: string, item: FolderItem): Promise<Picture> {
+async function importFolderItem(
+  tab: string,
+  item: FolderItem,
+  progress: (percent: number) => void,
+): Promise<Picture> {
   if ("path" in item) return importFolder(tab, item.path);
   const folder = await item.read();
   checkFolderSize(folder);
+  const totalBytes = folderSize(folder);
+  const totalFiles = folder.files.length;
+  let doneBytes = 0;
+  let doneFiles = 0;
+  const report = () => progress(folderPercent(doneBytes, totalBytes, doneFiles, totalFiles));
+  report();
   const zip = await zipBegin(tab, item.folder);
   try {
     for (const dir of folder.dirs) await zipAddDir(zip, dir);
-    for (const file of folder.files) await zipAdd(zip, file.path, await readBytes(file));
+    for (const file of folder.files) {
+      await zipAdd(zip, file.path, await readBytes(file));
+      doneBytes += file.file.size;
+      doneFiles += 1;
+      report();
+    }
     const stored = await zipFinish(zip);
     return { ...stored, size: stored.size ?? folderSize(folder) };
   } catch (e) {

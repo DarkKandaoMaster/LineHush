@@ -277,15 +277,19 @@ impl Store {
     pub fn add_file(&mut self, bytes: &[u8]) -> Result<Picture> {
         let id = images::hash(bytes);
         self.add_image(&id, bytes, None)?;
-        Ok(Picture {
-            id,
-            name: String::new(),
-            width: 0,
-            height: 0,
-            kind: MediaKind::File,
-            duration: None,
-            size: Some(bytes.len() as u64),
-        })
+        Ok(file_picture(id, bytes.len() as u64))
+    }
+    /// Stores an original waiting in the file at `source` (an upload of `len` bytes
+    /// whose SHA-256 is `id`, see upload.rs) in the working copy, like `add_image`
+    /// but read from the file a piece at a time (a video or attached file of up to
+    /// 256 MB is never held in memory whole).
+    pub fn add_image_from(&mut self, id: &str, source: &Path, len: u64) -> Result<()> {
+        self.work()?.insert_image_from(id, source, len)
+    }
+    /// `add_file` for an upload (see `add_image_from`).
+    pub fn add_file_from(&mut self, id: &str, source: &Path, len: u64) -> Result<Picture> {
+        self.add_image_from(id, source, len)?;
+        Ok(file_picture(id.to_owned(), len))
     }
     /// Stores the cover of video `id` in the working copy, so it is saved with
     /// this document, and shows it as the video's thumbnail from now on.
@@ -390,6 +394,18 @@ impl Store {
             }
         }
         fs::write(path, content).map_err(|e| format!("无法写入 {}：{}", shown(path), describe(e)))
+    }
+}
+/// The body's entry for an attached file: no name yet (the caller adds it), 0 × 0, its size.
+fn file_picture(id: String, size: u64) -> Picture {
+    Picture {
+        id,
+        name: String::new(),
+        width: 0,
+        height: 0,
+        kind: MediaKind::File,
+        duration: None,
+        size: Some(size),
     }
 }
 pub fn remove_if_exists(path: &Path) -> Result<()> {

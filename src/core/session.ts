@@ -11,6 +11,7 @@ import {
 import * as native from "./native.ts";
 import type { Opened } from "./native.ts";
 import { SaveQueue } from "./save-queue.ts";
+import type { ImportProgress } from "./upload.ts";
 import {
   cssFontFamily,
   type DefaultFileName,
@@ -36,6 +37,12 @@ export interface SessionState {
    */
   locked: boolean;
   importing: boolean;
+  /**
+   * The import banner: what a batch of imports is inserting, from its first
+   * item until it ends, when the batch holds a file sent in pieces or a
+   * folder (`showsProgress`); null otherwise.
+   */
+  importProgress: ImportProgress | null;
   /** Changed since the last save to the user's file (stashing does not count). */
   dirty: boolean;
   error: string;
@@ -67,6 +74,7 @@ export function createSession(
     busy: false,
     locked: false,
     importing: false,
+    importProgress: null,
     dirty: false,
     error: "",
     notice: "",
@@ -328,6 +336,8 @@ export function createSession(
     setError: (error: string) => set({ error }),
     setNotice: (notice: string) => set({ notice }),
     setImporting: (importing: boolean) => set({ importing }),
+    setImportProgress: (importProgress: ImportProgress | null) =>
+      set({ importProgress }),
     update,
     /** Stashes pending edits to the working copy now instead of after the debounce. */
     flush,

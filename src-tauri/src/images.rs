@@ -76,10 +76,28 @@ fn describe(e: ImageError) -> String {
 
 /// Lowercase hex SHA-256: the image's id inside a document.
 pub fn hash(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hex(&Sha256::digest(bytes))
+}
+/// A digest as lowercase hex (an id computed piece by piece, see upload.rs).
+pub fn hex(digest: &[u8]) -> String {
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+/// `hash` of the file at `path` and its length, read a piece at a time (a zip of
+/// up to 256 MB is never held in memory whole).
+pub fn hash_file(path: &std::path::Path) -> std::io::Result<(String, u64)> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0; 1 << 20];
+    let mut len = 0;
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            return Ok((hex(&hasher.finalize()), len));
+        }
+        hasher.update(&buf[..n]);
+        len += n as u64;
+    }
 }
 fn decode(bytes: &[u8]) -> Result<DynamicImage> {
     let format = image::guess_format(bytes).map_err(|_| UNSUPPORTED)?;

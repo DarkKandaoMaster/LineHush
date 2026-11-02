@@ -76,6 +76,15 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       zipCount: 0,
       /** zip_finish / import_folder 交出的 zip 个数（id 为 63 个 d 加序号）。 */
       folders: 0,
+      /** upload_begin 开过、尚未取走的分块上传（id 为 upload1、upload2…）：所属标签页与已收到的字节数。 */
+      uploads: {} as Record<string, { tab: string; size: number }>,
+      uploadCount: 0,
+      /** 测试放进来：第几次 upload_chunk（从 1 数）以此原因失败。 */
+      failChunk: null as { at: number; reason: string } | null,
+      /** import_image / import_image_upload 交出的图片个数（id 为 image1、image2…）。 */
+      uploadedImages: 0,
+      /** 测试放进来：这些命令每次调用先等这么多毫秒（模拟慢的导入，让导入慢到能看见进度横幅的每一步）。 */
+      delays: {} as Record<string, number>,
       /** clipboard_folders 交出的剪贴板文件夹（测试放进来）。 */
       clipboardFolders: [] as { name: string; path: string }[],
       /** plugin:dialog|save 交出的路径（测试放进来）；null 为用户取消。 */
@@ -100,6 +109,23 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
         state.callbacks.get(id)?.({ event, id, payload });
     };
     state.emit = emit;
+    // 导入替身交回的 Picture（名字为空），整块导入与分块导入共用。
+    const storedMedia = (meta: { kind: string; width: number; height: number; duration: number }) => ({
+      id: `media${++state.media}`,
+      name: "",
+      width: meta.width,
+      height: meta.height,
+      kind: meta.kind,
+      duration: meta.duration,
+    });
+    const storedFile = (size: number) => ({
+      id: `${"f".repeat(63)}${++state.files}`,
+      name: "",
+      width: 0,
+      height: 0,
+      kind: "file",
+      size,
+    });
     w.isTauri = true;
     w.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
     w.__TAURI_INTERNALS__ = {
@@ -114,35 +140,67 @@ export async function mockDesktop(page: Page, options: DesktopOptions = {}) {
       },
       unregisterCallback: (id: number) => state.callbacks.delete(id),
       invoke: async (cmd: string, args: any, invokeOptions?: { headers?: HeadersInit }) => {
-        // Raw-body commands (import_image, import_media, media_poster, import_file, zip_add) are
-        // recorded by their size and headers.
+        // Raw-body commands (import_image, import_media, media_poster, import_file, zip_add,
+        // upload_chunk) are recorded by their size and headers.
         const raw = args instanceof ArrayBuffer;
         const headers = Object.fromEntries(new Headers(invokeOptions?.headers ?? {}));
         state.calls.push({ cmd, args: raw ? { size: args.byteLength, headers } : args });
+        if (state.delays[cmd]) await new Promise((done) => setTimeout(done, state.delays[cmd]));
         switch (cmd) {
           // 照 Rust：只存字节、不解码，按 header 交回 Picture（名字为空）。
           case "import_media":
-            return {
-              id: `media${++state.media}`,
-              name: "",
+            return storedMedia({
+              kind: headers["x-linehush-kind"],
               width: Number(headers["x-linehush-width"]),
               height: Number(headers["x-linehush-height"]),
-              kind: headers["x-linehush-kind"],
               duration: Number(headers["x-linehush-duration"]),
-            };
+            });
+          // 照 Rust：交回 Picture（名字为空）；替身不解码，宽高固定。
+          case "import_image":
+            return { id: `image${++state.uploadedImages}`, name: "", width: 400, height: 300 };
           case "media_poster":
             state.posters.push(headers["x-linehush-id"]);
             return;
           // 照 Rust：原样存任意文件，按字节数交回 size（名字为空）。
           case "import_file":
-            return {
-              id: `${"f".repeat(63)}${++state.files}`,
-              name: "",
-              width: 0,
-              height: 0,
-              kind: "file",
-              size: args.byteLength,
-            };
+            return storedFile(args.byteLength);
+          // 照 Rust（upload.rs）：大文件分块送来，按 x-linehush-upload 认上传、累加字节数；累计超过
+          // 256 MB 或写入失败即放弃这次上传。import_*_upload 取走它，按拼好的整个文件照整块导入交回。
+          case "upload_begin": {
+            const id = `upload${++state.uploadCount}`;
+            state.uploads[id] = { tab: args.tab, size: 0 };
+            return id;
+          }
+          case "upload_chunk": {
+            const id = headers["x-linehush-upload"];
+            const upload = state.uploads[id];
+            if (!upload) throw "文件传输已取消";
+            const fail = state.failChunk;
+            if (fail && state.calls.filter((c) => c.cmd === cmd).length === fail.at) {
+              delete state.uploads[id];
+              throw fail.reason;
+            }
+            upload.size += args.byteLength;
+            if (upload.size > 256 * 1024 * 1024) {
+              delete state.uploads[id];
+              throw "文件过大（上限 256 MB）";
+            }
+            return;
+          }
+          case "upload_abort":
+            delete state.uploads[args.id];
+            return;
+          case "import_image_upload":
+          case "import_media_upload":
+          case "import_file_upload": {
+            const upload = state.uploads[args.upload];
+            delete state.uploads[args.upload];
+            if (!upload) throw "文件传输已取消";
+            if (upload.tab !== args.tab) throw "文件传输不属于这个标签页";
+            if (cmd === "import_file_upload") return storedFile(upload.size);
+            if (cmd === "import_media_upload") return storedMedia(args);
+            return { id: `image${++state.uploadedImages}`, name: "", width: 400, height: 300 };
+          }
           // 照 Rust：文件夹逐个文件打包成 zip（store），结束时作为附件交回（名字为空）；
           // 相对路径里带“坏”的文件写不进去，超过 256 MB 报文件夹过大。
           case "zip_begin": {
@@ -298,6 +356,37 @@ export const calls = (page: Page, cmd: string) =>
     cmd,
   );
 /** Rust 发现了新版本：take_update 交出 `info` 一次，并发 update-available。 */
+/** What the import banner showed: its text and bar width (null without one), or null when gone; `at` ms after `watchImportBanner`. */
+export type BannerState = { text: string | null; width: string | null; at: number };
+/**
+ * Records every change of the import banner in `window.importBanners` from now
+ * on (read them with `importBanners`).
+ */
+export const watchImportBanner = (page: Page) =>
+  page.evaluate(() => {
+    const start = performance.now();
+    const seen: { text: string | null; width: string | null; at: number }[] = ((window as any).importBanners = []);
+    const record = () => {
+      const banner = document.querySelector(".import-banner");
+      const text = banner?.querySelector("span")?.textContent ?? null;
+      const width = banner?.querySelector<HTMLElement>(".import-progress > div")?.style.width ?? null;
+      const last = seen.at(-1);
+      if (last ? last.text !== text || last.width !== width : text !== null)
+        seen.push({ text, width, at: performance.now() - start });
+    };
+    new MutationObserver(record).observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    });
+  });
+export const importBanners = (page: Page): Promise<BannerState[]> =>
+  page.evaluate(() => (window as any).importBanners);
+/** Has `cmd` wait `ms` milliseconds on every call (a slow import). */
+export const delay = (page: Page, cmd: string, ms: number) =>
+  page.evaluate(([cmd, ms]) => ((window as any).testNative.delays[cmd] = ms), [cmd, ms] as const);
+
 export const announceUpdate = (
   page: Page,
   info = { version: "0.9.0", current: "0.8.0", notes: "", date: null as string | null },

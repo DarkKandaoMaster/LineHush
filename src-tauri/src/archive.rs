@@ -2,8 +2,9 @@
 //! 照 Windows“发送到 → 压缩文件夹”，zip 顶层就是文件夹本身（条目名 `<文件夹名>/...`），
 //! 只存不压（store），条目名为 UTF-8（zip crate 对非 ASCII 名字自动写 UTF-8 标志）。
 //!
-//! 先流式写到数据目录 `zip\` 里的临时文件 `<id>.zip.tmp`，打完再由 lib.rs 读回、哈希入 Store
-//! 并清掉临时文件；内存峰值只有单个文件（拖放时前端逐个送来的字节）。中途放弃或出错时
+//! 先流式写到数据目录 `zip\` 里的临时文件 `<id>.zip.tmp`，打完再由 lib.rs 从它流式算哈希、
+//! 分块写入 Store（`add_file_from`，不整个读进内存）并清掉临时文件；内存峰值只有单个文件
+//! （拖放时前端逐个送来的字节）。中途放弃或出错时
 //! 临时文件随 `ZipBuilder` 一起清掉；程序意外退出留下的在下次启动时清（lib.rs `sweep_staged`）。
 //! 打包的上限同附件：原始字节之和不超过 256 MB（`images::check_file_size`）。
 use crate::{errors::describe, images, model::Result};

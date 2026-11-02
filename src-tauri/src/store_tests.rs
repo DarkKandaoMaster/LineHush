@@ -1085,3 +1085,128 @@ fn attached_files_are_kept_byte_for_byte_with_their_size() {
     drop(store);
     fs::remove_dir_all(root).unwrap();
 }
+
+/// The `upload_*` and `import_*_upload` commands without the IPC: a file sent in
+/// pieces lands in the working copy byte for byte under its SHA-256, read from
+/// the temporary file (which is gone afterwards); an original already stored is
+/// not written again.
+#[test]
+fn chunked_uploads_are_stored_from_their_temporary_file() {
+    use crate::upload::Uploads;
+    let root = temp();
+    let file = root.join("分块.hush");
+    let mut store = session(&root);
+    store.save_as(&file, &diary("")).unwrap();
+    let dir = root.join("upload");
+    let uploads = Uploads::new(dir.clone());
+    let left = || fs::read_dir(&dir).map_or(0, |entries| entries.count());
+
+    // More than one 2 MiB step of the blob copy, sent in three pieces.
+    let bytes = clip(7, 5_000_123);
+    let id = uploads.begin("tab".into()).unwrap();
+    let pieces: Vec<&[u8]> = bytes.chunks(2_000_000).collect();
+    assert_eq!(pieces.len(), 3);
+    for piece in pieces {
+        uploads.append(&id, piece).unwrap();
+    }
+    assert_eq!(fs::read(dir.join(format!("{id}.tmp"))).unwrap(), bytes);
+    let uploaded = uploads.finish(&id, "tab").unwrap();
+    assert_eq!((uploaded.len, uploaded.id.as_str()), (bytes.len() as u64, images::hash(&bytes).as_str()));
+    // import_media_upload
+    store.add_image_from(&uploaded.id, uploaded.path(), uploaded.len).unwrap();
+    let pic = Picture {
+        id: uploaded.id.clone(),
+        name: "片段.mp4".into(),
+        width: 640,
+        height: 360,
+        kind: MediaKind::Video,
+        duration: Some(3.5),
+        size: None,
+    };
+    drop(uploaded);
+    assert_eq!(left(), 0);
+    assert_eq!(store.image(&pic.id).unwrap(), bytes);
+    assert_eq!(store.image_range(&pic.id, 4_999_000, 2000).unwrap().unwrap(), &bytes[4_999_000..]);
+    // The upload is gone once taken.
+    assert_eq!(uploads.append(&id, b"x").unwrap_err(), "文件传输已取消");
+    assert!(uploads.finish(&id, "tab").is_err());
+
+    // The same content sent again (import_file_upload) is stored once.
+    let again = uploads.begin("tab".into()).unwrap();
+    uploads.append(&again, &bytes).unwrap();
+    let uploaded = uploads.finish(&again, "tab").unwrap();
+    let attached = store.add_file_from(&uploaded.id, uploaded.path(), uploaded.len).unwrap();
+    assert_eq!(attached.id, pic.id);
+    assert_eq!((attached.kind, attached.size, attached.width), (MediaKind::File, Some(bytes.len() as u64), 0));
+    assert_eq!(rows(&working(&root), "images"), 1);
+    // An id already stored is not written again, whatever the file holds.
+    let other_bytes = clip(8, bytes.len());
+    let forged = root.join("别的.tmp");
+    fs::write(&forged, &other_bytes).unwrap();
+    store.add_image_from(&pic.id, &forged, other_bytes.len() as u64).unwrap();
+    assert_eq!(store.image(&pic.id).unwrap(), bytes);
+    // A file that is not as long as announced is refused and leaves nothing behind.
+    let short = images::hash(&other_bytes);
+    assert!(store.add_image_from(&short, &forged, other_bytes.len() as u64 + 1).is_err());
+    assert!(!store.has_image(&short).unwrap());
+    drop(uploaded);
+
+    // An empty file.
+    let empty = uploads.begin("tab".into()).unwrap();
+    let uploaded = uploads.finish(&empty, "tab").unwrap();
+    let nothing = store.add_file_from(&uploaded.id, uploaded.path(), uploaded.len).unwrap();
+    assert_eq!((nothing.id.as_str(), nothing.size), (images::hash(b"").as_str(), Some(0)));
+    assert_eq!(store.image(&nothing.id).unwrap(), Vec::<u8>::new());
+    drop(uploaded);
+    assert_eq!(left(), 0);
+
+    // Saved into the file and read back from another session byte for byte.
+    store.save(&with_pictures("视频", &[&pic])).unwrap();
+    let reader = other(&root, &file);
+    assert_eq!(reader.image(&pic.id).unwrap(), bytes);
+    drop(reader);
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+/// Past 256 MB, on `upload_abort` and when its tab closes an upload is given up
+/// and its temporary file removed.
+#[test]
+fn uploads_over_the_limit_or_given_up_leave_no_temporary_file() {
+    use crate::upload::Uploads;
+    let root = temp();
+    let dir = root.join("upload");
+    let uploads = Uploads::new(dir.clone());
+    let left = || fs::read_dir(&dir).map_or(0, |entries| entries.count());
+
+    let big = uploads.begin("tab".into()).unwrap();
+    uploads.append(&big, &[1; 1000]).unwrap();
+    assert_eq!(left(), 1);
+    // Refused before anything is written or hashed (the zeroed piece is never touched).
+    let rest = vec![0u8; 256 * 1024 * 1024 - 999];
+    assert_eq!(uploads.append(&big, &rest).unwrap_err(), "文件过大（上限 256 MB）");
+    drop(rest);
+    assert_eq!(left(), 0);
+    assert_eq!(uploads.append(&big, b"x").unwrap_err(), "文件传输已取消");
+    assert!(uploads.finish(&big, "tab").is_err());
+
+    let dropped = uploads.begin("tab".into()).unwrap();
+    uploads.append(&dropped, b"abc").unwrap();
+    uploads.abort(&dropped);
+    uploads.abort(&dropped);
+    assert_eq!(left(), 0);
+    assert!(uploads.append(&dropped, b"x").is_err());
+
+    // Closing tab a gives up its uploads, not those of tab b.
+    let a1 = uploads.begin("a".into()).unwrap();
+    let a2 = uploads.begin("a".into()).unwrap();
+    let b = uploads.begin("b".into()).unwrap();
+    uploads.append(&a1, b"1").unwrap();
+    uploads.abort_tab("a");
+    assert_eq!(left(), 1);
+    assert!(uploads.append(&a2, b"2").is_err());
+    uploads.append(&b, b"3").unwrap();
+    // Taken for another tab, it is given up too.
+    assert!(uploads.finish(&b, "a").is_err());
+    assert_eq!(left(), 0);
+    fs::remove_dir_all(root).unwrap();
+}

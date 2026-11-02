@@ -11,7 +11,12 @@ use crate::errors::describe;
 use crate::fsx::{shown, sidecar};
 use crate::model::{Diary, Result};
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension};
-use std::{collections::HashSet, fs, path::Path};
+use std::{
+    collections::HashSet,
+    fs::{self, File},
+    io::Read,
+    path::Path,
+};
 
 /// "HUSH" in the SQLite header, so the file can be identified without opening it.
 const APPLICATION_ID: u32 = 0x4855_5348;
@@ -20,6 +25,9 @@ const FORMAT_VERSION: u32 = 2;
 const CREATE_POSTERS: &str = "CREATE TABLE IF NOT EXISTS {db}.posters (id TEXT PRIMARY KEY, data BLOB NOT NULL)";
 /// Writes the body, inserting the row when the working copy has none yet.
 const WRITE_BODY: &str = "INSERT OR REPLACE INTO main.doc (id, body) VALUES (1, ?1)";
+
+/// How much of a file `insert_image_from` reads and writes at a time.
+const COPY_CHUNK: usize = 2 * 1024 * 1024;
 
 /// Shown when a file opens but holds no readable LineHush body.
 const NOT_HUSH: &str = "不是有效的 .hush 文件或文件已损坏";
@@ -187,6 +195,50 @@ impl Db {
             )
             .map(drop)
             .map_err(sql)
+    }
+    /// Stores the original in the file at `source` (`len` bytes, SHA-256 `id`, both
+    /// worked out while it was written; see upload.rs) like `insert_image`, without
+    /// reading all of it into memory: in one transaction, a zero-filled blob of its
+    /// size is inserted and then filled from the file `COPY_CHUNK` bytes at a time.
+    /// An identical original already stored is left as it is.
+    pub fn insert_image_from(&self, id: &str, source: &Path, len: u64) -> Result<()> {
+        let unreadable = |e: std::io::Error| format!("无法读取临时文件：{}", describe(e));
+        let mut file = File::open(source).map_err(unreadable)?;
+        let size = i64::try_from(len).map_err(|_| "文件过大")?;
+        let tx = self.conn.unchecked_transaction().map_err(sql)?;
+        let inserted = tx
+            .execute(
+                "INSERT OR IGNORE INTO images (id, data) VALUES (?1, zeroblob(?2))",
+                rusqlite::params![id, size],
+            )
+            .map_err(sql)?;
+        if inserted == 0 {
+            // Already stored: nothing to write (the transaction rolls back unchanged).
+            return Ok(());
+        }
+        let rowid = tx.last_insert_rowid();
+        {
+            let mut blob = tx
+                .blob_open("main", "images", "data", rowid, false)
+                .map_err(sql)?;
+            let mut buf = vec![0; COPY_CHUNK.min(blob.len()).max(1)];
+            let mut at = 0;
+            loop {
+                let n = file.read(&mut buf).map_err(unreadable)?;
+                if n == 0 {
+                    break;
+                }
+                if at + n > blob.len() {
+                    return Err("临时文件在导入过程中被改动".into());
+                }
+                blob.write_at(&buf[..n], at).map_err(sql)?;
+                at += n;
+            }
+            if at != blob.len() {
+                return Err("临时文件在导入过程中被改动".into());
+            }
+        }
+        tx.commit().map_err(sql)
     }
     pub fn has_image(&self, id: &str) -> Result<bool> {
         self.conn

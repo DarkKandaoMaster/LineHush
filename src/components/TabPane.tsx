@@ -32,8 +32,15 @@ interface Props {
 /** One tab: its banners, editor and status bar. */
 export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) {
   const { session } = tab;
-  const { document, generation, locked, error, notice, saveFailed } =
-    useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const {
+    document,
+    generation,
+    locked,
+    error,
+    notice,
+    saveFailed,
+    importProgress,
+  } = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const editor = useRef<DiaryEditorHandle>(null);
   const [position, setPosition] = useState({ line: 1, column: 1 });
   const counts = useMemo(() => stats(document), [document]);
@@ -63,6 +70,7 @@ export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) 
         error={error}
         notice={notice}
         saveFailed={saveFailed}
+        importProgress={importProgress}
       />
       {/* 查找条盖在编辑区右上角（相对这一层定位，不随正文滚动）。 */}
       <div className="editor-area">

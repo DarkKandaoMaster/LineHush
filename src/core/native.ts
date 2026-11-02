@@ -156,6 +156,34 @@ export const importFile = (tab: string, bytes: ArrayBuffer) =>
   invoke<Picture>("import_file", bytes, {
     headers: { "x-linehush-tab": tab },
   });
+export { CHUNK_BYTES } from "./upload.ts";
+/**
+ * Starts sending a file larger than `CHUNK_BYTES` to the tab's document piece
+ * by piece (core/upload.ts); Rust writes the pieces to a temporary file. Returns
+ * the id `uploadChunk`, `uploadAbort` and the `import*Upload` commands take.
+ */
+export const uploadBegin = (tab: string) =>
+  invoke<string>("upload_begin", { tab });
+/**
+ * The next piece of the file (raw body; the upload goes in a header). Rejects
+ * with "文件过大（上限 256 MB）" past the limit; Rust has given the upload up
+ * by then.
+ */
+export const uploadChunk = (id: string, bytes: ArrayBuffer) =>
+  invoke<void>("upload_chunk", bytes, {
+    headers: { "x-linehush-upload": id },
+  });
+/** Drops an unfinished upload (a piece could not be read or sent). */
+export const uploadAbort = (id: string) => invoke<void>("upload_abort", { id });
+/** `importImage` for a file sent with `uploadBegin` / `uploadChunk`. */
+export const importImageUpload = (tab: string, upload: string) =>
+  invoke<Picture>("import_image_upload", { tab, upload });
+/** `importMedia` for a file sent with `uploadBegin` / `uploadChunk`; `meta` goes as arguments. */
+export const importMediaUpload = (tab: string, upload: string, meta: MediaMeta) =>
+  invoke<Picture>("import_media_upload", { tab, upload, ...meta });
+/** `importFile` for a file sent with `uploadBegin` / `uploadChunk`. */
+export const importFileUpload = (tab: string, upload: string) =>
+  invoke<Picture>("import_file_upload", { tab, upload });
 /**
  * Starts packing a dropped folder `name` into a zip (store, no compression)
  * whose top level is `name/`; Rust writes it to a temporary file. Returns the

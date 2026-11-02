@@ -4,8 +4,10 @@ import {
   editorOf,
   itemBox,
   load,
+  importBanners,
   selection,
   tile,
+  watchImportBanner,
 } from "./helpers";
 
 // ---- Videos and recordings (2026-10-31): image nodes of kind "video" / "audio". ----
@@ -181,9 +183,13 @@ test("导入音频：前端读出时长后经 import_media 存入（无封面）
   await serveMedia(page);
   const errors = await load(page);
   const input = page.locator(".tab-pane input[type=file]").first();
+  await watchImportBanner(page);
   await input.setInputFiles({ name: "录音.wav", mimeType: "audio/wav", buffer: wav(1.2) });
   const chip = editorOf(page).locator(".audio-chip");
   await expect(chip).toHaveCount(1);
+  // A small file alone (sent whole): no import banner.
+  expect(await importBanners(page)).toEqual([]);
+  await expect(page.locator(".import-banner")).toHaveCount(0);
   await expect(chip.locator(".audio-name")).toHaveText("录音.wav");
   await expect(chip.locator(".audio-duration")).toHaveText("0:01");
   const [imported] = await calls(page, "import_media");

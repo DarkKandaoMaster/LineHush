@@ -18,6 +18,7 @@ mod store;
 #[cfg(test)]
 mod store_tests;
 mod update;
+mod upload;
 
 use archive::ZipBuilder;
 use model::{Diary, ExportImage, MediaKind, Picture, Result};
@@ -41,6 +42,7 @@ use tauri::{
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_window_state::{StateFlags, WindowExt};
+use upload::Uploads;
 
 /// Tells one window that `take_open_request` holds a file for it.
 const OPEN_REQUESTED: &str = "open-requested";
@@ -61,6 +63,8 @@ const ID_HEADER: &str = "x-linehush-id";
 /// inside the folder, encoded with `encodeURIComponent` (header values are ASCII).
 const ZIP_HEADER: &str = "x-linehush-zip";
 const PATH_HEADER: &str = "x-linehush-path";
+/// `upload_chunk`: the upload (`upload_begin`) the piece of a file belongs to.
+const UPLOAD_HEADER: &str = "x-linehush-upload";
 /// What the window-state plugin remembers. Not VISIBLE: `create_window` shows the
 /// window itself once the rest is restored.
 const WINDOW_STATE: StateFlags = StateFlags::SIZE
@@ -651,6 +655,8 @@ async fn close_tab(tab: String, app: AppHandle) -> Result<Option<String>> {
     blocking(move || {
         let state = app.state::<AppState>();
         let store = lock(&state.tabs).remove(&tab);
+        // 还在送来的大文件随标签页一起放弃（临时文件清掉）。
+        app.state::<Uploads>().abort_tab(&tab);
         let warning = match store {
             Some(store) => lock(&store).close(),
             None => None,
@@ -781,10 +787,45 @@ fn header<'a>(request: &'a tauri::ipc::Request<'_>, name: &str) -> Option<&'a st
     request.headers().get(name).and_then(|value| value.to_str().ok())
 }
 /// A number the front end measured; None when missing, negative or not finite.
+fn valid(n: Option<f64>) -> Option<f64> {
+    n.filter(|n| n.is_finite() && *n >= 0.0)
+}
+/// A number the front end measured, from header `name` (see `valid`).
 fn measured(request: &tauri::ipc::Request<'_>, name: &str) -> Option<f64> {
-    header(request, name)
-        .and_then(|value| value.trim().parse::<f64>().ok())
-        .filter(|n| n.is_finite() && *n >= 0.0)
+    valid(header(request, name).and_then(|value| value.trim().parse::<f64>().ok()))
+}
+/// The kind of a video or audio clip as the front end names it.
+fn media_kind(kind: Option<&str>) -> Result<MediaKind> {
+    match kind {
+        Some("video") => Ok(MediaKind::Video),
+        Some("audio") => Ok(MediaKind::Audio),
+        _ => Err("不支持的媒体类型".into()),
+    }
+}
+/// The body's entry for a video or audio clip `id`: no name yet (the caller adds
+/// it), the size of the picture (a video's only) and the duration the front end
+/// measured (see `valid`).
+fn media_picture(
+    id: String,
+    kind: MediaKind,
+    width: Option<f64>,
+    height: Option<f64>,
+    duration: Option<f64>,
+) -> Picture {
+    let pixels = |n: Option<f64>| valid(n).map_or(0, |n| n.round() as u32);
+    let (width, height) = match kind {
+        MediaKind::Video => (pixels(width), pixels(height)),
+        _ => (0, 0),
+    };
+    Picture {
+        id,
+        name: String::new(),
+        width,
+        height,
+        kind,
+        duration: valid(duration),
+        size: None,
+    }
 }
 /// Stores a video or audio clip (the raw body) in the working copy of the tab
 /// in `x-linehush-tab`. It is not decoded: the front end has already checked
@@ -798,31 +839,16 @@ async fn import_media(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resul
     let tab = header(&request, TAB_HEADER)
         .ok_or("媒体数据缺少所属标签页")?
         .to_owned();
-    let kind = match header(&request, KIND_HEADER) {
-        Some("video") => MediaKind::Video,
-        Some("audio") => MediaKind::Audio,
-        _ => return Err("不支持的媒体类型".into()),
-    };
-    let pixels = |name| measured(&request, name).map_or(0, |n| n.round() as u32);
-    let (width, height) = match kind {
-        MediaKind::Video => (pixels(WIDTH_HEADER), pixels(HEIGHT_HEADER)),
-        _ => (0, 0),
-    };
+    let kind = media_kind(header(&request, KIND_HEADER))?;
+    let width = measured(&request, WIDTH_HEADER);
+    let height = measured(&request, HEIGHT_HEADER);
     let duration = measured(&request, DURATION_HEADER);
     images::check_media_size(bytes.len())?;
     let bytes = bytes.clone();
     blocking(move || {
         let id = images::hash(&bytes);
         lock(&*lock_tab(&app, &tab)?).add_image(&id, &bytes, None)?;
-        Ok(Picture {
-            id,
-            name: String::new(),
-            width,
-            height,
-            kind,
-            duration,
-            size: None,
-        })
+        Ok(media_picture(id, kind, width, height, duration))
     })
     .await
 }
@@ -841,16 +867,106 @@ async fn import_file(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result
     let bytes = bytes.clone();
     with_tab(app, tab, move |store| store.add_file(&bytes)).await
 }
-/// Finishes `zip` and stores it in the tab's `store` like `import_file`, named
-/// `<folder>.zip`; its temporary file is removed either way.
+/// Starts sending a large file to tab `tab` piece by piece (see upload.rs): the
+/// front end then sends its pieces (`upload_chunk`) and ends with
+/// `import_image_upload`, `import_media_upload`, `import_file_upload` or
+/// `upload_abort`. Returns the upload's id.
+#[tauri::command]
+async fn upload_begin(tab: String, app: AppHandle) -> Result<String> {
+    blocking(move || {
+        lock_tab(&app, &tab)?;
+        app.state::<Uploads>().begin(tab)
+    })
+    .await
+}
+/// The next piece (the raw body) of the upload in `x-linehush-upload`. Past
+/// 256 MB in all it fails with “文件过大（上限 256 MB）”; any failure gives the
+/// upload up (its temporary file removed), so `upload_abort` is not needed then.
+#[tauri::command]
+async fn upload_chunk(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<()> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("文件数据无效".into());
+    };
+    let id = header(&request, UPLOAD_HEADER)
+        .ok_or("文件数据缺少所属传输")?
+        .to_owned();
+    let bytes = bytes.clone();
+    blocking(move || app.state::<Uploads>().append(&id, &bytes)).await
+}
+/// Gives upload `id` up; nothing happens when there is no such upload.
+#[tauri::command]
+async fn upload_abort(id: String, app: AppHandle) -> Result<()> {
+    blocking(move || {
+        app.state::<Uploads>().abort(&id);
+        Ok(())
+    })
+    .await
+}
+/// `import_image` for the image sent as upload `upload`: read back whole (it is
+/// decoded anyway) and stored with its thumbnail.
+#[tauri::command]
+async fn import_image_upload(tab: String, upload: String, app: AppHandle) -> Result<Picture> {
+    blocking(move || {
+        let uploaded = app.state::<Uploads>().finish(&upload, &tab)?;
+        images::check_image_size(usize::try_from(uploaded.len).unwrap_or(usize::MAX))?;
+        let bytes = fs::read(uploaded.path())
+            .map_err(|e| format!("无法读取临时文件：{}", errors::describe(e)))?;
+        drop(uploaded);
+        // Decoding happens outside the lock so stashing is never held up by it.
+        let (picture, thumbnail) = images::prepare(&bytes)?;
+        let store = lock_tab(&app, &tab)?;
+        lock(&store).add_image(&picture.id, &bytes, Some(thumbnail))?;
+        Ok(picture)
+    })
+    .await
+}
+/// `import_media` for the clip sent as upload `upload`, with what the front end
+/// measured as arguments instead of headers; stored from the temporary file
+/// without being read whole, under the hash worked out while it came in.
+#[tauri::command]
+async fn import_media_upload(
+    tab: String,
+    upload: String,
+    kind: String,
+    width: Option<f64>,
+    height: Option<f64>,
+    duration: Option<f64>,
+    app: AppHandle,
+) -> Result<Picture> {
+    let kind = media_kind(Some(&kind))?;
+    blocking(move || {
+        let uploaded = app.state::<Uploads>().finish(&upload, &tab)?;
+        let store = lock_tab(&app, &tab)?;
+        lock(&store).add_image_from(&uploaded.id, uploaded.path(), uploaded.len)?;
+        Ok(media_picture(uploaded.id.clone(), kind, width, height, duration))
+    })
+    .await
+}
+/// `import_file` for the file sent as upload `upload`, stored as `import_media_upload` does.
+#[tauri::command]
+async fn import_file_upload(tab: String, upload: String, app: AppHandle) -> Result<Picture> {
+    blocking(move || {
+        let uploaded = app.state::<Uploads>().finish(&upload, &tab)?;
+        let store = lock_tab(&app, &tab)?;
+        let picture = lock(&store).add_file_from(&uploaded.id, uploaded.path(), uploaded.len)?;
+        Ok(picture)
+    })
+    .await
+}
+/// Finishes `zip` and stores it in the tab's `store` like `import_file_upload`,
+/// named `<folder>.zip`: hashed and stored from its temporary file a piece at a
+/// time (never read whole), which is removed either way.
 fn store_zip(store: &Mutex<Store>, zip: ZipBuilder) -> Result<Picture> {
     let name = format!("{}.zip", zip.name());
     let path = zip.finish()?;
-    let bytes = fs::read(&path).map_err(|e| format!("无法读取临时文件：{}", errors::describe(e)));
+    let stored = images::hash_file(&path)
+        .map_err(|e| format!("无法读取临时文件：{}", errors::describe(e)))
+        .and_then(|(id, len)| {
+            archive::check_total(len)?;
+            lock(store).add_file_from(&id, &path, len)
+        });
     let _ = fs::remove_file(&path);
-    let bytes = bytes?;
-    archive::check_total(bytes.len() as u64)?;
-    let mut picture = lock(store).add_file(&bytes)?;
+    let mut picture = stored?;
     picture.name = name;
     Ok(picture)
 }
@@ -1327,6 +1443,11 @@ pub fn run() {
                 next: AtomicU64::new(0),
                 jobs: Mutex::new(HashMap::new()),
             });
+            // Large files sent piece by piece (upload.rs) likewise; leftovers of a
+            // crash are removed first.
+            let upload_dir = root.join(upload::UPLOAD_FOLDER);
+            sweep_staged(&upload_dir, &HashSet::new(), Duration::ZERO);
+            app.manage(Uploads::new(upload_dir));
             app.manage(ClipboardState {
                 dir: clipboard_dir,
                 latest: AtomicU64::new(0),
@@ -1402,6 +1523,12 @@ pub fn run() {
             import_image,
             import_media,
             import_file,
+            upload_begin,
+            upload_chunk,
+            upload_abort,
+            import_image_upload,
+            import_media_upload,
+            import_file_upload,
             zip_begin,
             zip_add,
             zip_add_dir,

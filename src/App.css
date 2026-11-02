@@ -709,6 +709,25 @@ input:focus-visible {
   background: #eef4f8;
   color: #345268;
 }
+/* 导入一批含大文件（分块）或文件夹的条目时的进度（useImageImport batchProgress）：一行文字，下沿一条 3px 的进度条
+   （没有百分比的条目只留位置不画条）。 */
+.import-banner {
+  padding: 4px 16px 0;
+  background: #eef4f8;
+  color: #345268;
+}
+.import-banner > span {
+  display: block;
+  padding-bottom: 4px;
+}
+.import-progress {
+  height: 3px;
+  margin: 0 -16px;
+}
+.import-progress > div {
+  height: 100%;
+  background: #97c6eb;
+}
 .loading {
   flex: 1;
   padding: 24px;
