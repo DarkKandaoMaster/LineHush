@@ -1,6 +1,6 @@
 {
-  "version": "0.13.0",
-  "notes": "",
-  "pub_date": "2026-11-02T17:46:24Z",
-  "url": "https://github.com/DarkKandaoMaster/LineHush/releases/download/LineHush_v0.13.0/LineHush_0.13.0_x64-setup.exe"
+  "version": "0.14.0",
+  "notes": "1. 在任务栏上关闭窗口时，如果有没保存的内容，窗口会先弹到最前面再询问是否保存。\n2. 修复鼠标往下拖选时，有时选不到最后一行文字的问题。",
+  "pub_date": "2026-11-03T16:54:33Z",
+  "url": "https://github.com/DarkKandaoMaster/LineHush/releases/download/LineHush_v0.14.0/LineHush_0.14.0_x64-setup.exe"
 }
