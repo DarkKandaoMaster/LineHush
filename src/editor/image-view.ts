@@ -1336,7 +1336,7 @@ function setCaretSpot(view: EditorView, spot: Spot) {
  * the window below it): its end. A press there is at the document's end
  * whatever its x, as in Notepad and VS Code; left to the browser it would put
  * the caret in the last line under the pointer. Below a final image
- * `spotBeside` already gives the end (a drag pressed there: `belowLastRow`).
+ * `spotBeside` already gives the end (a drag there: `belowLastRow`).
  * Not for PageUp / PageDown (reveal.ts),
  * which go to the end past the last block themselves. The left margin is
  * margin.ts's: presses there never reach the editor. While an input method
@@ -1377,7 +1377,8 @@ function belowLastRow(view: EditorView, y: number) {
 
 /**
  * The point at `x` in the last line: where a drag pressed below it
- * (`DragSelection.below`) has its ends, so dragging along under the line
+ * (`DragSelection.below`) has its ends, and any other drag its head
+ * (`byLastLineX`), so dragging along under the line
  * selects in it. A text line (in its last fold): the position there, an `x`
  * left / right of the line taken at its edge; with no position there (the line
  * out of the window), its end. A row of images (its last visual line): the
@@ -1655,8 +1656,8 @@ interface DragSelection {
    * a click (which `clickBesideImages` puts at the end). Dragged so, both ends
    * below the line are at the pointer's x in the line (`lastLineAt`) rather
    * than at its end, so a drag along under the line selects in it; with Shift
-   * the anchor stays the selection's. A drag pressed elsewhere still ends at
-   * the end below the line.
+   * the anchor stays the selection's. A drag pressed elsewhere has its head
+   * below the line at the pointer's x too (`byLastLineX`).
    */
   below?: { x: number; y: number; moved: boolean };
   /**
@@ -1724,20 +1725,31 @@ function dragHead(view: EditorView): Spot | null {
   const pointer = drag?.pointer;
   if (!pointer) return null;
   const { x, y } = pointer;
-  // Below a final row of images `spotBeside` gives the end; a drag pressed
-  // there goes by the pointer's x in the row instead.
-  if (drag.below?.moved && belowLastRow(view, y)) return lastLineAt(view, x);
+  // Below a final row of images `spotBeside` gives the end; a drag goes by
+  // the pointer's x in the row instead (`byLastLineX`).
+  if (byLastLineX(drag) && belowLastRow(view, y)) return lastLineAt(view, x);
   return pointSpot(view, x, y) ?? belowHead(view, drag, x, y);
 }
 
 /**
+ * Whether the pointer below the last line (a text line or a row of images)
+ * puts the drag's head at its x in that line (`lastLineAt`) rather than at the
+ * document's end: for any drag, pressed in the text (with Shift too) or below
+ * the line, so dragging there selects in the line. Not while a press below it
+ * is still a click (`DragSelection.below` not yet `moved`: the end) or after a
+ * double / triple click.
+ */
+const byLastLineX = (drag: DragSelection) =>
+  !drag.words && (!drag.below || drag.below.moved);
+
+/**
  * During a drag selection, the end set by the pointer below the last text
- * line: its end, or the pointer's x in it for a drag pressed there
- * (`DragSelection.below`). None after a double / triple click.
+ * line: the pointer's x in it (`byLastLineX`), or its end while a press there
+ * is still a click. None after a double / triple click.
  */
 function belowHead(view: EditorView, drag: DragSelection, x: number, y: number): Spot | null {
   const end = drag.words ? null : belowLastLine(view, y);
-  if (!end || !drag.below?.moved) return end;
+  if (!end || !byLastLineX(drag)) return end;
   return lastLineAt(view, x);
 }
 

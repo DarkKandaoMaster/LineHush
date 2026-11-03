@@ -331,7 +331,7 @@ const held = (page: Page) =>
 // document's end whatever its x, as in Notepad / VS Code (image-view's
 // belowLastLine); the browser would put it in the last line under the pointer.
 // A drag pressed there has its ends at the pointer's x in the last line
-// (lastLineAt); one pressed in the text still ends at the end below it.
+// (lastLineAt); one pressed in the text has its head there by x too.
 test("末行下方空白：单击落到文末，与 x 无关；Shift+单击扩到文末；从那里拖动两端按 x 落到末行", async ({ page }) => {
   const errors = await load(page);
   const editor = editorOf(page);
@@ -426,15 +426,104 @@ test("末行下方空白：单击落到文末，与 x 无关；Shift+单击扩�
   await page.waitForTimeout(600);
 
   // Dragged from a line above (outside the selection) down below the last
-  // line: the head is the end.
+  // line: the head is at the pointer's x in the last line (2026-11-03).
   const first = (await lines.nth(0).boundingBox())!;
   await page.mouse.move(first.x + 30, mid(first));
   await page.mouse.down();
   await page.mouse.move(last.x + 30, below, { steps: 8 });
   await page.waitForTimeout(50);
-  expect((await held(page)).head).toBe(35);
+  const under = await posAt(page, last.x + 30, mid(last));
+  expect(under).toBeLessThan(35);
+  expect((await held(page)).head).toBe(under);
   await page.mouse.up();
-  expect(await selection(page)).toMatchObject({ anchor: await posAt(page, first.x + 30, mid(first)), head: 35 });
+  expect(await selection(page)).toMatchObject({ anchor: await posAt(page, first.x + 30, mid(first)), head: under });
+  expect(errors).toEqual([]);
+});
+
+// A drag pressed in the text with the pointer then below the last line has
+// its head at the pointer's x in the line (image-view's byLastLineX, as for a
+// drag pressed below it), not at the end: pressed at the end of the last line
+// it would otherwise select nothing (2026-11-03).
+test("末行下方空白：从末行行尾按下斜拖到下方，head 按 x 落到末行，选中非空；从中间行拖下来同样按 x", async ({ page }) => {
+  const errors = await load(page);
+  const editor = editorOf(page);
+
+  // (a) One line, pressed at its end, dragged down-left below it.
+  await setDoc(page, ["第一行文字内容"]);
+  // "第一行文字内容" 0-9, its text 1-8: the end is 8.
+  const only = (await editor.locator(":scope > p").first().boundingBox())!;
+  const midOnly = only.y + only.height / 2;
+  const end = await editor.evaluate((el: any) => el.editor.view.coordsAtPos(8));
+  const to = await posAt(page, only.x + 40, midOnly);
+  expect(to).toBeGreaterThan(1);
+  expect(to).toBeLessThan(8);
+  await page.mouse.move(end.left, midOnly);
+  await page.mouse.down();
+  await page.mouse.move(only.x + 40, only.y + only.height + 80, { steps: 10 });
+  await page.waitForTimeout(50);
+  expect(await held(page)).toEqual({ anchor: 8, head: to });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: 8, head: to });
+  await frames(page);
+  expect(await domEnds(page)).toEqual([8, to]);
+  expect(await page.evaluate(() => getSelection()!.toString())).toBe("第一行文字内容".slice(to - 1));
+  await page.waitForTimeout(600);
+  // Down-right, past the line's end: the end (the x taken at the line's edge).
+  await page.mouse.move(only.x + 30, midOnly);
+  await page.mouse.down();
+  const from = await selection(page);
+  await page.mouse.move(only.x + 400, only.y + only.height + 80, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ anchor: from.anchor, head: 8 });
+  await page.waitForTimeout(600);
+
+  // (b) From a line in the middle down below the last line, then along under it.
+  await setDoc(page, ["第一行文字内容", "第二行文字内容", "第三行文字内容"]);
+  // "第三行文字内容" 18-27, its text 19-26.
+  const lines = editor.locator(":scope > p");
+  const second = (await lines.nth(1).boundingBox())!;
+  const last = (await lines.nth(2).boundingBox())!;
+  const mid = (box: { y: number; height: number }) => box.y + box.height / 2;
+  const below = last.y + last.height + 60;
+  const anchor = await posAt(page, second.x + 50, mid(second));
+  const at = await posAt(page, last.x + 20, mid(last));
+  const on = await posAt(page, last.x + 70, mid(last));
+  expect(at).toBeGreaterThan(19);
+  expect(on).toBeGreaterThan(at);
+  expect(on).toBeLessThan(26);
+  await page.mouse.move(second.x + 50, mid(second));
+  await page.mouse.down();
+  await page.mouse.move(last.x + 20, below, { steps: 8 });
+  await page.waitForTimeout(50);
+  expect(await held(page)).toEqual({ anchor, head: at });
+  await page.mouse.move(last.x + 70, below, { steps: 6 });
+  await page.waitForTimeout(50);
+  expect(await held(page)).toEqual({ anchor, head: on });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ type: "text", anchor, head: on });
+  await frames(page);
+  expect(await domEnds(page)).toEqual([anchor, on]);
+  await page.waitForTimeout(600);
+
+  // With Shift, pressed in the text: the anchor stays, the head by x below.
+  await page.mouse.click(second.x + 50, mid(second));
+  await page.waitForTimeout(600);
+  await page.keyboard.down("Shift");
+  await page.mouse.move(last.x + 70, mid(last));
+  await page.mouse.down();
+  await page.mouse.move(last.x + 20, below, { steps: 8 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ anchor, head: at });
+  await page.waitForTimeout(600);
+
+  // A click below the last line is still at the end.
+  await page.mouse.click(last.x + 20, below);
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: 26, head: 26 });
   expect(errors).toEqual([]);
 });
 
