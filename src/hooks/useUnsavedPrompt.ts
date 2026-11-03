@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { revealWindow } from "../core/native";
 import type { UnsavedChoice } from "../core/session";
 
 /**
@@ -11,6 +12,9 @@ export function useUnsavedPrompt() {
   const pending = useRef<(choice: UnsavedChoice) => void>(undefined);
   const ask = useCallback((name: string) => {
     setName(name);
+    // 任务栏中键 / 右键“关闭窗口”时窗口可能在后台或最小化：先把它显示并带到前台，否则看不到询问。
+    // 放在 show() 之前：最小化时 requestAnimationFrame 不走，useDialogs 的 revealRect 要等窗口还原后再报位置。
+    revealWindow().catch(console.error);
     const element = dialog.current!;
     element.returnValue = "";
     element.show();

@@ -255,6 +255,39 @@ test("设置开着时按标题栏 ×：先关掉设置，再走正常的关窗�
   expect(errors).toEqual([]);
 });
 
+test("任务栏中键 / 右键关闭（系统发来关窗请求）：有修改时弹保存询问并先让 Rust 显示、前置本窗口；其他对话框不前置", async ({
+  page,
+}) => {
+  const errors = await load(page);
+  await editorOf(page).click();
+  await page.keyboard.type("改了");
+  // 设置（以及原图预览、发现新版本）打开时不抢前台。
+  await page.locator(".settings-button").click();
+  await expect(page.locator("dialog.settings-dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("dialog.settings-dialog")).toBeHidden();
+  expect(await calls(page, "reveal_window")).toEqual([]);
+  // 窗口在后台 / 最小化时 Windows 发 WM_CLOSE，Tauri 只发 close-requested（页面没点任何东西）。
+  await page.evaluate(() => (window as any).testNative.emit("tauri://close-requested", null));
+  const prompt = page.getByRole("dialog", { name: "是否保存对“无标题”的更改？" });
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toBeFocused();
+  expect((await calls(page, "reveal_window")).length).toBe(1);
+  // 先前置窗口，再报对话框位置（最小化时 requestAnimationFrame 不走）。
+  await expect.poll(async () => (await calls(page, "reveal_rect")).length).toBeGreaterThan(0);
+  const order = await page.evaluate(() =>
+    (window as any).testNative.calls
+      .map((c: any) => c.cmd)
+      .filter((cmd: string) => cmd === "reveal_window" || cmd === "reveal_rect"),
+  );
+  expect(order.at(-2)).toBe("reveal_window");
+  expect(order.at(-1)).toBe("reveal_rect");
+  await prompt.getByRole("button", { name: "不保存" }).click();
+  await expect.poll(() => destroyed(page)).toBe(true);
+  expect((await calls(page, "reveal_window")).length).toBe(1);
+  expect(errors).toEqual([]);
+});
+
 test("保存询问：Esc 等于取消、点遮罩不关、标题栏 × 等于取消（不再发起关窗），按钮照常；关掉后焦点回编辑器", async ({
   page,
 }) => {

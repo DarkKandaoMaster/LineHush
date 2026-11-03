@@ -677,6 +677,12 @@ fn is_last_window(window: WebviewWindow, app: AppHandle) -> bool {
         .iter()
         .all(|label| label == window.label())
 }
+/// 保存询问要显示时调用：调用的窗口取消最小化、显示并带到前台（任务栏中键 / 右键关闭时
+/// 窗口多半在后台或最小化，否则看不到询问）。
+#[tauri::command]
+fn reveal_window(window: WebviewWindow, app: AppHandle) {
+    reveal(&app, window.label());
+}
 /// The file waiting for the calling window, if any; each request is handed out once.
 #[tauri::command]
 fn take_open_request(window: WebviewWindow, app: AppHandle) -> Option<PathBuf> {
@@ -1513,6 +1519,7 @@ pub fn run() {
             close_tab,
             new_window,
             is_last_window,
+            reveal_window,
             take_open_request,
             stash_document,
             discard_stash,

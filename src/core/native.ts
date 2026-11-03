@@ -75,6 +75,8 @@ export const closeTab = (tab: string) =>
 export const newWindow = () => invoke<void>("new_window");
 /** 本窗口是否是最后一个编辑窗口（关掉它就退出 LineHush）。 */
 export const isLastWindow = () => invoke<boolean>("is_last_window");
+/** 保存询问要显示时：本窗口取消最小化、显示并带到前台（任务栏中键关闭时窗口可能在后台）。 */
+export const revealWindow = () => invoke<void>("reveal_window");
 /** The `.hush` file the user asked this window to open from outside, handed out once. */
 export const takeOpenRequest = () => invoke<string | null>("take_open_request");
 /** Stashes unsaved edits to the crash-recovery working copy; the user's file is unchanged. */
