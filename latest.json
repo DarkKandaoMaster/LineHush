@@ -1,6 +1,6 @@
 {
-  "version": "0.15.0",
-  "notes": "1. 换了新的程序图标",
-  "pub_date": "2026-11-05T19:03:10Z",
-  "url": "https://github.com/DarkKandaoMaster/LineHush/releases/download/LineHush_v0.15.0/LineHush_0.15.0_x64-setup.exe"
+  "version": "0.16.0",
+  "notes": "1. 修复最后一行是空行时，在它下方往左拖选选不中上面文字的问题：现在会选中上一行有字的内容",
+  "pub_date": "2026-11-07T16:19:19Z",
+  "url": "https://github.com/DarkKandaoMaster/LineHush/releases/download/LineHush_v0.16.0/LineHush_0.16.0_x64-setup.exe"
 }
