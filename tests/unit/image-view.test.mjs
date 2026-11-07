@@ -1300,3 +1300,21 @@ test("复制为纯文本：文件写作 [文件]，与图片 / 视频 / 音频�
   assert.equal(node.attrs.kind, "file");
   assert.equal(img("a").attrs.size, null);
 });
+
+// ---- 2026-11-07 ----
+import { lastFilledBlock } from "../../src/editor/image-view.ts";
+
+test("lastFilledBlock：跳过末尾空行，返回最后一个非空块（文字行或图片）；全空为 null", () => {
+  const at = (d) => {
+    const block = lastFilledBlock(d);
+    return block && [block.pos, block.node.type.name === "image" ? block.node.attrs.id : block.node.textContent];
+  };
+  assert.deepEqual(at(doc("甲", "文字")), [3, "文字"]);
+  assert.deepEqual(at(doc("文字", "")), [0, "文字"]);
+  assert.deepEqual(at(doc("文字", "", "", "")), [0, "文字"]);
+  // "上面" 0-4, a 4-5, b 5-6, then empty lines.
+  assert.deepEqual(at(doc("上面", img("a", true), img("b"), "", "")), [5, "b"]);
+  assert.deepEqual(at(doc("上面", img("a", true))), [4, "a"]);
+  assert.equal(lastFilledBlock(doc("", "", "")), null);
+  assert.equal(lastFilledBlock(doc("")), null);
+});

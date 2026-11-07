@@ -1351,18 +1351,38 @@ function belowLastLine(view: EditorView, y: number): Spot | null {
   return { pos: doc.content.size - 1, side: -1 };
 }
 
+/** The images of the visual line (`imageFold`) the image at `pos` is on, with their boxes. */
+function rowAt(view: EditorView, pos: number) {
+  const { doc } = view.state;
+  const { from, to } = imageFold(view, pos);
+  const row: { pos: number; node: PmNode; rect: DOMRect }[] = [];
+  for (let at = from; at < to; at++)
+    row.push({ pos: at, node: doc.nodeAt(at)!, rect: imageRect(view, at) });
+  return row;
+}
+
 /**
- * The images of the last visual line (`imageFold`) when the document ends with
- * an image, with their boxes; null when it ends with a text line.
+ * The images of the last visual line (`rowAt`) when the document ends with
+ * an image; null when it ends with a text line.
  */
 function lastRow(view: EditorView) {
   const { doc } = view.state;
-  if (!isImage(doc.lastChild)) return null;
-  const { from, to } = imageFold(view, doc.content.size - 1);
-  const row: { pos: number; node: PmNode; rect: DOMRect }[] = [];
-  for (let pos = from; pos < to; pos++)
-    row.push({ pos, node: doc.nodeAt(pos)!, rect: imageRect(view, pos) });
-  return row;
+  return isImage(doc.lastChild) ? rowAt(view, doc.content.size - 1) : null;
+}
+
+/**
+ * The last block that is not an empty text line (an image, or a text line with
+ * text), with its position; null when every block is an empty text line.
+ * Where `lastLineAt` goes: empty lines ending the document are skipped.
+ */
+export function lastFilledBlock(doc: PmNode): { pos: number; node: PmNode } | null {
+  let pos = doc.content.size;
+  for (let i = doc.childCount - 1; i >= 0; i--) {
+    const node = doc.child(i);
+    pos -= node.nodeSize;
+    if (isImage(node) || node.content.size > 0) return { pos, node };
+  }
+  return null;
 }
 
 /**
@@ -1376,21 +1396,26 @@ function belowLastRow(view: EditorView, y: number) {
 }
 
 /**
- * The point at `x` in the last line: where a drag pressed below it
+ * The point at `x` in the last filled line (`lastFilledBlock`: empty text
+ * lines ending the document are skipped, so under an empty last line a drag
+ * selects in the text above it): where a drag pressed below the last line
  * (`DragSelection.below`) has its ends, and any other drag its head
- * (`byLastLineX`), so dragging along under the line
- * selects in it. A text line (in its last fold): the position there, an `x`
- * left / right of the line taken at its edge; with no position there (the line
- * out of the window), its end. A row of images (its last visual line): the
- * side of the image under `x` (`spotBy`), in a gap or left / right of the row
- * the near side of the nearest image, so left of the row before its first
- * image and right of it the document's end.
+ * (`byLastLineX`), so dragging along under the line selects in it. A text line
+ * (in its last fold): the position there, an `x` left / right of the line
+ * taken at its edge; with no position there (the line out of the window), its
+ * end. An image (its visual line, `rowAt`): the side of the image under `x`
+ * (`spotBy`), in a gap or left / right of the row the near side of the nearest
+ * image, so left of the row before its first image and right of it after its
+ * last. With every line empty, the document's end.
  */
 function lastLineAt(view: EditorView, x: number): Spot {
   const { doc } = view.state;
-  const last = doc.lastChild;
-  const row = lastRow(view);
-  if (row) {
+  const end = { pos: doc.content.size - 1, side: -1 as Side };
+  const last = lastFilledBlock(doc);
+  if (!last) return end;
+  const { pos: start, node } = last;
+  if (isImage(node)) {
+    const row = rowAt(view, start);
     let near = row[0];
     let distance = Infinity;
     for (const image of row) {
@@ -1402,17 +1427,17 @@ function lastLineAt(view: EditorView, x: number): Spot {
     }
     return spotBy(near.pos, near.node, x, near.rect);
   }
-  const end = { pos: doc.content.size - 1, side: -1 as Side };
-  if (!last) return end;
-  const start = doc.content.size - last.nodeSize;
+  const lineEnd = { pos: start + node.nodeSize - 1, side: -1 as Side };
   const dom = view.nodeDOM(start) as HTMLElement | null;
-  if (!dom) return end;
+  if (!dom) return lineEnd;
   const box = dom.getBoundingClientRect();
   const hit = view.posAtCoords({
     left: Math.min(Math.max(x, box.left + 1), box.right - 1),
     top: box.bottom - 1,
   });
-  return hit ? { pos: Math.min(Math.max(hit.pos, start + 1), end.pos), side: -1 } : end;
+  return hit
+    ? { pos: Math.min(Math.max(hit.pos, start + 1), lineEnd.pos), side: -1 }
+    : lineEnd;
 }
 
 /**
@@ -1654,8 +1679,9 @@ interface DragSelection {
    * point pressed, and whether the pointer has since moved off it by more than
    * ProseMirror's click slop (`moved`), when the press is a drag and no longer
    * a click (which `clickBesideImages` puts at the end). Dragged so, both ends
-   * below the line are at the pointer's x in the line (`lastLineAt`) rather
-   * than at its end, so a drag along under the line selects in it; with Shift
+   * below the line are at the pointer's x in the last filled line (`lastLineAt`,
+   * empty lines ending the document skipped) rather than at the end, so a drag
+   * along under the line selects in it; with Shift
    * the anchor stays the selection's. A drag pressed elsewhere has its head
    * below the line at the pointer's x too (`byLastLineX`).
    */

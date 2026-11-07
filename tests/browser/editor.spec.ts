@@ -606,6 +606,81 @@ test("末行下方空白：从右侧按下往左横拖到文字下方，松开�
   expect(errors).toEqual([]);
 });
 
+// With empty lines ending the document, a drag below them goes by x in the
+// last filled block (image-view's lastFilledBlock / lastLineAt): the text line
+// or the row of images above; with every line empty, the end (2026-11-07).
+test("末行下方空白：末尾是空行时拖动跳过空行，按 x 落到最后一个非空块；全空文档仍在文末", async ({ page }) => {
+  const errors = await load(page);
+  const editor = editorOf(page);
+  const lines = editor.locator(":scope > p");
+
+  // "文字" 0-4 (text 1-3) and empty lines after it: pressed right below the
+  // last (empty) line, dragged left under it, "文字" is selected (no newline).
+  for (const empties of [1, 3]) {
+    await setDoc(page, ["文字", ...Array(empties).fill("")]);
+    const end = 4 + 2 * empties - 1;
+    const text = (await lines.nth(0).boundingBox())!;
+    const last = (await lines.nth(empties).boundingBox())!;
+    const below = last.y + last.height + 60;
+    // A click there is still at the end.
+    await page.mouse.click(text.x + 400, below);
+    expect(await selection(page), `${empties} 个空行：单击`).toMatchObject({ type: "text", anchor: end, head: end });
+    await page.waitForTimeout(600);
+    await page.mouse.move(text.x + 400, below);
+    await page.mouse.down();
+    await page.mouse.move(text.x - 30, below + 5, { steps: 10 });
+    await page.waitForTimeout(50);
+    expect(await held(page), `${empties} 个空行：按住时`).toEqual({ anchor: 3, head: 1 });
+    await page.mouse.up();
+    await page.waitForTimeout(50);
+    expect(await selection(page), `${empties} 个空行：松开后`).toMatchObject({ type: "text", anchor: 3, head: 1 });
+    await frames(page);
+    expect(await domEnds(page)).toEqual([3, 1]);
+    expect(await page.evaluate(() => getSelection()!.toString())).toBe("文字");
+    await page.waitForTimeout(600);
+  }
+
+  // A row of images and an empty line: "上面" 0-4, a 4-5, b 5-6, "" 6-8.
+  await setDoc(page, ["上面", { id: "a" }, { id: "b" }, ""]);
+  const a = (await editor.locator(".image-item").nth(0).boundingBox())!;
+  const b = (await editor.locator(".image-item").nth(1).boundingBox())!;
+  const empty = (await lines.nth(1).boundingBox())!;
+  const below = empty.y + empty.height + 60;
+  const right = b.x + b.width + 40;
+  // Right of the row (after b) along under it to a's left half: both images.
+  await page.mouse.move(right, below);
+  await page.mouse.down();
+  await page.mouse.move(a.x + 20, below + 5, { steps: 10 });
+  await page.waitForTimeout(50);
+  expect(await held(page), "图片行 + 空行：按住时").toEqual({ anchor: 6, head: 4 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page), "图片行 + 空行：松开后").toMatchObject({ anchor: 6, head: 4 });
+  await page.waitForTimeout(600);
+  // Under a's left half (before a) to b's left half (before b): a.
+  await page.mouse.move(a.x + 20, below);
+  await page.mouse.down();
+  await page.mouse.move(b.x + 20, below, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page), "a 左半区下方到 b 左半区下方").toMatchObject({ anchor: 4, head: 5 });
+  await page.waitForTimeout(600);
+
+  // Every line empty: "" 0-2, "" 2-4, "" 4-6, the end 5; a drag stays there.
+  await setDoc(page, ["", "", ""]);
+  const only = (await lines.nth(2).boundingBox())!;
+  const under = only.y + only.height + 60;
+  await page.mouse.move(only.x + 400, under);
+  await page.mouse.down();
+  await page.mouse.move(only.x + 10, under + 5, { steps: 10 });
+  await page.waitForTimeout(50);
+  expect(await held(page), "全空：按住时").toEqual({ anchor: 5, head: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page), "全空：松开后").toMatchObject({ anchor: 5, head: 5 });
+  expect(errors).toEqual([]);
+});
+
 test("末行下方空白：左栏仍选末行，行右侧空白仍在行尾，末尾是图片时仍在图片后", async ({ page }) => {
   const errors = await load(page);
   const editor = editorOf(page);
