@@ -135,8 +135,7 @@ input:focus-visible {
   color: #9b9b9b;
 }
 .titlebar.inactive .tab,
-.titlebar.inactive .tab.active,
-.titlebar.inactive .tab-new {
+.titlebar.inactive .tab.active {
   color: #8f8f8f;
 }
 /*
@@ -260,7 +259,9 @@ input:focus-visible {
 .tab.dirty:not(:hover) .tab-close-dot {
   display: block;
 }
+/* 新建标签页按钮固定 #181818，窗口失焦也不变灰（用户定，2026-11-08）。 */
 .tabbar .tab-new {
+  color: #181818;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -269,8 +270,15 @@ input:focus-visible {
   height: 28px;
   margin: 0 0 2px 4px;
   padding: 0;
-  font-size: 18px;
-  line-height: 1;
+}
+.tabbar .tab-new-plus {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linecap: round;
 }
 .tabbar .tab-new:hover {
   background: rgba(0, 0, 0, 0.06);

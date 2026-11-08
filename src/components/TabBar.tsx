@@ -45,7 +45,10 @@ export default function TabBar(props: Props) {
         onMouseDown={keepFocus}
         onClick={props.onNew}
       >
-        +
+        {/* 画出来而不用“+”字形：字形在行框里有基线偏移，居中不准。线心 6 居中（试过 6.5 半像素对齐，用户觉得不好看）。 */}
+        <svg className="tab-new-plus" viewBox="0 0 12 12" aria-hidden>
+          <path d="M6 1v10M1 6h10" />
+        </svg>
       </button>
     </div>
   );
