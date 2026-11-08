@@ -145,18 +145,22 @@ export function fromEditor(doc: JSONContent): Diary {
   return { blocks };
 }
 /**
- * Status bar counts: characters are Unicode code points in text lines; images
- * are images alone, not videos, recordings or files.
+ * Status bar counts, like Notepad: characters are the Unicode code points in
+ * text lines (an emoji or a Chinese character is one) plus one per line break,
+ * which is between every two blocks (a text line or a row of images; the
+ * pictures themselves are no characters); attachments are all the pictures,
+ * each image, video, recording or file (a folder's zip too) one. The
+ * selection's share: `selectionCounts` (editor/selection-shape.ts), counted
+ * the same way.
  */
-export function stats(doc: Diary): { characters: number; images: number } {
-  let characters = 0;
-  let images = 0;
+export function stats(doc: Diary): { characters: number; attachments: number } {
+  let characters = Math.max(0, doc.blocks.length - 1);
+  let attachments = 0;
   for (const block of doc.blocks) {
     if (block.type === "line") characters += Array.from(block.text).length;
-    else
-      images += block.images.filter((pic) => kindOf(pic) === "image").length;
+    else attachments += block.images.length;
   }
-  return { characters, images };
+  return { characters, attachments };
 }
 /**
  * Display name of a document path. Drafts have no path and are numbered per

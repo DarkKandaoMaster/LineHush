@@ -98,8 +98,8 @@ test("视频：封面与时长、播放角标，与图片并排；双击或单�
   await preview.getByRole("button", { name: "关闭" }).click();
   await expect(preview).toBeHidden();
   expect(await selection(page)).toEqual(before);
-  // Images and videos alike: the status bar counts only the image.
-  await expect(page.locator(".statusbar")).toContainText("1 张图片");
+  // Images and videos alike: each one attachment.
+  await expect(page.locator(".statusbar .status-count")).toHaveText("6 个字符，2 个附件");
   expect(errors).toEqual([]);
 });
 
@@ -162,6 +162,9 @@ test("音频：胶囊显示名字与时长、与图片并排；播放按钮就�
   await chip.locator(".audio-name").dblclick();
   expect(await selection(page)).toMatchObject({ type: "blockRange", anchor: 6, head: 7 });
   await expect(page.locator("dialog.image-preview")).toBeHidden();
+  // The recording selected: one attachment, no characters ("上面!" + "下面" + 2 line breaks = 7).
+  await expect(page.locator(".statusbar .status-count")).toHaveText("7 个字符，2 个附件");
+  await expect(page.locator(".statusbar .status-selected")).toHaveText("已选 0 个字符，1 个附件");
   // Deleting it stops it (the node view goes).
   await chip.getByRole("button", { name: "播放" }).click();
   await expect(chip).toHaveClass(/playing/);
@@ -173,7 +176,7 @@ test("音频：胶囊显示名字与时长、与图片并排；播放按钮就�
     true,
     null,
   ]);
-  await expect(page.locator(".statusbar")).toContainText("1 张图片");
+  await expect(page.locator(".statusbar .status-count")).toHaveText("7 个字符，1 个附件");
   expect(errors).toEqual([]);
 });
 
@@ -298,6 +301,7 @@ test("导入视频：前端读出画面尺寸与时长、截封面，经 import_
   const box = (await video.boundingBox())!;
   expect(Math.round(box.width)).toBe(267);
   expect(Math.round(box.height)).toBe(200);
-  await expect(page.locator(".statusbar")).not.toContainText("图片");
+  // A video is an attachment too.
+  await expect(page.locator(".statusbar .status-count")).toContainText("1 个附件");
   expect(errors).toEqual([]);
 });

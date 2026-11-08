@@ -55,8 +55,8 @@ test("导入任意文件：经 import_file 原样存入，胶囊显示名字与�
       return stashed.at(-1)?.document.blocks.find((b: any) => b.type === "images")?.images[0];
     })
     .toEqual({ id: `${"f".repeat(63)}1`, name: "清单.txt", width: 0, height: 0, kind: "file", size: 2500 });
-  // Files are not images in the status bar.
-  await expect(page.locator(".statusbar")).not.toContainText("图片");
+  // A file is an attachment in the status bar.
+  await expect(page.locator(".statusbar .status-count")).toContainText("1 个附件");
   expect(errors).toEqual([]);
 });
 
@@ -108,7 +108,7 @@ test("文件胶囊：与图片并排、最宽 280px 高 32px 名字截断；双�
   await expect(dialog).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
-  await expect(page.locator(".statusbar")).toContainText("1 张图片");
+  await expect(page.locator(".statusbar .status-count")).toHaveText("6 个字符，3 个附件");
   expect(errors).toEqual([]);
 });
 

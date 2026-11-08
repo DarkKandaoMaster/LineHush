@@ -27,6 +27,7 @@ import {
   insertImages,
   lineOf,
 } from "./image-view";
+import { selectionCounts } from "./selection-shape";
 import {
   fromEditor,
   fromText,
@@ -58,9 +59,18 @@ interface Props {
   disabled: boolean;
   ref: Ref<DiaryEditorHandle>;
   onChange: (doc: Diary) => void;
-  onSelection: (position: { line: number; column: number }) => void;
+  onSelection: (position: SelectionInfo) => void;
   images: EditorImages;
   onPreview: (pic: Picture) => void;
+}
+/**
+ * Where the selection is, for the status bar: the line and column of its start,
+ * and what it holds (`selectionCounts`), null when it is empty.
+ */
+export interface SelectionInfo {
+  line: number;
+  column: number;
+  selected: { characters: number; attachments: number } | null;
 }
 /** What the editor hands to the tab for images (useImageImport). */
 export interface EditorImages {
@@ -227,16 +237,22 @@ function DiaryEditor(props: Props) {
     onUpdate: ({ editor, transaction }) => {
       remember(transaction.before);
       latest.current.onChange(fromEditor(editor.getJSON()));
+      // An edit can change what a selection that stays put holds (a replace
+      // all); with nothing selected, typing reports through onSelectionUpdate.
+      if (!editor.state.selection.empty) reportSelection(editor);
     },
-    onSelectionUpdate: ({ editor }) => {
-      const pos = editor.state.selection.$from;
-      latest.current.onSelection({
-        line: lineOf(editor.state.doc, pos.index(0)),
-        // Between or on images there is no column.
-        column: pos.parent.inlineContent ? pos.parentOffset + 1 : 1,
-      });
-    },
+    onSelectionUpdate: ({ editor }) => reportSelection(editor),
   });
+  function reportSelection(editor: Editor) {
+    const { doc, selection } = editor.state;
+    const pos = selection.$from;
+    latest.current.onSelection({
+      line: lineOf(doc, pos.index(0)),
+      // Between or on images there is no column.
+      column: pos.parent.inlineContent ? pos.parentOffset + 1 : 1,
+      selected: selectionCounts(doc, selection),
+    });
+  }
   useEffect(() => {
     // Changing editability is not a document edit and must not enqueue a save.
     editor.setEditable(!props.disabled, false);

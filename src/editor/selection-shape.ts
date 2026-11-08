@@ -32,6 +32,67 @@ export function selectedNewlines(doc: PmNode, selection: Selection): number[] {
   return out;
 }
 
+/**
+ * What the status bar shows as selected (“已选 3 个字符，1 个附件”): the code
+ * points of the selected text (an emoji or a Chinese character is one) plus
+ * one character per line break the selection covers, and the attachments it
+ * covers (every `image` node: an image, a video, a recording or a file each
+ * one). Null for an empty selection, so nothing is counted while typing, and
+ * when it covers nothing (Ctrl+A in an empty document), as in Notepad.
+ *
+ * A line break is every boundary between two top-level blocks except between
+ * two images of the same row (the one after without `newline`): text line |
+ * text line, text line | image, image | text line, and a row break, as
+ * `stats` counts them in the whole document. The break at boundary b spans from
+ * the end of the block before (b - 1 inside a text line, b after an image) to
+ * the start of the block after (b + 1 inside a text line, b before an image),
+ * and is selected when the selection covers that span: from the end of a line
+ * to the next line's start (also a BlockRange from after an image to the start
+ * of the text line below); a row break, which has no width, only when the
+ * selection reaches past it on both sides. Between two text lines a selection
+ * may also end at b itself (as `selectedNewlines` takes it).
+ */
+export function selectionCounts(
+  doc: PmNode,
+  selection: Selection,
+): { characters: number; attachments: number } | null {
+  const { from, to, empty } = selection;
+  if (empty) return null;
+  let characters = 0;
+  let attachments = 0;
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (node.isText) {
+      const text = node.text ?? "";
+      characters += Array.from(
+        text.slice(Math.max(0, from - pos), Math.min(text.length, to - pos)),
+      ).length;
+      return false;
+    }
+    // A picture (one position) is visited only when the range covers it whole.
+    if (node.type.name === "image") {
+      attachments++;
+      return false;
+    }
+    return true;
+  });
+  let b = 0;
+  for (let i = 0; i < doc.childCount - 1; i++) {
+    const before = doc.child(i);
+    const after = doc.child(i + 1);
+    b += before.nodeSize;
+    if (b - 1 > to) break;
+    const beforeImage = before.type.name === "image";
+    const afterImage = after.type.name === "image";
+    if (beforeImage && afterImage && !after.attrs.newline) continue;
+    const start = beforeImage ? b : b - 1;
+    const end = afterImage || !beforeImage ? b : b + 1;
+    if (from > start || to < end) continue;
+    if (beforeImage && afterImage && (from === b || to === b)) continue;
+    characters++;
+  }
+  return characters || attachments ? { characters, attachments } : null;
+}
+
 /** VS Code's corner radius in CSS pixels. */
 export const SELECTION_RADIUS = 3;
 

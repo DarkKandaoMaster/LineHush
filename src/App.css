@@ -306,9 +306,12 @@ input:focus-visible {
   margin-top: -8px;
   border-left: 1px solid #e9e9e9;
 }
-/* 位置一项留出常见行列号的宽度，数字变多时后面的竖线不跟着跳。 */
+/*
+ * 位置一项刚好放下“行 100，列 100”（Segoe UI 12px 量得文字 81.4px + 左右内边距 24px，
+ * 数字等宽），常见行列号变化时后面的竖线不跟着跳；更大的数字再把它撑宽。
+ */
 .status-position {
-  min-width: 140px;
+  min-width: 106px;
 }
 /* 记事本的缩放一项约 67px 宽（含竖线）。 */
 .status-zoom {

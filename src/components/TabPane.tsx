@@ -10,7 +10,10 @@ import type { Picture } from "../core/document";
 import { stats } from "../core/document";
 import type { Session } from "../core/session";
 import type { Tab } from "../core/tabs";
-import DiaryEditor, { type DiaryEditorHandle } from "../editor/DiaryEditor";
+import DiaryEditor, {
+  type DiaryEditorHandle,
+  type SelectionInfo,
+} from "../editor/DiaryEditor";
 import { useContextMenuTarget } from "../hooks/useContextMenu";
 import { useFind } from "../hooks/useFind";
 import { useImageImport } from "../hooks/useImageImport";
@@ -29,6 +32,9 @@ interface Props {
   onPreview: (session: Session, pic: Picture) => void;
 }
 
+/** The status bar's position before the editor reports one (a new document). */
+const START_POSITION: SelectionInfo = { line: 1, column: 1, selected: null };
+
 /** One tab: its banners, editor and status bar. */
 export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) {
   const { session } = tab;
@@ -42,7 +48,7 @@ export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) 
     importProgress,
   } = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const editor = useRef<DiaryEditorHandle>(null);
-  const [position, setPosition] = useState({ line: 1, column: 1 });
+  const [position, setPosition] = useState<SelectionInfo>(START_POSITION);
   const counts = useMemo(() => stats(document), [document]);
   const images = useImageImport(session, editor);
   // 查找 / 替换：每个标签页一份，切换标签页时各自保留（快捷键经 useWindowGuards 调到当前标签页）。
@@ -54,7 +60,7 @@ export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) 
     [onPreview, session],
   );
   useEffect(() => {
-    setPosition({ line: 1, column: 1 });
+    setPosition(START_POSITION);
   }, [generation]);
   // The current editor takes the focus when its tab is shown, loads another
   // document, or the window asks for it. A disabled editor cannot take focus back
@@ -91,7 +97,8 @@ export default function TabPane({ tab, hidden, focus, zoom, onPreview }: Props) 
         line={position.line}
         column={position.column}
         characters={counts.characters}
-        images={counts.images}
+        attachments={counts.attachments}
+        selected={position.selected}
         zoom={zoom}
       />
       {/* 工具栏已无“插入图片”按钮，界面上无法打开此选择框；保留它只因 tests/native/native.mjs 经它导入图片（浏览器测试也经它导入音频与任意文件）。不限类型：图片、媒体之外的文件作为文件块插入。 */}

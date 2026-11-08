@@ -316,10 +316,10 @@ test("视频 / 音频：kind 与时长经编辑器往返不变，图片仍只有
   assert.deepEqual(Object.keys(fromEditor(full).blocks[0].images[0]), ["id", "name", "width", "height"]);
 });
 
-test("视频 / 音频：TXT 占位文字、状态栏只数图片、时长 m:ss", () => {
+test("视频 / 音频：TXT 占位文字、状态栏每个块算一个附件、时长 m:ss", () => {
   const doc = { blocks: [{ type: "line", text: "甲" }, { type: "images", images: [pic, clip, memo] }] };
   assert.equal(toText(doc), "甲\n[图片：图.png] [视频：片 <1>.mp4] [音频：语音.m4a]");
-  assert.deepEqual(stats(doc), { characters: 1, images: 1 });
+  assert.deepEqual(stats(doc), { characters: 2, attachments: 3 });
   assert.equal(formatDuration(0), "0:00");
   assert.equal(formatDuration(3), "0:03");
   assert.equal(formatDuration(59.6), "1:00");
@@ -423,10 +423,10 @@ test("文件：size 经编辑器往返不变，图片 / 媒体不写 size", () =
   assert.deepEqual(Object.keys(fromEditor(stray).blocks[0].images[0]), ["id", "name", "width", "height"]);
 });
 
-test("文件：TXT 占位、HTML 写附件链接、打印页一行文字；状态栏不数文件", () => {
+test("文件：TXT 占位、HTML 写附件链接、打印页一行文字；状态栏算作附件", () => {
   const doc = { blocks: [{ type: "line", text: "甲" }, { type: "images", images: [pic, attached] }] };
   assert.equal(toText(doc), "甲\n[图片：图.png] [文件：报告 <终稿>.docx]");
-  assert.deepEqual(stats(doc), { characters: 1, images: 1 });
+  assert.deepEqual(stats(doc), { characters: 2, attachments: 2 });
   const html = toHtml(doc);
   const href = `附件/${encodeURIComponent(exportFile(attached))}`;
   assert.ok(

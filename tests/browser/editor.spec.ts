@@ -900,3 +900,44 @@ test("已命名文件 Ctrl+S 期间编辑器仍有焦点、不禁用、不变淡
   await expect(tabName).toHaveText("甲.hush");
   expect(errors).toEqual([]);
 });
+test("状态栏照记事本：“行 x，列 y │ 总数 │ 已选”，换行算 1 个字符，每个块算一个附件，选中栏只在选区非空时出现", async ({ page }) => {
+  const errors = await load(page);
+  const editor = editorOf(page);
+  const items = page.locator(".statusbar .status-item");
+  const position = page.locator(".statusbar .status-position");
+  const count = page.locator(".statusbar .status-count");
+  const selected = page.locator(".statusbar .status-selected");
+  // "今天天气好" 0-7，a 7、b 8 一行，视频 v 9 另起一行，"明天" 10-14。
+  // 7 个字 + 3 个换行（文字行 | 图片行 | 视频行 | 文字行）= 10；图片与视频各算一个附件。
+  await setDoc(page, ["今天天气好", { id: "a" }, { id: "b" }, { id: "v", newline: true, kind: "video", duration: 3 }, "明天"]);
+  await editor.evaluate((el: any) => el.editor.commands.setTextSelection(3));
+  await expect(position).toHaveText("行 1，列 3");
+  await expect(count).toHaveText("10 个字符，3 个附件");
+  await expect(selected).toHaveCount(0);
+  await expect(items).toHaveText(["行 1，列 3", "10 个字符，3 个附件", "100%"]);
+  // 位置栏刚好放下“行 100，列 100”：常见行列号变化时总数栏不动。
+  expect(Math.round((await position.boundingBox())!.width)).toBe(106);
+  const countX = (await count.boundingBox())!.x;
+  // 天气好 + 换行 + a b + 换行 + v + 换行 + 明天；总数栏位置不变，选中栏接在后面。
+  await editor.evaluate((el: any) => el.editor.commands.setTextSelection({ from: 3, to: 14 }));
+  await expect(items).toHaveText(["行 1，列 3", "10 个字符，3 个附件", "已选 8 个字符，3 个附件", "100%"]);
+  expect((await count.boundingBox())!.x).toBe(countX);
+  // 只选文字：0 个附件也照写。
+  await editor.evaluate((el: any) => el.editor.commands.setTextSelection({ from: 3, to: 5 }));
+  await expect(selected).toHaveText("已选 2 个字符，0 个附件");
+  // 只选中视频：0 个字符。
+  await clickHalf(tile(page, 2), "left");
+  await page.keyboard.press("Shift+ArrowRight");
+  expect(await selection(page)).toMatchObject({ type: "blockRange", anchor: 9, head: 10 });
+  await expect(selected).toHaveText("已选 0 个字符，1 个附件");
+  await expect(count).toHaveText("10 个字符，3 个附件");
+  // 没有附件的文档：两栏都不写附件部分；全选后打字，选中栏随选区清空而消失。
+  await setDoc(page, ["ab", "", "c😀"]);
+  await editor.evaluate((el: any) => el.editor.commands.focus("end"));
+  await expect(items).toHaveText(["行 3，列 4", "6 个字符", "100%"]);
+  await page.keyboard.press("Control+a");
+  await expect(items).toHaveText(["行 1，列 1", "6 个字符", "已选 6 个字符", "100%"]);
+  await page.keyboard.insertText("新");
+  await expect(items).toHaveText(["行 1，列 2", "1 个字符", "100%"]);
+  expect(errors).toEqual([]);
+});
