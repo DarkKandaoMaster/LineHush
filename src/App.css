@@ -89,6 +89,8 @@ input:focus-visible {
   height: 40px;
   background: #e8e8e8;
   user-select: none;
+  /* 标签条的那条线（底线 + 当前标签页描边 + 外张圆弧），照记事本，比标题栏略深。 */
+  --tab-line: #dadada;
 }
 .titlebar-drag {
   flex: 1 0 40px;
@@ -164,6 +166,11 @@ input:focus-visible {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+  /*
+   * 照记事本：底部 1px 线只铺在标签条范围内（按内容取宽，到“+”右边界为止，右边拖动区没有线）。
+   * inset 阴影画在背景层，标签页盖得住；滚动容器的阴影不随内容滚动。
+   */
+  box-shadow: inset 0 -1px 0 var(--tab-line);
 }
 .tab {
   position: relative;
@@ -187,11 +194,25 @@ input:focus-visible {
 .tab:hover {
   background: rgba(0, 0, 0, 0.045);
 }
+/*
+ * 当前标签页：左、上、右 1px 描边（与 .tabbar 底线同色连成一笔），底部开口与工具栏接成一体。
+ * border-box 下外尺寸不变；内边距各减 1px、底部补 1px，内容位置与未激活标签页完全相同。
+ * z-index: 1 让两侧外张圆弧不被相邻标签页盖住（仍在 .titlebar.dimmed 的遮罩层之下）。
+ */
 .tab.active {
+  z-index: 1;
+  padding: 0 3px 1px 11px;
+  border: 1px solid var(--tab-line);
+  border-bottom: none;
   background: #f9f9f9;
   color: #1a1a1a;
 }
-/* 当前标签底部两侧向外的小圆角，与工具栏接成一体。 */
+/*
+ * 当前标签底部两侧向外张开的 6px 圆弧：圆内透明、1px 圆环为线色、圆外填 #f9f9f9。
+ * 绝对定位相对内边距盒（在 1px 左 / 右边框内侧），所以 left / right: -6px 实际让盒子盖住
+ * 标签页外 5px + 边框那一列：圆环在竖直切点处正落在侧边描边那一列，在水平切点处正落在
+ * .tabbar 底线那一行。色标各放宽半像素做抗锯齿，切点处像素中心距圆心 5.5px，取到纯线色。
+ */
 .tab.active::before,
 .tab.active::after {
   content: "";
@@ -203,11 +224,21 @@ input:focus-visible {
 }
 .tab.active::before {
   left: -6px;
-  background: radial-gradient(circle at 0 0, transparent 5.5px, #f9f9f9 6px);
+  background: radial-gradient(
+    circle at 0 0,
+    transparent 4.5px,
+    var(--tab-line) 5.5px,
+    #f9f9f9 6.5px
+  );
 }
 .tab.active::after {
   right: -6px;
-  background: radial-gradient(circle at 100% 0, transparent 5.5px, #f9f9f9 6px);
+  background: radial-gradient(
+    circle at 100% 0,
+    transparent 4.5px,
+    var(--tab-line) 5.5px,
+    #f9f9f9 6.5px
+  );
 }
 .tab-name {
   flex: 1;
