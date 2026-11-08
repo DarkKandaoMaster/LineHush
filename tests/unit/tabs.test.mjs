@@ -138,8 +138,10 @@ test("恢复窗口只调用一次，按 Rust 给出的顺序与当前标签页�
   try {
     assert.equal(state().ready, false);
     await Promise.all([tabs.initialize(), tabs.initialize()]);
-    assert.deepEqual(rustCalls(fake), ["restore_window"]);
     assert.equal(state().ready, true);
+    // 载入后报就绪一次（启动恢复的窗口据此一起显示）。
+    await until(() => fake.calls.includes("window_ready"));
+    assert.deepEqual(rustCalls(fake), ["restore_window", "window_ready"]);
     assert.equal(state().active, "b");
     assert.deepEqual(names(), ["甲.hush", "无标题", "无标题 2"]);
     assert.equal(tabs.activeTab().session.getSnapshot().dirty, true);
@@ -163,6 +165,26 @@ test("恢复窗口只调用一次，按 Rust 给出的顺序与当前标签页�
       tabs.activeTab().session.getSnapshot().error,
       "无法打开 D:/甲.hush：文件不存在",
     );
+    await teardown(tabs);
+  }
+});
+
+test("恢复窗口失败也报就绪，窗口不会一直隐藏", async () => {
+  globalThis.window = {};
+  const calls = [];
+  mockIPC(async (cmd) => {
+    calls.push(cmd);
+    if (cmd === "restore_window") throw "窗口不存在";
+  });
+  mockWindows("win-1");
+  const tabs = createTabs(async () => "cancel");
+  try {
+    await tabs.initialize();
+    assert.equal(tabs.getSnapshot().ready, true);
+    assert.equal(tabs.getSnapshot().error, "窗口不存在");
+    await until(() => calls.includes("window_ready"));
+    assert.deepEqual(calls, ["restore_window", "window_ready"]);
+  } finally {
     await teardown(tabs);
   }
 });
@@ -337,8 +359,9 @@ test("Ctrl+Shift+N：请 Rust 开新窗口，本窗口标签页不变；失败�
   const { tabs, fake, state } = setup();
   try {
     await tabs.initialize();
+    await until(() => fake.calls.includes("window_ready"));
     await tabs.newWindow();
-    assert.deepEqual(rustCalls(fake), ["restore_window", "new_window"]);
+    assert.deepEqual(rustCalls(fake), ["restore_window", "window_ready", "new_window"]);
     assert.equal(state().tabs.length, 1);
     fake.failWindow = "无法打开新窗口：拒绝访问";
     await tabs.newWindow();

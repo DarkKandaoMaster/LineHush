@@ -157,6 +157,12 @@ export function createTabs(
       set({ error: String(e) });
     } finally {
       set({ ready: true });
+      // 报给 Rust：启动恢复的窗口隐藏着，全部报到后一起显示（出错也报，否则永远不显示）。
+      // 排在 React 为上面的 set 安排的微任务渲染之后，显示时正文已画好；不用
+      // requestAnimationFrame / setTimeout：隐藏窗口里 Chromium 会节流它们。
+      queueMicrotask(() => {
+        native.windowReady().catch((e) => console.error(e));
+      });
     }
   }
   /** Makes `id` the current tab (Rust records it) and focuses its editor. */

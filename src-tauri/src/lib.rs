@@ -14,6 +14,7 @@ mod pdf;
 mod explorer;
 mod session;
 mod settings;
+mod startup;
 mod store;
 #[cfg(test)]
 mod store_tests;
@@ -25,6 +26,7 @@ use model::{Diary, ExportImage, MediaKind, Picture, Result};
 use serde::Serialize;
 use session::{Session, TabEntry, WINDOW_PREFIX};
 use settings::OpenFile;
+use startup::StartupShow;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
@@ -79,6 +81,8 @@ const CASCADE: f64 = 32.0;
 const STAGED_KEPT_AT_START: Duration = Duration::from_secs(7 * 24 * 3600);
 /// 每次复制后清掉放了这么久的文件：连续复制时，别的程序可能还要粘贴的上一次内容不会立刻被删。
 const STAGED_KEPT_AFTER_COPY: Duration = Duration::from_secs(3600);
+/// 启动恢复的窗口等各自页面就绪最多这么久，到时没凑齐也全部显示（startup.rs）。
+const STARTUP_SHOW_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct AppState {
     /// session.json: windows, their tabs and which file each tab belongs to.
@@ -96,6 +100,8 @@ struct AppState {
     window_records: Mutex<HashSet<String>>,
     /// 最后一个编辑窗口已销毁，进程正在退出。
     exiting: AtomicBool,
+    /// 启动时隐藏创建、等页面就绪后一起显示的窗口（`window_ready`）；显示后为 None。
+    startup: Mutex<Option<StartupShow>>,
     _lock: File,
 }
 /// Image copies to the system clipboard (see clipboard.rs).
@@ -394,7 +400,7 @@ fn open_new_window(app: &AppHandle, request: Option<PathBuf>) -> Result<String> 
     if let Some(path) = request {
         lock(&state.requests).insert(label.clone(), path);
     }
-    if let Err(e) = create_window(app, &label) {
+    if let Err(e) = create_window(app, &label, true) {
         lock(&state.requests).remove(&label);
         let mut session = lock(&state.session);
         if session.window_closed(&label).1 {
@@ -682,6 +688,56 @@ fn is_last_window(window: WebviewWindow, app: AppHandle) -> bool {
 #[tauri::command]
 fn reveal_window(window: WebviewWindow, app: AppHandle) {
     reveal(&app, window.label());
+}
+/// 本窗口的页面已载入标签页（tabs.ts `restore`，成功失败都报）。启动恢复的窗口隐藏
+/// 创建，全部就绪后一起显示（startup.rs）；不在启动批次里的窗口（普通新窗口、页面重载）
+/// 什么也不做。
+#[tauri::command]
+fn window_ready(window: WebviewWindow, app: AppHandle) {
+    let label = window.label().to_owned();
+    startup_step(&app, |batch| batch.ready(&label));
+}
+/// 改启动批次；`step` 返回凑齐了就交出批次、按顺序显示（锁外）。批次只显示一次。
+fn startup_step(app: &AppHandle, step: impl FnOnce(&mut StartupShow) -> bool) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let batch = {
+        let mut startup = lock(&state.startup);
+        let complete = startup.as_mut().is_some_and(step);
+        if complete {
+            startup.take()
+        } else {
+            None
+        }
+    };
+    if let Some(batch) = batch {
+        show_startup(app, batch);
+    }
+}
+/// 超时兜底（`STARTUP_SHOW_TIMEOUT`）：启动批次还没显示就把已创建的窗口全部显示。
+fn show_startup_late(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let batch = lock(&state.startup).take();
+    if let Some(batch) = batch {
+        eprintln!("启动窗口 {STARTUP_SHOW_TIMEOUT:?} 内未全部就绪，直接显示");
+        show_startup(app, batch);
+    }
+}
+/// 按创建顺序显示启动批次的窗口，最后置顶并聚焦 `focus`。`show` 经 Tauri 的事件循环
+/// 交给主线程执行，可以从任何线程调用。
+fn show_startup(app: &AppHandle, batch: StartupShow) {
+    let (order, focus) = batch.take();
+    for label in &order {
+        if let Some(window) = app.get_webview_window(label) {
+            if let Err(e) = window.show() {
+                eprintln!("无法显示窗口 {label}：{e}");
+            }
+        }
+    }
+    reveal(app, &focus);
 }
 /// The file waiting for the calling window, if any; each request is handed out once.
 #[tauri::command]
@@ -1233,6 +1289,8 @@ fn window_destroyed(app: &AppHandle, label: &str) {
         return;
     };
     lock(&state.requests).remove(label);
+    // 启动批次还没显示时销毁的窗口不再等它，其余已就绪就显示。
+    startup_step(app, |batch| batch.remove(label));
     let left = {
         let mut session = lock(&state.session);
         let (left, changed) = session.window_closed(label);
@@ -1284,8 +1342,9 @@ fn cascade_from(
     Some((target, source.inner_size().ok()?))
 }
 /// Creates an editor window, hidden until the window-state plugin has put it
-/// back where it was, then shows and focuses it.
-fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
+/// back where it was, then shows and focuses it. With `show_now` false (启动恢复的
+/// 窗口) it stays hidden: `window_ready` shows the startup windows together.
+fn create_window(app: &AppHandle, label: &str, show_now: bool) -> tauri::Result<WebviewWindow> {
     let state = app.try_state::<AppState>();
     // 窗口位置插件记过这个编号的位置就由它恢复，否则相对最近使用的窗口错开。
     let recorded = state
@@ -1341,6 +1400,9 @@ fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
         if let Err(e) = window.restore_state(WINDOW_STATE) {
             eprintln!("无法恢复窗口位置和大小：{e}");
         }
+    }
+    if !show_now {
+        return Ok(window);
     }
     // Shown even if restoring failed.
     if let Err(e) = window.show() {
@@ -1492,18 +1554,30 @@ pub fn run() {
                 remember_window,
                 window_records: Mutex::new(window_records),
                 exiting: AtomicBool::new(false),
+                // 像记事本：启动的窗口隐藏创建，各自页面载入标签页后（`window_ready`）
+                // 一起显示，而不是一个个先白屏弹出来（WebView2 在主线程上逐个创建）。
+                startup: Mutex::new(Some(StartupShow::new(
+                    plan.windows.clone(),
+                    plan.focus.clone(),
+                ))),
                 _lock: lock,
             });
             for label in &plan.windows {
-                if let Err(e) = create_window(app.handle(), label) {
+                if let Err(e) = create_window(app.handle(), label, false) {
                     // 第一个窗口都建不出来就无法启动；其余的只记下。
                     if label == &plan.windows[0] {
                         return Err(e.into());
                     }
                     eprintln!("无法恢复窗口 {label}：{e}");
+                    startup_step(app.handle(), |batch| batch.remove(label));
                 }
             }
-            reveal(app.handle(), &plan.focus);
+            // 兜底：某个页面载入失败、迟迟不报就绪时，到时把已创建的窗口全部显示。
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(STARTUP_SHOW_TIMEOUT);
+                show_startup_late(&handle);
+            });
             // 窗口建好约 3 秒后检查一次更新（设置“自动检查更新”关着则不查）；测试模式从不检查，
             // 不发任何网络请求。
             if !test_data_dir_set {
@@ -1520,6 +1594,7 @@ pub fn run() {
             new_window,
             is_last_window,
             reveal_window,
+            window_ready,
             take_open_request,
             stash_document,
             discard_stash,
