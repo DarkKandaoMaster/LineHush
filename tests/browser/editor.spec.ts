@@ -826,24 +826,31 @@ test("末行下方空白：左栏仍选末行，行右侧空白仍在行尾，�
 test("无标题笔记打字后删空回到未修改（无 ●）；多留一个空行仍为已修改", async ({ page }) => {
   const errors = await load(page);
   const tabName = page.locator(".tab.active .tab-name");
+  const tab = page.locator(".tab.active");
   await page.keyboard.insertText("今天");
   await page.keyboard.press("Enter");
   await page.keyboard.insertText("记录");
-  await expect(tabName).toHaveText("● 无标题");
+  await expect(tabName).toHaveText("无标题");
+  await expect(tab).toHaveClass(/\bdirty\b/);
   await page.keyboard.press("Control+a");
   await page.keyboard.press("Delete");
   await expect(tabName).toHaveText("无标题");
+  await expect(tab).not.toHaveClass(/\bdirty\b/);
   await page.keyboard.insertText("一");
   await page.keyboard.press("Enter");
   await page.keyboard.press("Backspace");
-  await expect(tabName).toHaveText("● 无标题");
+  await expect(tabName).toHaveText("无标题");
+  await expect(tab).toHaveClass(/\bdirty\b/);
   await page.keyboard.press("Backspace");
   await expect(tabName).toHaveText("无标题");
+  await expect(tab).not.toHaveClass(/\bdirty\b/);
   // Two empty lines are other content than the new document's one.
   await page.keyboard.press("Enter");
-  await expect(tabName).toHaveText("● 无标题");
+  await expect(tabName).toHaveText("无标题");
+  await expect(tab).toHaveClass(/\bdirty\b/);
   await page.keyboard.press("Backspace");
   await expect(tabName).toHaveText("无标题");
+  await expect(tab).not.toHaveClass(/\bdirty\b/);
   expect(errors).toEqual([]);
 });
 test("恢复的无标题笔记（崩溃残留）删空后回到未修改（无 ●）", async ({ page }) => {
@@ -852,11 +859,14 @@ test("恢复的无标题笔记（崩溃残留）删空后回到未修改（无 �
     recovered: true,
   });
   const tabName = page.locator(".tab.active .tab-name");
+  const tab = page.locator(".tab.active");
   await expect(editorOf(page).locator("p")).toHaveText(["恢复的内容"]);
-  await expect(tabName).toHaveText("● 无标题");
+  await expect(tabName).toHaveText("无标题");
+  await expect(tab).toHaveClass(/\bdirty\b/);
   await page.keyboard.press("Control+a");
   await page.keyboard.press("Backspace");
   await expect(tabName).toHaveText("无标题");
+  await expect(tab).not.toHaveClass(/\bdirty\b/);
   expect(errors).toEqual([]);
 });
 test("已命名文件 Ctrl+S 期间编辑器仍有焦点、不禁用、不变淡，按钮不变灰；保存中打的字保存后仍为已修改并暂存", async ({ page }) => {
@@ -867,9 +877,11 @@ test("已命名文件 Ctrl+S 期间编辑器仍有焦点、不禁用、不变淡
   const editor = editorOf(page);
   const host = page.locator(".editor-host");
   const tabName = page.locator(".tab.active .tab-name");
+  const tab = page.locator(".tab.active");
   const saveButton = page.getByRole("button", { name: "保存", exact: true });
   await page.keyboard.insertText("第一版");
-  await expect(tabName).toHaveText("● 甲.hush");
+  await expect(tabName).toHaveText("甲.hush");
+  await expect(tab).toHaveClass(/\bdirty\b/);
   await page.keyboard.press("Control+s");
   await expect.poll(async () => (await calls(page, "save_document")).length).toBe(1);
   // The save is pending (holdSave): nothing on the page changed.
@@ -879,7 +891,8 @@ test("已命名文件 Ctrl+S 期间编辑器仍有焦点、不禁用、不变淡
   await expect(host).toHaveCSS("opacity", "1");
   await expect(saveButton).toBeEnabled();
   await expect(page.getByRole("button", { name: "另存为" })).toBeEnabled();
-  await expect(tabName).toHaveText("● 甲.hush");
+  await expect(tabName).toHaveText("甲.hush");
+  await expect(tab).toHaveClass(/\bdirty\b/);
   // Typing meanwhile goes in as usual.
   await page.keyboard.insertText("，第二版");
   await expect(editor.locator("p")).toHaveText(["第一版，第二版"]);
@@ -888,7 +901,8 @@ test("已命名文件 Ctrl+S 期间编辑器仍有焦点、不禁用、不变淡
   expect((await calls(page, "save_document"))[0].document.blocks).toEqual([
     { type: "line", text: "第一版" },
   ]);
-  await expect(tabName).toHaveText("● 甲.hush");
+  await expect(tabName).toHaveText("甲.hush");
+  await expect(tab).toHaveClass(/\bdirty\b/);
   await expect(editor).toBeFocused();
   await expect(host).not.toHaveClass(/disabled/);
   await expect
@@ -898,6 +912,7 @@ test("已命名文件 Ctrl+S 期间编辑器仍有焦点、不禁用、不变淡
   await page.keyboard.press("Control+s");
   await releaseSave(page);
   await expect(tabName).toHaveText("甲.hush");
+  await expect(tab).not.toHaveClass(/\bdirty\b/);
   expect(errors).toEqual([]);
 });
 test("状态栏照记事本：“行 x，列 y │ 总数 │ 已选”，换行算 1 个字符，每个块算一个附件，选中栏只在选区非空时出现", async ({ page }) => {

@@ -128,10 +128,24 @@ const editor = (page) =>
 /** The current tab's pane: its banners, editor and hidden file input. */
 const pane = (page) => page.locator(".tab-pane:not([hidden])");
 const input = (page) => pane(page).locator("input[type=file]");
+/**
+ * Tab names, with "● " put back in front of unsaved ones: the tab shows that
+ * as a dot in place of its × now (the `dirty` class), not in its name.
+ */
 const tabNames = (page) =>
-  page.locator(".tabbar [role=tab] .tab-name").allTextContents();
+  page
+    .locator(".tabbar [role=tab]")
+    .evaluateAll((tabs) =>
+      tabs.map(
+        (t) => (t.classList.contains("dirty") ? "● " : "") + t.querySelector(".tab-name").textContent,
+      ),
+    );
 const activeName = (page) =>
-  page.locator('.tabbar [role=tab][aria-selected="true"] .tab-name').textContent();
+  page
+    .locator('.tabbar [role=tab][aria-selected="true"]')
+    .evaluate(
+      (t) => (t.classList.contains("dirty") ? "● " : "") + t.querySelector(".tab-name").textContent,
+    );
 const call = (page, cmd, args = {}) =>
   page.evaluate(
     ({ cmd, args }) => window.__TAURI_INTERNALS__.invoke(cmd, args),

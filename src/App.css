@@ -222,19 +222,43 @@ input:focus-visible {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 24px;
+  width: 30px;
   height: 24px;
   padding: 0;
-  font-size: 14px;
-  line-height: 1;
+  border-radius: 3px;
+  color: #898989;
   visibility: hidden;
 }
+.tab .tab-close-x {
+  display: block;
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
 .tab:hover .tab-close,
-.tab.active .tab-close {
+.tab.active .tab-close,
+.tab.dirty .tab-close {
   visibility: visible;
 }
 .tab .tab-close:hover {
   background: rgba(0, 0, 0, 0.07);
+}
+/* 照记事本：未保存的标签页在关闭按钮处显示圆点，悬停在标签页上时换回 ×。 */
+.tab-close-dot {
+  display: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.tab.dirty:not(:hover) .tab-close-x {
+  display: none;
+}
+.tab.dirty:not(:hover) .tab-close-dot {
+  display: block;
 }
 .tabbar .tab-new {
   display: inline-flex;

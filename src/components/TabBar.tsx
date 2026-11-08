@@ -69,7 +69,7 @@ function TabItem(props: {
       // 右键菜单按它找出右键的是哪个标签页（hooks/useContextMenu.ts）。
       data-tab={tab.id}
       aria-selected={active}
-      className={`tab${active ? " active" : ""}`}
+      className={`tab${active ? " active" : ""}${dirty ? " dirty" : ""}`}
       title={path?.replace(/^\\\\\?\\/, "") ?? name}
       onMouseDown={(event) => {
         keepFocus(event);
@@ -80,10 +80,7 @@ function TabItem(props: {
         if (event.button === 1) props.onClose(tab.id);
       }}
     >
-      <span className="tab-name">
-        {dirty ? "● " : ""}
-        {name}
-      </span>
+      <span className="tab-name">{name}</span>
       <button
         className="tab-close"
         title="关闭标签页 (Ctrl+W)"
@@ -95,7 +92,11 @@ function TabItem(props: {
         }}
         onClick={() => props.onClose(tab.id)}
       >
-        ×
+        {/* × 与圆点都画出来，不用字形：字形在行框里偏移，居中不准。 */}
+        <svg className="tab-close-x" viewBox="0 0 10 10" aria-hidden>
+          <path d="M1 1l8 8M9 1l-8 8" />
+        </svg>
+        <span className="tab-close-dot" aria-hidden />
       </button>
     </div>
   );
