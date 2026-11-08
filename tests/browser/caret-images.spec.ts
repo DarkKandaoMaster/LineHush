@@ -231,11 +231,12 @@ test("文档以图片结尾：点图片下方空白，光标停在最后一张�
 });
 
 // Below a final row of images, as below a final text line (editor.spec.ts):
-// a click is at the document's end; a drag pressed there has both ends at the
-// pointer's x in the last visual line of images (image-view's lastLineAt), by
-// the half of the image under it, the near side of the nearest one in a gap or
-// beside the row. A drag pressed in the text has its head there by x too.
-test("文档以图片行结尾：图片下方按下后横拖，两端按 x 落到末尾图片行；单击仍到文末，从文字拖下来 head 也按 x", async ({
+// a click is at the document's end; a drag pressed there keeps the end as its
+// anchor, and dragged left of the press while below the row its head is at the
+// start of the row's last visual line (image-view's lastLineStart), so the
+// whole row is selected; at / right of the press the end (2026-11-08). A drag
+// pressed in the text has its head at the end below the row.
+test("文档以图片行结尾：图片下方往左拖选中整个末尾图片行，往右拖不选；单击仍到文末，从文字拖下来到文末", async ({
   page,
 }) => {
   const errors = await load(page);
@@ -289,57 +290,50 @@ test("文档以图片行结尾：图片下方按下后横拖，两端按 x 落�
     await page.waitForTimeout(600);
   }
 
-  // Right of the row (the end), along under it to a's left half: before a,
-  // so both images, while held and after the release, the DOM agreeing.
-  await press({ x: right, y: below }, { x: a.x + 20, y: below + 5 });
+  // Right of the row (the end), along under it to the left: the row's start
+  // (before a), so both images, while held and after the release, the DOM
+  // agreeing; the caret drawn at the start of the row (side 1).
+  await press({ x: right, y: below }, { x: b.x + 20, y: below + 5 });
   // Drawn as the images' selected layer (no text in the range to draw).
   const range = { state: [6, 4], side: 1, dom: [6, 4], images: 2 };
   expect(await both(), "按住时").toEqual(range);
   await page.mouse.up();
   expect(await both(), "松开后").toEqual(range);
   await page.waitForTimeout(600);
-  // On under b's left half, the gap, left of the row and out of the window:
-  // before b, after a, then before a.
-  await press({ x: right, y: below }, { x: b.x + 20, y: below });
-  expect(await both(), "b 左半区下方").toMatchObject({ state: [6, 5], side: 1, dom: [6, 5], images: 1 });
-  for (let i = 1; i <= 8; i++) await page.mouse.move(b.x + 20 + ((gap - b.x - 20) * i) / 8, below);
-  expect(await both(), "a、b 间隙下方").toMatchObject({ state: [6, 5], dom: [6, 5], images: 1 });
+  // On under the gap, left of the row and out of the window: still both.
+  await press({ x: right, y: below }, { x: gap, y: below });
+  expect(await both(), "a、b 间隙下方").toEqual(range);
   for (let i = 1; i <= 8; i++) await page.mouse.move(gap + ((-50 - gap) * i) / 8, below);
-  expect(await both(), "越出左边框").toMatchObject({ state: [6, 4], side: 1, dom: [6, 4], images: 2 });
+  expect(await both(), "越出左边框").toEqual(range);
+  // Back right of the press: nothing, the caret at the end.
+  for (let i = 1; i <= 8; i++) await page.mouse.move(-50 + ((right + 30 + 50) * i) / 8, below);
+  expect(await both(), "回到按下点右侧").toMatchObject({ state: [6, 6], images: 0 });
   await page.mouse.up();
-  expect(await both(), "越出左边框松开后").toMatchObject({ state: [6, 4], dom: [6, 4], images: 2 });
+  expect(await both(), "回到右侧松开后").toMatchObject({ state: [6, 6], images: 0 });
   await page.waitForTimeout(600);
 
-  // Left to right: under a's left half (before a) to the gap (after a): a.
+  // Left to right: under a's left half to the gap and right of the row: nothing.
   await press({ x: a.x + 20, y: below }, { x: gap, y: below });
-  expect(await both(), "从 a 左半区下方到间隙").toEqual({
-    state: [4, 5],
-    side: -1,
-    dom: [4, 5],
-    images: 1,
-  });
+  expect(await both(), "从 a 左半区下方到间隙").toMatchObject({ state: [6, 6], images: 0 });
   await page.mouse.up();
-  expect(await both(), "松开后").toMatchObject({ state: [4, 5], dom: [4, 5], images: 1 });
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 6, side: -1 });
   await page.waitForTimeout(600);
-  // On to the right of the row: both.
-  await press({ x: a.x + 20, y: below }, { x: right, y: below });
-  await page.mouse.up();
-  expect(await both()).toMatchObject({ state: [4, 6], dom: [4, 6], images: 2 });
-  await page.waitForTimeout(600);
-  // Pressed under a's left half, up into the text: from before a.
+  // Pressed under a, up into the text: from the end.
   await press({ x: a.x + 20, y: below }, { x: line.x + 2, y: text });
   await page.mouse.up();
-  expect(await both()).toMatchObject({ state: [4, 1], dom: [4, 1], images: 0 });
+  expect(await both()).toMatchObject({ state: [6, 1], dom: [6, 1], images: 2 });
   await page.waitForTimeout(600);
 
   // Moved within the click slop: a click, at the end.
-  await press({ x: a.x + 20, y: below }, { x: a.x + 23, y: below + 1 });
+  await press({ x: a.x + 20, y: below }, { x: a.x + 17, y: below + 1 });
   await page.mouse.up();
   await page.waitForTimeout(50);
   expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 6, side: -1 });
   await page.waitForTimeout(600);
 
-  // With Shift: the anchor stays (in the text), the head at the pointer's x.
+  // With Shift: the anchor stays (in the text), dragged left the head is the
+  // row's start.
   await page.mouse.click(line.x + 15, text);
   const { anchor } = await selection(page);
   expect(anchor).toBeGreaterThan(0);
@@ -352,30 +346,17 @@ test("文档以图片行结尾：图片下方按下后横拖，两端按 x 落�
     await page.mouse.move(right + ((a.x + a.width - 20 - right) * i) / 8, below);
   await page.mouse.up();
   await page.keyboard.up("Shift");
-  expect(await both(), "Shift").toMatchObject({ state: [anchor, 5], images: 1 });
+  expect(await both(), "Shift").toMatchObject({ state: [anchor, 4], images: 0 });
   await page.waitForTimeout(600);
 
-  // Dragged from the text down below the row: the head is at the pointer's x
-  // in the row too (2026-11-03), under a's left half before a, in the gap
-  // after a, right of the row the end.
+  // Dragged from the text down below the row: the head is the end, whatever
+  // the pointer's x (2026-11-08: the head by x of 2026-11-03 was dropped).
   await press({ x: line.x + 2, y: text }, { x: a.x + 20, y: below });
-  expect(await both(), "从文字拖到 a 左半区下方").toMatchObject({ state: [1, 4], side: 1, dom: [1, 4], images: 0 });
-  for (let i = 1; i <= 8; i++) await page.mouse.move(a.x + 20 + ((gap - a.x - 20) * i) / 8, below);
-  expect(await both(), "从文字拖到间隙下方").toMatchObject({ state: [1, 5], dom: [1, 5], images: 1 });
-  for (let i = 1; i <= 8; i++) await page.mouse.move(gap + ((right - gap) * i) / 8, below);
+  expect(await both(), "从文字拖到 a 左半区下方").toMatchObject({ state: [1, 6], dom: [1, 6], images: 2 });
+  for (let i = 1; i <= 8; i++) await page.mouse.move(a.x + 20 + ((right - a.x - 20) * i) / 8, below);
   expect(await both(), "从文字拖到行右侧下方").toMatchObject({ state: [1, 6], dom: [1, 6], images: 2 });
-  for (let i = 1; i <= 8; i++) await page.mouse.move(right + ((b.x + 20 - right) * i) / 8, below);
   await page.mouse.up();
-  expect(await both(), "从文字拖到 b 左半区下方松开后").toMatchObject({ state: [1, 5], dom: [1, 5], images: 1 });
-  await page.waitForTimeout(600);
-  // Pressed at the end of the text line, dragged down under a's right half:
-  // after a, so a alone (before: the end, both images). On the way the
-  // pointer passes over a's left half, where the selection becomes the caret
-  // before a (unchanged by this rule), which then is the anchor.
-  const textEnd = await editor.evaluate((el: any) => el.editor.view.coordsAtPos(3));
-  await press({ x: textEnd.left, y: text }, { x: a.x + a.width - 20, y: below });
-  await page.mouse.up();
-  expect(await both(), "从行尾拖到 a 右半区下方").toMatchObject({ state: [4, 5], dom: [4, 5], images: 1 });
+  expect(await both(), "松开后").toMatchObject({ state: [1, 6], dom: [1, 6], images: 2 });
   expect(errors).toEqual([]);
 });
 
@@ -435,18 +416,12 @@ test("鼠标拖选文字与图片：拖到图片上按左右半区、拖过文�
   const below = await belowImage();
   await page.mouse.click(below.x, below.y);
   expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 6, side: -1 });
-  // Past the end of the document, below the image: by the pointer's x in
-  // the row (2026-11-03), under its right half or right of it after it, under
-  // its left half before it.
-  await drag(await line("start"), await belowImage(150));
-  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 1, head: 6 });
-  await expect(selected()).toHaveCount(1);
-  await drag(await line("start"), await belowImage(260));
-  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 1, head: 6 });
-  await expect(selected()).toHaveCount(1);
-  await drag(await line("start"), await belowImage());
-  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 1, head: 5 });
-  await expect(selected()).toHaveCount(0);
+  // Past the end of the document, below the image: the end, whatever the x.
+  for (const dx of [50, 150]) {
+    await drag(await line("start"), await belowImage(dx));
+    expect(await selection(page), `${dx}`).toEqual({ type: "blockRange", anchor: 1, head: 6 });
+    await expect(selected()).toHaveCount(1);
+  }
   // Onto the image: its right half takes it, its left half stops before it.
   await drag(await line("start"), await onImage("right"));
   expect(await selection(page)).toEqual({ type: "blockRange", anchor: 1, head: 6 });
@@ -454,15 +429,12 @@ test("鼠标拖选文字与图片：拖到图片上按左右半区、拖过文�
   await drag(await line("start"), await onImage("left"));
   expect(await selection(page)).toEqual({ type: "blockRange", anchor: 1, head: 5 });
   await expect(selected()).toHaveCount(0);
-  // Backwards, from below the image to the text: the anchor at the side of
-  // the image above the press (2026-11-02), after it under its right half,
-  // before it under its left half.
-  await drag(await belowImage(150), await line("start"));
-  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 1 });
-  await expect(selected()).toHaveCount(1);
-  await drag(await belowImage(), await line("start"));
-  expect(await selection(page)).toEqual({ type: "blockRange", anchor: 5, head: 1 });
-  await expect(selected()).toHaveCount(0);
+  // Backwards, from below the image to the text: the anchor is the end.
+  for (const dx of [50, 150]) {
+    await drag(await belowImage(dx), await line("start"));
+    expect(await selection(page), `${dx}`).toEqual({ type: "blockRange", anchor: 6, head: 1 });
+    await expect(selected()).toHaveCount(1);
+  }
   // Mirrored: the image starts the document. Up onto its left half takes it.
   await reset(["[a]", "文本1"]);
   await drag(await line("end"), await onImage("left"));
@@ -550,7 +522,6 @@ test("拖选经过图片：松开鼠标之前文字高亮（DOM 选区）就与�
     if (at === "end") return { x: line.x + 40, y: line.y + line.height / 2 };
     if (at === "left") return { x: image.x + 10, y };
     if (at === "right") return { x: image.x + image.width - 10, y };
-    if (at === "below right") return { x: image.x + image.width - 50, y: image.y + image.height + 80 };
     return { x: image.x + 50, y: image.y + image.height + 80 }; // below
   };
   /** Presses at the first point and moves through the others; returns before releasing. */
@@ -584,10 +555,9 @@ test("拖选经过图片：松开鼠标之前文字高亮（DOM 选区）就与�
   // "文本1" 0-5, the image 5-6 as the document's last node.
   await expectDrag(["文本1", "[a]"], ["start", "right"], [1, 6]);
   await expectDrag(["文本1", "[a]"], ["start", "left"], [1, 5]);
-  // Over the image, then below it: by the pointer's x in the row
-  // (2026-11-03), under its right half after it, under its left half before it.
-  await expectDrag(["文本1", "[a]"], ["start", "left", "below right"], [1, 6]);
-  await expectDrag(["文本1", "[a]"], ["start", "right", "below"], [1, 5]);
+  // Over the image, then below it: past the end of the document.
+  await expectDrag(["文本1", "[a]"], ["start", "left", "below"], [1, 6]);
+  await expectDrag(["文本1", "[a]"], ["start", "right", "below"], [1, 6]);
   // Over the image and back into the text: the browser's own selection again.
   await expectDrag(["文本1", "[a]"], ["start", "right", "end"], [1, 4]);
   await expect(editorOf(page).locator(".image-selected")).toHaveCount(0);

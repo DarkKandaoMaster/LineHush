@@ -1351,38 +1351,17 @@ function belowLastLine(view: EditorView, y: number): Spot | null {
   return { pos: doc.content.size - 1, side: -1 };
 }
 
-/** The images of the visual line (`imageFold`) the image at `pos` is on, with their boxes. */
-function rowAt(view: EditorView, pos: number) {
-  const { doc } = view.state;
-  const { from, to } = imageFold(view, pos);
-  const row: { pos: number; node: PmNode; rect: DOMRect }[] = [];
-  for (let at = from; at < to; at++)
-    row.push({ pos: at, node: doc.nodeAt(at)!, rect: imageRect(view, at) });
-  return row;
-}
-
 /**
- * The images of the last visual line (`rowAt`) when the document ends with
- * an image; null when it ends with a text line.
+ * The images of the last visual line (`imageFold`), with their boxes, when the
+ * document ends with an image; null when it ends with a text line.
  */
 function lastRow(view: EditorView) {
   const { doc } = view.state;
-  return isImage(doc.lastChild) ? rowAt(view, doc.content.size - 1) : null;
-}
-
-/**
- * The last block that is not an empty text line (an image, or a text line with
- * text), with its position; null when every block is an empty text line.
- * Where `lastLineAt` goes: empty lines ending the document are skipped.
- */
-export function lastFilledBlock(doc: PmNode): { pos: number; node: PmNode } | null {
-  let pos = doc.content.size;
-  for (let i = doc.childCount - 1; i >= 0; i--) {
-    const node = doc.child(i);
-    pos -= node.nodeSize;
-    if (isImage(node) || node.content.size > 0) return { pos, node };
-  }
-  return null;
+  if (!isImage(doc.lastChild)) return null;
+  const { from, to } = imageFold(view, doc.content.size - 1);
+  const row: { pos: number; rect: DOMRect }[] = [];
+  for (let at = from; at < to; at++) row.push({ pos: at, rect: imageRect(view, at) });
+  return row;
 }
 
 /**
@@ -1396,48 +1375,31 @@ function belowLastRow(view: EditorView, y: number) {
 }
 
 /**
- * The point at `x` in the last filled line (`lastFilledBlock`: empty text
- * lines ending the document are skipped, so under an empty last line a drag
- * selects in the text above it): where a drag pressed below the last line
- * (`DragSelection.below`) has its ends, and any other drag its head
- * (`byLastLineX`), so dragging along under the line selects in it. A text line
- * (in its last fold): the position there, an `x` left / right of the line
- * taken at its edge; with no position there (the line out of the window), its
- * end. An image (its visual line, `rowAt`): the side of the image under `x`
- * (`spotBy`), in a gap or left / right of the row the near side of the nearest
- * image, so left of the row before its first image and right of it after its
- * last. With every line empty, the document's end.
+ * The start of the last line: the line holding the last character before the
+ * document's end (`doc.content.size - 1`, where a click below the last line
+ * puts the caret), so a range from there to the end selects that whole line,
+ * as dragging left below the last line does in Notepad (`DragSelection.below`).
+ * The last block a text line with text: its start. An empty last text line:
+ * the block before it, the start of a text line (only its line break if that
+ * is empty too) or of the visual line of images an image is on; with no block
+ * before it, none (null). An image: the start of its visual line. `rowStart`
+ * gives the start (before the first image) of the visual line of images the
+ * image at a position is on; the caret there is drawn at the start of that
+ * line (side 1).
  */
-function lastLineAt(view: EditorView, x: number): Spot {
-  const { doc } = view.state;
-  const end = { pos: doc.content.size - 1, side: -1 as Side };
-  const last = lastFilledBlock(doc);
-  if (!last) return end;
-  const { pos: start, node } = last;
-  if (isImage(node)) {
-    const row = rowAt(view, start);
-    let near = row[0];
-    let distance = Infinity;
-    for (const image of row) {
-      const gap = Math.max(image.rect.left - x, x - image.rect.right, 0);
-      if (gap < distance) {
-        distance = gap;
-        near = image;
-      }
-    }
-    return spotBy(near.pos, near.node, x, near.rect);
+export function lastLineStart(
+  doc: PmNode,
+  rowStart: (pos: number) => number,
+): Spot | null {
+  let index = doc.childCount - 1;
+  let node = doc.child(index);
+  let pos = doc.content.size - node.nodeSize;
+  if (!isImage(node) && node.content.size === 0) {
+    if (index === 0) return null;
+    node = doc.child(--index);
+    pos -= node.nodeSize;
   }
-  const lineEnd = { pos: start + node.nodeSize - 1, side: -1 as Side };
-  const dom = view.nodeDOM(start) as HTMLElement | null;
-  if (!dom) return lineEnd;
-  const box = dom.getBoundingClientRect();
-  const hit = view.posAtCoords({
-    left: Math.min(Math.max(x, box.left + 1), box.right - 1),
-    top: box.bottom - 1,
-  });
-  return hit
-    ? { pos: Math.min(Math.max(hit.pos, start + 1), lineEnd.pos), side: -1 }
-    : lineEnd;
+  return { pos: isImage(node) ? rowStart(pos) : pos + 1, side: 1 };
 }
 
 /**
@@ -1667,10 +1629,9 @@ interface DragSelection {
    * there. The browser's own anchor is its canonical position, which skips
    * over a non-editable image: pressed before a row's first image it is after
    * that image. Pressed below the last text line: its end (`belowLastLine`),
-   * where the browser's anchor would be in the line under the pointer; once
-   * the press turns into a drag, the point in that line under the press
-   * instead (see `below`). Below a final row of images likewise: the end
-   * (`spotBeside`), then the side of the image under the press.
+   * where the browser's anchor would be in the line under the pointer, also
+   * once the press turns into a drag (see `below`). Below a final row of
+   * images likewise: the end (`spotBeside`).
    */
   anchor?: number;
   /**
@@ -1678,12 +1639,13 @@ interface DragSelection {
    * (`belowLastLine`, `belowLastRow`; not on a double / triple click): the
    * point pressed, and whether the pointer has since moved off it by more than
    * ProseMirror's click slop (`moved`), when the press is a drag and no longer
-   * a click (which `clickBesideImages` puts at the end). Dragged so, both ends
-   * below the line are at the pointer's x in the last filled line (`lastLineAt`,
-   * empty lines ending the document skipped) rather than at the end, so a drag
-   * along under the line selects in it; with Shift
-   * the anchor stays the selection's. A drag pressed elsewhere has its head
-   * below the line at the pointer's x too (`byLastLineX`).
+   * a click (which `clickBesideImages` puts at the end). Dragged so and with
+   * the pointer still below the last line, left of the point pressed, the
+   * head is at the start of the last line (`lastLineStart`), so the range
+   * selects that whole line up to the end, as in Notepad; anywhere else below
+   * the line (not yet dragged, or at / right of the press) it is at the end.
+   * The anchor stays: the end, or with Shift the selection's. A drag pressed
+   * elsewhere has its head below the line at the end.
    */
   below?: { x: number; y: number; moved: boolean };
   /**
@@ -1744,39 +1706,25 @@ export const pointSpot = (view: EditorView, x: number, y: number) =>
 
 /**
  * During a drag selection, the end set by the pointer on or beside images, or
- * below the last line (`belowHead`), if it is there.
+ * below the last text line (its end, `belowLastLine`; not after a double /
+ * triple click), if it is there. Pressed below the last line and dragged left
+ * while still below it, the start of that line instead (`DragSelection.below`).
  */
 function dragHead(view: EditorView): Spot | null {
   const drag = drags.get(view);
   const pointer = drag?.pointer;
   if (!pointer) return null;
   const { x, y } = pointer;
-  // Below a final row of images `spotBeside` gives the end; a drag goes by
-  // the pointer's x in the row instead (`byLastLineX`).
-  if (byLastLineX(drag) && belowLastRow(view, y)) return lastLineAt(view, x);
-  return pointSpot(view, x, y) ?? belowHead(view, drag, x, y);
-}
-
-/**
- * Whether the pointer below the last line (a text line or a row of images)
- * puts the drag's head at its x in that line (`lastLineAt`) rather than at the
- * document's end: for any drag, pressed in the text (with Shift too) or below
- * the line, so dragging there selects in the line. Not while a press below it
- * is still a click (`DragSelection.below` not yet `moved`: the end) or after a
- * double / triple click.
- */
-const byLastLineX = (drag: DragSelection) =>
-  !drag.words && (!drag.below || drag.below.moved);
-
-/**
- * During a drag selection, the end set by the pointer below the last text
- * line: the pointer's x in it (`byLastLineX`), or its end while a press there
- * is still a click. None after a double / triple click.
- */
-function belowHead(view: EditorView, drag: DragSelection, x: number, y: number): Spot | null {
-  const end = drag.words ? null : belowLastLine(view, y);
-  if (!end || !byLastLineX(drag)) return end;
-  return lastLineAt(view, x);
+  const { below } = drag;
+  if (
+    below?.moved &&
+    x < below.x &&
+    (belowLastLine(view, y) || belowLastRow(view, y))
+  ) {
+    const start = lastLineStart(view.state.doc, (pos) => imageFold(view, pos).from);
+    if (start) return start;
+  }
+  return pointSpot(view, x, y) ?? (drag.words ? null : belowLastLine(view, y));
 }
 
 /**
@@ -1916,37 +1864,34 @@ export function dragMove(view: EditorView, event: MouseEvent) {
   if (!(event.buttons & 1)) return endDrag(drag);
   if (!drag.pointer) return;
   drag.pointer = { x: event.clientX, y: event.clientY };
-  // Pressed below the last line (text or a row of images) and now dragged:
-  // the anchor goes from the end to the point in the line under the press
-  // (see `below`).
+  // Pressed below the last line (text or a row of images) and now moved past
+  // the click slop: a drag, which dragged left has its head at the start of
+  // that line (see `below`), from the next move on. Chromium decides on the
+  // first move of a press whether it drags the selection (whether the
+  // selection holds the point pressed): a range to the line's start set during
+  // that move (ProseMirror puts it into the DOM at once unless it is holding
+  // the DOM selection back) would hold it, and be dragged as content.
   const { below } = drag;
-  if (
+  const dragged =
     below &&
     !below.moved &&
     (Math.abs(event.clientX - below.x) > CLICK_SLOP ||
-      Math.abs(event.clientY - below.y) > CLICK_SLOP)
-  ) {
-    below.moved = true;
-    if (drag.anchor !== undefined) drag.anchor = lastLineAt(view, below.x).pos;
-  }
+      Math.abs(event.clientY - below.y) > CLICK_SLOP);
   // Over an image the browser's end stays in the nearest text line, often
   // without a selection change to read, and beside images (also out of the
   // window) it goes to the wrong side of one, so the range is set here.
   const head = dragHead(view);
+  if (dragged) below.moved = true;
   if (head === null) {
     // Off the image again, the browser's end takes over. It is moved after
     // this listener, but not if the browser deems the new end the same as the
     // drawn one (both ends of a final image are, so below it the range would
     // stay before it): the selection is first collapsed to its anchor, which
-    // the browser then extends to the pointer. Pressed below the last line,
-    // the drag's anchor may have just moved (see `below`) and is newer than
-    // the selection's.
+    // the browser then extends to the pointer.
     if (drag.drawn) {
       drag.drawn = false;
       const domSel = view.dom.ownerDocument.getSelection();
-      const a = view.domAtPos(
-        (drag.below?.moved ? drag.anchor : undefined) ?? view.state.selection.anchor,
-      );
+      const a = view.domAtPos(view.state.selection.anchor);
       domSel?.collapse(a.node, a.offset);
     }
     return;
@@ -2213,9 +2158,8 @@ export function imagePlugin(
           keptAnchor(view, current.anchor, $anchor)
         )
           $from = doc.resolve(current.anchor);
-        // Pressed below the last text line, both ends in text: the drag's
-        // anchor is the line's end (a click) or the point in it under the
-        // press (a drag), which the browser's may not be.
+        // Pressed below the last text line, both ends in text: the browser's
+        // anchor is in the line under the press, the drag's is the line's end.
         const sel =
           selectionBetween($from, $head) ??
           ($from !== $anchor && $head.parent.inlineContent
