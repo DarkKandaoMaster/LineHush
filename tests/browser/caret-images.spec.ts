@@ -233,10 +233,11 @@ test("文档以图片结尾：点图片下方空白，光标停在最后一张�
 // Below a final row of images, as below a final text line (editor.spec.ts):
 // a click is at the document's end; a drag pressed there keeps the end as its
 // anchor, and dragged left of the press while below the row its head is at the
-// start of the row's last visual line (image-view's lastLineStart), so the
-// whole row is selected; at / right of the press the end (2026-11-08). A drag
-// pressed in the text has its head at the end below the row.
-test("文档以图片行结尾：图片下方往左拖选中整个末尾图片行，往右拖不选；单击仍到文末，从文字拖下来到文末", async ({
+// pointer's x in the row's last visual line (image-view's lastLineAt): the
+// side of the image under it, in a gap or beside the row the near side of the
+// nearest image; at / right of the press the end (2026-11-08). A drag pressed
+// in the text has its head at the end below the row.
+test("文档以图片行结尾：图片下方往左拖，head 按 x 落在末尾图片行，往右拖不选；单击仍到文末，从文字拖下来到文末", async ({
   page,
 }) => {
   const errors = await load(page);
@@ -290,20 +291,32 @@ test("文档以图片行结尾：图片下方往左拖选中整个末尾图片�
     await page.waitForTimeout(600);
   }
 
-  // Right of the row (the end), along under it to the left: the row's start
-  // (before a), so both images, while held and after the release, the DOM
-  // agreeing; the caret drawn at the start of the row (side 1).
-  await press({ x: right, y: below }, { x: b.x + 20, y: below + 5 });
-  // Drawn as the images' selected layer (no text in the range to draw).
-  const range = { state: [6, 4], side: 1, dom: [6, 4], images: 2 };
-  expect(await both(), "按住时").toEqual(range);
+  // Right of the row (the end), along under it to the left, under b's left
+  // half: before b, so b, while held and after the release, the DOM agreeing;
+  // drawn as the images' selected layer (no text in the range to draw).
+  await press({ x: right, y: below }, { x: b.x + b.width * 0.25, y: below + 5 });
+  const onlyB = { state: [6, 5], side: 1, dom: [6, 5], images: 1 };
+  expect(await both(), "b 左半区下方按住时").toEqual(onlyB);
   await page.mouse.up();
-  expect(await both(), "松开后").toEqual(range);
+  expect(await both(), "b 左半区下方松开后").toEqual(onlyB);
   await page.waitForTimeout(600);
-  // On under the gap, left of the row and out of the window: still both.
+  // Under b's right half: after b, nothing.
+  await press({ x: right, y: below }, { x: b.x + b.width * 0.75, y: below });
+  expect(await both(), "b 右半区下方").toMatchObject({ state: [6, 6], images: 0 });
+  await page.mouse.up();
+  await page.waitForTimeout(600);
+  // Under the gap nearer a: after a (its near side), so b; under a's left half
+  // before a, so both; left of the row and out of the window: still both, the
+  // caret drawn at the start of the row (side 1).
   await press({ x: right, y: below }, { x: gap, y: below });
-  expect(await both(), "a、b 间隙下方").toEqual(range);
-  for (let i = 1; i <= 8; i++) await page.mouse.move(gap + ((-50 - gap) * i) / 8, below);
+  // (The side is not checked: passing under b's left half put the head at the
+  // same position with side 1, and a move that changes only the side keeps it.)
+  expect(await both(), "a、b 间隙下方").toMatchObject({ state: [6, 5], dom: [6, 5], images: 1 });
+  for (let i = 1; i <= 8; i++) await page.mouse.move(gap + ((a.x + a.width * 0.25 - gap) * i) / 8, below);
+  const range = { state: [6, 4], side: 1, dom: [6, 4], images: 2 };
+  expect(await both(), "a 左半区下方").toEqual(range);
+  for (let i = 1; i <= 8; i++)
+    await page.mouse.move(a.x + a.width * 0.25 + ((-50 - a.x - a.width * 0.25) * i) / 8, below);
   expect(await both(), "越出左边框").toEqual(range);
   // Back right of the press: nothing, the caret at the end.
   for (let i = 1; i <= 8; i++) await page.mouse.move(-50 + ((right + 30 + 50) * i) / 8, below);
@@ -332,8 +345,8 @@ test("文档以图片行结尾：图片下方往左拖选中整个末尾图片�
   expect(await selection(page)).toEqual({ type: "blockRange", anchor: 6, head: 6, side: -1 });
   await page.waitForTimeout(600);
 
-  // With Shift: the anchor stays (in the text), dragged left the head is the
-  // row's start.
+  // With Shift: the anchor stays (in the text), dragged left the head is by x
+  // in the row: under a's right half, after a.
   await page.mouse.click(line.x + 15, text);
   const { anchor } = await selection(page);
   expect(anchor).toBeGreaterThan(0);
@@ -343,10 +356,10 @@ test("文档以图片行结尾：图片下方往左拖选中整个末尾图片�
   await page.mouse.move(right, below);
   await page.mouse.down();
   for (let i = 1; i <= 8; i++)
-    await page.mouse.move(right + ((a.x + a.width - 20 - right) * i) / 8, below);
+    await page.mouse.move(right + ((a.x + a.width * 0.75 - right) * i) / 8, below);
   await page.mouse.up();
   await page.keyboard.up("Shift");
-  expect(await both(), "Shift").toMatchObject({ state: [anchor, 4], images: 0 });
+  expect(await both(), "Shift").toMatchObject({ state: [anchor, 5], images: 1 });
   await page.waitForTimeout(600);
 
   // Dragged from the text down below the row: the head is the end, whatever

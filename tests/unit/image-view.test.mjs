@@ -1302,29 +1302,26 @@ test("复制为纯文本：文件写作 [文件]，与图片 / 视频 / 音频�
 });
 
 // ---- 2026-11-08 ----
-import { lastLineStart } from "../../src/editor/image-view.ts";
+import { lastLineBlock } from "../../src/editor/image-view.ts";
 
-test("lastLineStart：文末前最后一个字符所在行的行首（末行下方左拖选中整个末行）", () => {
-  // The visual line of images an image is on: here a row starting at 4 ("上面" 0-4).
-  const rowStart = (pos) => (pos >= 4 && pos < 6 ? 4 : pos);
-  const at = (d) => lastLineStart(d, rowStart);
-  // Last line with text: its start.
-  assert.deepEqual(at(doc("abc")), { pos: 1, side: 1 });
-  // "文字" 0-4, empty 4-6: the line above, so the range is "文字" and its line break.
-  assert.deepEqual(at(doc("文字", "")), { pos: 1, side: 1 });
-  // Three lines and an empty one: only the third ("第一行" 0-5, "第二行" 5-10, "第三行" 10-15).
-  assert.deepEqual(at(doc("第一行", "第二行", "第三行", "")), { pos: 11, side: 1 });
-  // Three empty lines ending the document: only the line break of the one before the last.
+test("lastLineBlock：文末前最后一个字符所在的行（末行下方左拖时 head 按 x 落在这一行）", () => {
+  const at = (d) => {
+    const block = lastLineBlock(d);
+    return block && { pos: block.pos, text: block.node.textContent, image: block.node.type.name === "image" };
+  };
+  // Last line with text: itself.
+  assert.deepEqual(at(doc("abc")), { pos: 0, text: "abc", image: false });
+  // "文字" 0-4, empty 4-6: the line above.
+  assert.deepEqual(at(doc("文字", "")), { pos: 0, text: "文字", image: false });
+  // Three lines and an empty one: the third ("第一行" 0-5, "第二行" 5-10, "第三行" 10-15).
+  assert.deepEqual(at(doc("第一行", "第二行", "第三行", "")), { pos: 10, text: "第三行", image: false });
+  // Three empty lines ending the document: the empty one before the last.
   // "文字" 0-4, empty 4-6, 6-8, 8-10.
-  assert.deepEqual(at(doc("文字", "", "", "")), { pos: 7, side: 1 });
-  // A single empty line: nothing to select.
-  assert.equal(at(doc("")), null);
-  // Ending with images (a 4-5, b 5-6): the start of their visual line.
-  assert.deepEqual(at(doc("上面", img("a", true), img("b"))), { pos: 4, side: 1 });
-  // Images and then an empty line: the start of the images' visual line.
-  assert.deepEqual(at(doc("上面", img("a", true), img("b"), "")), { pos: 4, side: 1 });
-  // rowStart is asked about the last image (or the one before the empty line).
-  const asked = [];
-  lastLineStart(doc("上面", img("a", true), img("b"), ""), (pos) => (asked.push(pos), pos));
-  assert.deepEqual(asked, [5]);
+  assert.deepEqual(at(doc("文字", "", "", "")), { pos: 6, text: "", image: false });
+  // A single empty line: no line.
+  assert.equal(lastLineBlock(doc("")), null);
+  // Ending with images (a 4-5, b 5-6): the last image (its visual line is the line).
+  assert.deepEqual(at(doc("上面", img("a", true), img("b"))), { pos: 5, text: "", image: true });
+  // Images and then an empty line: the image before the empty line.
+  assert.deepEqual(at(doc("上面", img("a", true), img("b"), "")), { pos: 5, text: "", image: true });
 });

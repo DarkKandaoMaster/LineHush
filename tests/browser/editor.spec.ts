@@ -330,11 +330,12 @@ const held = (page: Page) =>
 // Below the last text line (the editor's bottom padding) a click is at the
 // document's end whatever its x, as in Notepad / VS Code (image-view's
 // belowLastLine); the browser would put it in the last line under the pointer.
-// A drag pressed there keeps the end as its anchor; dragged left while below
-// the line its head is at the line's start (image-view's lastLineStart), so the
-// whole last line is selected, as in Notepad (2026-11-08); a drag pressed in
-// the text has its head at the end below the line.
-test("末行下方空白：单击落到文末，与 x 无关；Shift+单击扩到文末；从那里往左拖选中整个末行", async ({ page }) => {
+// A drag pressed there keeps the end as its anchor; dragged left of the press
+// while below the line its head is at the pointer's x in the line
+// (image-view's lastLineAt), so the line is selected from under the pointer to
+// the end, as in Notepad (2026-11-08); a drag pressed in the text has its head
+// at the end below the line.
+test("末行下方空白：单击落到文末，与 x 无关；Shift+单击扩到文末；从那里往左拖，head 按 x 落在末行", async ({ page }) => {
   const errors = await load(page);
   const editor = editorOf(page);
   await setDoc(page, ["第一行文字内容", "第二行文字内容", "第三行文字内容", "第四行文字内容"]);
@@ -379,38 +380,57 @@ test("末行下方空白：单击落到文末，与 x 无关；Shift+单击扩�
   await page.waitForTimeout(600);
 
   // Pressed below and dragged left under the last line: from the end to the
-  // line's start; up into the line the browser's head (from the end); back
-  // below, left of the press the line's start, right of it the end.
+  // pointer's x in the line; up into the line the browser's head (from the
+  // end); back below, left of the press by x again, right of it the end.
   const at = await posAt(page, last.x + 45, mid(last));
+  const at20 = await posAt(page, last.x + 20, mid(last));
   expect(at).toBeGreaterThan(28);
   expect(at).toBeLessThan(35);
+  expect(at20).toBeGreaterThan(28);
+  expect(at20).toBeLessThan(at);
   await page.mouse.move(last.x + 75, below);
   await page.mouse.down();
   await page.mouse.move(last.x + 45, below, { steps: 4 });
   await page.waitForTimeout(50);
-  expect(await held(page), "往左").toEqual({ anchor: 35, head: 28 });
+  expect(await held(page), "往左").toEqual({ anchor: 35, head: at });
   await page.mouse.move(last.x + 45, mid(last), { steps: 4 });
   await page.waitForTimeout(50);
   expect(await held(page), "进入末行").toEqual({ anchor: 35, head: at });
   await page.mouse.move(last.x + 20, below, { steps: 4 });
   await page.waitForTimeout(50);
-  expect(await held(page), "回到下方左侧").toEqual({ anchor: 35, head: 28 });
+  expect(await held(page), "回到下方左侧").toEqual({ anchor: 35, head: at20 });
   await page.mouse.move(last.x + 150, below, { steps: 6 });
   await page.waitForTimeout(50);
   expect(await held(page), "下方按下点右侧").toEqual({ anchor: 35, head: 35 });
   await page.mouse.move(last.x + 20, below, { steps: 6 });
   await page.waitForTimeout(50);
-  expect(await held(page), "再回左侧").toEqual({ anchor: 35, head: 28 });
+  expect(await held(page), "再回左侧").toEqual({ anchor: 35, head: at20 });
   await page.mouse.up();
   await page.waitForTimeout(50);
-  expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: 28 });
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: at20 });
   // The browser's DOM selection agrees, and it is drawn.
   await frames(page);
-  expect(await domEnds(page)).toEqual([35, 28]);
-  expect(await page.evaluate(() => getSelection()!.toString())).toBe("第四行文字内容");
+  expect(await domEnds(page)).toEqual([35, at20]);
+  const part = await editor.evaluate((el: any, from) => el.editor.state.doc.textBetween(from, 35), at20);
+  expect(part.length).toBe(35 - at20);
+  expect("第四行文字内容".endsWith(part)).toBe(true);
+  expect(await page.evaluate(() => getSelection()!.toString())).toBe(part);
   expect(
     await editor.evaluate((el) => !!el.parentElement!.querySelector(".selection-layer path")!.getAttribute("d")),
   ).toBe(true);
+  await page.waitForTimeout(600);
+
+  // Dragged left out of the line (into the left margin): its start, so the
+  // whole line.
+  await page.mouse.move(last.x + 75, below);
+  await page.mouse.down();
+  await page.mouse.move(last.x - 10, below, { steps: 8 });
+  await page.waitForTimeout(50);
+  expect(await held(page), "越出行左侧").toEqual({ anchor: 35, head: 28 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: 28 });
+  expect(await page.evaluate(() => getSelection()!.toString())).toBe("第四行文字内容");
   await page.waitForTimeout(600);
 
   // Up into the lines above: from the end.
@@ -508,10 +528,11 @@ test("末行下方空白：从正文拖到末行下方，head 固定在文末，
 });
 
 // A drag pressed below the last line and kept there: dragged left of the
-// press, the whole last line (from its start to the end, image-view's
-// lastLineStart); at / right of the press nothing (the end); a press moved no
-// more than ProseMirror's click slop is still a click (to the end).
-test("末行下方空白：从右侧按下往左拖选中整个末行，往右拖不选、拖回右边收回，DOM 选区一致", async ({ page }) => {
+// press, from the pointer's x in the last line to the end (image-view's
+// lastLineAt; left of the line its start, so the whole line; right of its text
+// its end, so nothing); at / right of the press nothing (the end); a press
+// moved no more than ProseMirror's click slop is still a click (to the end).
+test("末行下方空白：从右侧按下往左拖，head 按 x 落在末行，越出行左侧整行；往右拖不选、拖回右边收回，DOM 选区一致", async ({ page }) => {
   const errors = await load(page);
   const editor = editorOf(page);
   await setDoc(page, ["第一行文字内容", "第二行文字内容", "第三行文字内容", "第四行文字内容"]);
@@ -523,26 +544,56 @@ test("末行下方空白：从右侧按下往左拖选中整个末行，往右�
   await page.mouse.click(second.x + 30, second.y + second.height / 2);
   await page.waitForTimeout(600);
 
-  // Right of the text, along under it to the left: the whole last line.
+  const selectedText = () =>
+    editor.evaluate((el: any) => {
+      const { state } = el.editor;
+      return state.doc.textBetween(state.selection.from, state.selection.to);
+    });
+  // "第四行文字内容": the left edge of its 4th character (after 31), and a point
+  // just right of it, under that character's left part.
+  const x31 = await editor.evaluate((el: any) => el.editor.view.coordsAtPos(31).left as number);
+
+  // Right of the text, along under it to the left, under the 4th character:
+  // from there to the end.
   await page.mouse.move(last.x + 400, below);
   await page.mouse.down();
-  await page.mouse.move(last.x + 300, below + 5, { steps: 10 });
+  await page.mouse.move(x31 + 3, below + 5, { steps: 10 });
+  await page.waitForTimeout(50);
+  expect(await held(page)).toEqual({ anchor: 35, head: 31 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: 31 });
+  await frames(page);
+  expect(await domEnds(page)).toEqual([35, 31]);
+  expect(await selectedText()).toBe("文字内容");
+  expect(await page.evaluate(() => getSelection()!.toString())).toBe("文字内容");
+  expect(
+    await editor.evaluate((el) => !!el.parentElement!.querySelector(".selection-layer path")!.getAttribute("d")),
+  ).toBe(true);
+  await page.waitForTimeout(600);
+
+  // On out of the line to the left: the whole line.
+  await page.mouse.move(last.x + 400, below);
+  await page.mouse.down();
+  await page.mouse.move(x31 + 3, below, { steps: 8 });
+  await page.mouse.move(last.x - 30, below, { steps: 8 });
   await page.waitForTimeout(50);
   expect(await held(page)).toEqual({ anchor: 35, head: 28 });
   await page.mouse.up();
   await page.waitForTimeout(50);
-  expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: 28 });
-  await frames(page);
-  expect(await domEnds(page)).toEqual([35, 28]);
-  const text = await editor.evaluate((el: any) => {
-    const { state } = el.editor;
-    return state.doc.textBetween(state.selection.from, state.selection.to);
-  });
-  expect(text).toBe("第四行文字内容");
-  expect(await page.evaluate(() => getSelection()!.toString())).toBe(text);
-  expect(
-    await editor.evaluate((el) => !!el.parentElement!.querySelector(".selection-layer path")!.getAttribute("d")),
-  ).toBe(true);
+  expect(await selectedText()).toBe("第四行文字内容");
+  expect(await page.evaluate(() => getSelection()!.toString())).toBe("第四行文字内容");
+  await page.waitForTimeout(600);
+
+  // Left but still right of the text: the line's end, nothing selected.
+  await page.mouse.move(last.x + 400, below);
+  await page.mouse.down();
+  await page.mouse.move(last.x + 300, below + 5, { steps: 10 });
+  await page.waitForTimeout(50);
+  expect(await held(page)).toEqual({ anchor: 35, head: 35 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
+  expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: 35 });
   await page.waitForTimeout(600);
 
   // Left to right under the text: nothing, the caret at the end.
@@ -559,9 +610,9 @@ test("末行下方空白：从右侧按下往左拖选中整个末行，往右�
   // Left, then back right past the press: the selection goes again.
   await page.mouse.move(last.x + 200, below);
   await page.mouse.down();
-  await page.mouse.move(last.x + 100, below, { steps: 6 });
+  await page.mouse.move(x31 + 3, below, { steps: 6 });
   await page.waitForTimeout(50);
-  expect(await held(page)).toEqual({ anchor: 35, head: 28 });
+  expect(await held(page)).toEqual({ anchor: 35, head: 31 });
   await page.mouse.move(last.x + 300, below, { steps: 6 });
   await page.waitForTimeout(50);
   expect(await held(page)).toEqual({ anchor: 35, head: 35 });
@@ -579,19 +630,19 @@ test("末行下方空白：从右侧按下往左拖选中整个末行，往右�
   expect(await selection(page)).toMatchObject({ type: "text", anchor: 35, head: 35 });
   await page.waitForTimeout(600);
 
-  // With Shift: the anchor stays; dragged left the head is the line's start,
-  // dragged right the end.
+  // With Shift: the anchor stays; dragged left the head is at the pointer's x
+  // in the last line, dragged right the end.
   await page.mouse.click(second.x + 30, second.y + second.height / 2);
   const { anchor } = await selection(page);
   await page.waitForTimeout(600);
   await page.keyboard.down("Shift");
   await page.mouse.move(last.x + 400, below);
   await page.mouse.down();
-  await page.mouse.move(last.x + 40, below, { steps: 10 });
+  await page.mouse.move(x31 + 3, below, { steps: 10 });
   await page.mouse.up();
   await page.keyboard.up("Shift");
   await page.waitForTimeout(50);
-  expect(await selection(page)).toMatchObject({ anchor, head: 28 });
+  expect(await selection(page)).toMatchObject({ anchor, head: 31 });
   await page.waitForTimeout(600);
   await page.mouse.click(second.x + 30, second.y + second.height / 2);
   await page.waitForTimeout(600);
@@ -606,25 +657,27 @@ test("末行下方空白：从右侧按下往左拖选中整个末行，往右�
   expect(errors).toEqual([]);
 });
 
-// With empty lines ending the document, a drag left below them selects the
-// line holding the last character before the end (image-view's
-// lastLineStart): the text line above an empty last line with its line break,
-// of several empty lines only the line break of the one before the last; a
-// document of one empty line selects nothing (2026-11-08).
-test("末行下方空白：末尾是空行时往左拖选中文末前最后一个字符所在的行，往右拖不选；只有一个空行时不选", async ({ page }) => {
+// With empty lines ending the document, a drag left below them has its head
+// at the pointer's x in the line holding the last character before the end
+// (image-view's lastLineAt): the text line above an empty last line (left of
+// it its start, so the whole line and its line break), of several empty lines
+// the one before the last (only its line break); a document of one empty line
+// selects nothing; right of the press nothing (2026-11-08).
+test("末行下方空白：末尾是空行时往左拖，head 按 x 落在文末前最后一个字符所在的行，往右拖不选；只有一个空行时不选", async ({ page }) => {
   const errors = await load(page);
   const editor = editorOf(page);
   const lines = editor.locator(":scope > p");
-  /** Pressed right below the last line, dragged left (or right) under it: the selection held, released, and its text. */
-  async function dragBelow(dx: number) {
+  /** The left edge of the character after `pos` (a position in a text line). */
+  const xOf = (pos: number) =>
+    editor.evaluate((el: any, pos) => el.editor.view.coordsAtPos(pos).left as number, pos);
+  /** Pressed below the last line at `from`, dragged to `to` under it: the selection held, released, and its text. */
+  async function dragBelow(from: number, to: number) {
     const count = await lines.count();
-    const top = (await lines.nth(0).boundingBox())!;
     const last = (await lines.nth(count - 1).boundingBox())!;
     const below = last.y + last.height + 60;
-    const x = dx < 0 ? top.x + 400 : top.x + 100;
-    await page.mouse.move(x, below);
+    await page.mouse.move(from, below);
     await page.mouse.down();
-    await page.mouse.move(x + dx, below + 5, { steps: 10 });
+    await page.mouse.move(to, below + 5, { steps: 10 });
     await page.waitForTimeout(50);
     const during = await held(page);
     await page.mouse.up();
@@ -638,60 +691,107 @@ test("末行下方空白：末尾是空行时往左拖选中文末前最后一�
     return { during, after };
   }
 
-  // "文字" 0-4, "" 4-6, the end 5: "文字" and its line break.
+  // "文字" 0-4, "" 4-6, the end 5.
   await setDoc(page, ["文字", ""]);
-  await page.mouse.click((await lines.nth(0).boundingBox())!.x + 400, (await lines.nth(1).boundingBox())!.y + 80);
+  const left = (await lines.nth(0).boundingBox())!.x;
+  const right = left + 400;
+  await page.mouse.click(right, (await lines.nth(1).boundingBox())!.y + 80);
   expect(await selection(page), "单击").toMatchObject({ type: "text", anchor: 5, head: 5 });
   await page.waitForTimeout(600);
-  expect(await dragBelow(-370), "文字 + 空行：往左").toEqual({
+  // Left of the line: "文字" and its line break.
+  expect(await dragBelow(right, left - 10), "文字 + 空行：越出行左侧").toEqual({
     during: { anchor: 5, head: 1 },
     after: { anchor: 5, head: 1, text: "文字\n" },
   });
   await frames(page);
   expect(await domEnds(page)).toEqual([5, 1]);
-  expect(await dragBelow(200), "文字 + 空行：往右").toEqual({
+  // Under "字": from it.
+  expect(await dragBelow(right, (await xOf(2)) + 3), "文字 + 空行：字下方").toEqual({
+    during: { anchor: 5, head: 2 },
+    after: { anchor: 5, head: 2, text: "字\n" },
+  });
+  // Right of the text: only the line break.
+  expect(await dragBelow(right, left + 200), "文字 + 空行：文字右侧").toEqual({
+    during: { anchor: 5, head: 3 },
+    after: { anchor: 5, head: 3, text: "\n" },
+  });
+  expect(await dragBelow(left + 20, left + 200), "文字 + 空行：往右").toEqual({
     during: { anchor: 5, head: 5 },
     after: { anchor: 5, head: 5, text: "" },
   });
 
-  // Three lines and an empty one ("第三行" 10-15, "" 15-17, the end 16): only the third.
+  // Twelve characters and an empty line ("文字文字文字文字文字文字" 0-14, "" 14-16,
+  // the end 15): under the 7th character (7-8), from it to the end.
+  await setDoc(page, ["文字文字文字文字文字文字", ""]);
+  expect(await dragBelow(right, (await xOf(7)) + 3), "12 个字 + 空行：第 7 个字下方").toEqual({
+    during: { anchor: 15, head: 7 },
+    after: { anchor: 15, head: 7, text: "文字文字文字\n" },
+  });
+
+  // A last line with text ("abc" 0-5, the end 4): under "b", "bc".
+  await setDoc(page, ["abc"]);
+  expect(await dragBelow(right, (await xOf(2)) + 1), "abc：b 下方").toEqual({
+    during: { anchor: 4, head: 2 },
+    after: { anchor: 4, head: 2, text: "bc" },
+  });
+
+  // Three lines and an empty one ("第三行" 10-15, "" 15-17, the end 16): left
+  // of the line, the third.
   await setDoc(page, ["第一行", "第二行", "第三行", ""]);
-  expect(await dragBelow(-370), "三行 + 空行").toEqual({
+  expect(await dragBelow(right, left - 10), "三行 + 空行").toEqual({
     during: { anchor: 16, head: 11 },
     after: { anchor: 16, head: 11, text: "第三行\n" },
   });
-  // With Shift: the anchor (in the first line) stays, the head the third line's start.
+  // With Shift: the anchor (in the first line) stays, the head by x in the third line.
   const first = (await lines.nth(0).boundingBox())!;
   await page.mouse.click(first.x + 20, first.y + first.height / 2);
   const { anchor } = await selection(page);
   expect(anchor).toBeGreaterThan(0);
   expect(anchor).toBeLessThan(5);
   await page.waitForTimeout(600);
+  const x12 = (await xOf(12)) + 3;
   await page.keyboard.down("Shift");
-  const shifted = await dragBelow(-370);
+  const shifted = await dragBelow(right, x12);
   await page.keyboard.up("Shift");
-  expect(shifted.after, "Shift+往左").toMatchObject({ anchor, head: 11 });
+  expect(shifted.after, "Shift+往左").toMatchObject({ anchor, head: 12 });
 
   // Three empty lines ending the document ("文字" 0-4, "" 4-6, 6-8, 8-10, the
-  // end 9): only the line break of the one before the last.
+  // end 9): only the line break of the one before the last, wherever the x.
   await setDoc(page, ["文字", "", "", ""]);
-  expect(await dragBelow(-370), "文字 + 三个空行").toEqual({
-    during: { anchor: 9, head: 7 },
-    after: { anchor: 9, head: 7, text: "\n" },
-  });
+  for (const to of [left - 10, left + 20])
+    expect(await dragBelow(right, to), `文字 + 三个空行：${to}`).toEqual({
+      during: { anchor: 9, head: 7 },
+      after: { anchor: 9, head: 7, text: "\n" },
+    });
 
   // A row of images and an empty line ("上面" 0-4, a 4-5, b 5-6, "" 6-8, the
-  // end 7): both images, from the start of their visual line.
+  // end 7): by x in the images' visual line.
   await setDoc(page, ["上面", { id: "a" }, { id: "b" }, ""]);
-  expect(await dragBelow(-370), "图片行 + 空行").toMatchObject({
+  const items = editor.locator(".image-item");
+  const a = (await items.nth(0).boundingBox())!;
+  const b = (await items.nth(1).boundingBox())!;
+  // Left of the row: before a, both images.
+  expect(await dragBelow(right, a.x - 10), "图片行 + 空行：行左侧").toMatchObject({
     during: { anchor: 7, head: 4 },
     after: { anchor: 7, head: 4 },
   });
   await expect(editor.locator(".image-selected")).toHaveCount(2);
+  // Under b's left half: before b, b only.
+  expect(await dragBelow(right, b.x + b.width * 0.25), "图片行 + 空行：b 左半区").toMatchObject({
+    during: { anchor: 7, head: 5 },
+    after: { anchor: 7, head: 5 },
+  });
+  await expect(editor.locator(".image-selected")).toHaveCount(1);
+  // Under b's right half: after b, only the line break.
+  expect(await dragBelow(right, b.x + b.width * 0.75), "图片行 + 空行：b 右半区").toMatchObject({
+    during: { anchor: 7, head: 6 },
+    after: { anchor: 7, head: 6 },
+  });
+  await expect(editor.locator(".image-selected")).toHaveCount(0);
 
   // A single empty line ("" 0-2, the end 1): nothing to select.
   await setDoc(page, [""]);
-  expect(await dragBelow(-370), "只有一个空行").toEqual({
+  expect(await dragBelow(right, left - 10), "只有一个空行").toEqual({
     during: { anchor: 1, head: 1 },
     after: { anchor: 1, head: 1, text: "" },
   });
