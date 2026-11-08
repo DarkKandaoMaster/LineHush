@@ -540,7 +540,7 @@ input:focus-visible {
    * #E5EBF1 在 #f9f9f9 上太淡，这里调深一些；要调就改这两个变量。
    */
   --selection-active: #97c6eb;
-  --selection-inactive: #d5dde6;
+  --selection-inactive: #c8c8c8;
   --selection: var(--selection-inactive);
 }
 .editor-host > div:has(> .ProseMirror-focused) {
@@ -613,8 +613,8 @@ input:focus-visible {
 }
 /*
  * The text selection: VS Code's rounded shape (src/editor/selection-shape.ts),
- * a selected line break half a character wide after its line's text, as
- * Notepad draws it. Under the text; overflow shows the path beyond the 1px box.
+ * a selected line break one space wide (measured in the current font) after
+ * its line's text, as Notepad draws it. Under the text; overflow shows the path beyond the 1px box.
  */
 .selection-layer {
   position: absolute;

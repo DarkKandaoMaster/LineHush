@@ -85,13 +85,43 @@ export function configureCaret(partial: Partial<CaretConfig>) {
   for (const redraw of redraws) redraw();
 }
 
+/** Measured widths of " " by CSS font string (`spaceWidth`). */
+const spaceWidths = new Map<string, number>();
+let measureContext: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * The width of one space in the font of `style` (the editor's computed style,
+ * read anew on every draw because the font follows the settings' CSS
+ * variables); only the measurement is cached, by font string. Falls back to a
+ * quarter of the font size when it cannot be measured.
+ */
+function spaceWidth(style: CSSStyleDeclaration): number {
+  const size = parseFloat(style.fontSize) || 13;
+  const font =
+    style.font ||
+    [style.fontStyle, style.fontWeight, style.fontSize, style.fontFamily].filter(Boolean).join(" ");
+  const known = spaceWidths.get(font);
+  if (known !== undefined) return known;
+  if (measureContext === undefined)
+    measureContext = document.createElement("canvas").getContext("2d");
+  let width = 0;
+  if (measureContext && font) {
+    measureContext.font = font;
+    width = measureContext.measureText(" ").width;
+  }
+  if (!(width > 0)) return size / 4;
+  spaceWidths.set(font, width);
+  return width;
+}
+
 /**
  * The selected text, one row per visual line in client coordinates, from the
  * text lines in the selection (images show their own layer, `.image-selected`).
  * Each line's part is one DOM Range (its rects, by line); an empty line is its
- * line box with no width. A selected line break adds half a character after the
- * line's text (as Notepad draws it; see `selectedNewlines`). Rows of the
- * same or neighbouring lines are stretched to meet, so they make one shape.
+ * line box with no width. A selected line break adds the width of one space
+ * after the line's text (as Notepad draws it, measured in the editor's current
+ * font, `spaceWidth`; see `selectedNewlines`). Rows of the same or neighbouring
+ * lines are stretched to meet, so they make one shape.
  *
  * Only lines inside `band` (client coordinates) are measured, so a long
  * selection (Ctrl+A in a long document) costs what the screen shows; `clipped`
@@ -106,8 +136,7 @@ function selectionRows(
   if (selection.empty) return { rows: [], clipped };
   const { from, to } = selection;
   const newlines = new Set(selectedNewlines(doc, selection));
-  const style = getComputedStyle(view.dom);
-  const em = parseFloat(style.fontSize) || 13;
+  const space = spaceWidth(getComputedStyle(view.dom));
   const range = view.dom.ownerDocument.createRange();
   const rows: (Row & { block: number })[] = [];
   doc.nodesBetween(from, to, (node, pos, _parent, block) => {
@@ -164,7 +193,7 @@ function selectionRows(
         lines.push({ top: spot.top, bottom: spot.bottom, left: spot.x, right: spot.x });
       }
       const last = lines[lines.length - 1];
-      if (last) last.right += em / 2;
+      if (last) last.right += space;
     }
     for (const line of lines) rows.push({ ...line, block });
     return false;

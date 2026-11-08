@@ -1634,7 +1634,7 @@ function spotBeside(
  * hold the border box of every element wholly inside it, so a text line or an
  * empty line selected from end to end would count across the editor's width,
  * right of its text too, where nothing is drawn (the drawn selection ends
- * 0.5em past the text, caret.ts). Images are pressed on as images (`dragPress`).
+ * one space's width past the text, caret.ts). Images are pressed on as images (`dragPress`).
  */
 function onSelection(view: EditorView, event: MouseEvent) {
   const doc = view.dom.ownerDocument;

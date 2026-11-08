@@ -21,7 +21,7 @@ import {
 // the selected line break, pixel width at 150%, corners, composition, long
 // documents, the line of the caret at a soft wrap.
 
-test("选中换行：选区在行末多出半个字宽，空行同样，行高不变，收起后消失", async ({
+test("选中换行：选区在行末多出一个空格宽，空行同样，行高不变，收起后消失", async ({
   page,
 }) => {
   const errors = await load(page);
@@ -36,9 +36,11 @@ test("选中换行：选区在行末多出半个字宽，空行同样，行高�
     el.editor.commands.setTextSelection(2); // after "我"
   });
   /**
-   * Per line: whether the drawn selection (caret.ts) covers the points a
-   * quarter and three quarters of a character after the line's text, at its
-   * middle and near its top and bottom.
+   * Per line: whether the drawn selection (caret.ts) covers the point half a
+   * space after the line's text (at its middle and near its top and bottom),
+   * up to one space minus 1px after it, and not from one space plus 1px on;
+   * the space is measured like caret.ts does, canvas `measureText(" ")` in the
+   * line's computed font.
    */
   const lines = () =>
     editor.evaluate((el: any) => {
@@ -51,39 +53,54 @@ test("选中换行：选区在行末多出半个字宽，空行同样，行高�
         point.y = y - origin.top;
         return !!path.getAttribute("d") && path.isPointInFill(point);
       };
+      // Chromium gives an empty `font` shorthand here (font-synthesis: none),
+      // so the font is put together from its longhands, as caret.ts does.
+      const style = getComputedStyle(el);
+      const context = document.createElement("canvas").getContext("2d")!;
+      context.font =
+        style.font ||
+        [style.fontStyle, style.fontWeight, style.fontSize, style.fontFamily].join(" ");
+      const space = context.measureText(" ").width;
       return Array.from(el.querySelectorAll(":scope > p")).map((p: any) => {
         const box = p.getBoundingClientRect();
-        const em = parseFloat(getComputedStyle(p).fontSize);
         const range = document.createRange();
         range.selectNodeContents(p);
         const end = p.textContent ? range.getBoundingClientRect().right : box.left;
         const middle = (box.top + box.bottom) / 2;
         return {
           height: box.height,
-          half: filled(end + em / 4, middle),
-          beyond: filled(end + (em * 3) / 4, middle),
-          full: filled(end + em / 4, box.top + 1) && filled(end + em / 4, box.bottom - 1),
+          space,
+          half: filled(end + space / 2, middle),
+          reach: filled(end + space - 1, middle),
+          beyond: filled(end + space + 1, middle),
+          full: filled(end + space / 2, box.top + 1) && filled(end + space / 2, box.bottom - 1),
         };
       });
     });
   const before = await lines();
   expect(before.some((l) => l.half)).toBe(false);
+  // A real space in the editor's font: narrower than half a character, not nothing.
+  const em = await editor.evaluate((el: any) => parseFloat(getComputedStyle(el).fontSize));
+  expect(before[0].space).toBeGreaterThan(em / 5);
+  expect(before[0].space).toBeLessThan(em / 2);
 
   // "我|" + Shift+→: the selection is just the line break of the first line,
-  // half a character wide, the line's full height.
+  // one space wide (±1px), the line's full height.
   await page.keyboard.press("Shift+ArrowRight");
   expect(await selection(page)).toEqual({ type: "text", anchor: 2, head: 4 });
   let now = await lines();
   expect(now.map((l) => l.half)).toEqual([true, false, false]);
+  expect(now[0].reach).toBe(true);
   expect(now[0].beyond).toBe(false);
   expect(now[0].full).toBe(true);
   expect(now.map((l) => l.height)).toEqual(before.map((l) => l.height));
 
-  // Across the empty line too: half a character at its start.
+  // Across the empty line too: one space at its start.
   await page.keyboard.press("Shift+ArrowRight");
   expect(await selection(page)).toEqual({ type: "text", anchor: 2, head: 6 });
   now = await lines();
   expect(now.map((l) => l.half)).toEqual([true, true, false]);
+  expect(now[1].reach).toBe(true);
   expect(now[1].beyond).toBe(false);
   expect(now[1].full).toBe(true);
   expect(now.map((l) => l.height)).toEqual(before.map((l) => l.height));
@@ -351,7 +368,7 @@ test("圆角选区：三行参差的文字连成一块，外角圆、内角反�
     Math.floor((second.left + second.right) / 2 - region.x),
     Math.floor((second.top + second.bottom) / 2 - region.y),
   );
-  expect(near(still, "#d5dde6", 1), `blurred middle ${still}`).toBe(true);
+  expect(near(still, "#c8c8c8", 1), `blurred middle ${still}`).toBe(true);
   expect(errors).toEqual([]);
 });
 

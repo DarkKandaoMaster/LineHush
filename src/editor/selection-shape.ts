@@ -15,7 +15,7 @@ import type { SelectionCorners } from "../core/settings.ts";
  * selection: the paragraph at p of size n ends with a line break between
  * p + n - 1 and p + n, which is selected when from <= p + n - 1 and to >= p + n.
  * The last block of the document has no line break after it. Like Notepad /
- * VS Code, the drawn selection (caret.ts) shows each as half a character after
+ * VS Code, the drawn selection (caret.ts) shows each as one space's width after
  * the line's text; the browser draws nothing for "我|" to the next line's start.
  */
 export function selectedNewlines(doc: PmNode, selection: Selection): number[] {

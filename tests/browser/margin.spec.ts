@@ -55,7 +55,8 @@ test("单击左栏选中一行，含换行（选区到下一段 +1），焦点�
   expect(s.focused).toBe(true);
   expect(s.dom).toEqual([6, 11]);
   expect(s.drawn).not.toBe("");
-  // 换行画成行尾多半个字：选区比这一行的文字宽。
+  // 换行画成行尾多一个空格宽（10pt 微软雅黑约 3.9px，取整到像素）：选区比这一行的文字宽，
+  // 但窄于半个字（原来的 0.5em 约 6.7px）。
   const width = await editorOf(page).evaluate((el: any) => {
     const p = el.querySelectorAll(":scope > p")[1];
     const range = document.createRange();
@@ -64,7 +65,8 @@ test("单击左栏选中一行，含换行（选区到下一段 +1），焦点�
     const path = el.parentElement.querySelector(".selection-layer path").getBBox();
     return { text: text.width, path: path.width };
   });
-  expect(width.path).toBeGreaterThan(width.text + 4);
+  expect(width.path).toBeGreaterThan(width.text + 2);
+  expect(width.path).toBeLessThan(width.text + 6);
   // 光标画在下一行行首。
   await frames(page);
   const caret = await caretOf(page);

@@ -17,7 +17,7 @@ const selectionFill = (page: Page) =>
     (el: any) => getComputedStyle(el.parentElement.querySelector(".selection-layer path")).fill,
   );
 const ACTIVE = "rgb(151, 198, 235)"; // #97c6eb
-const INACTIVE = "rgb(213, 221, 230)"; // #d5dde6
+const INACTIVE = "rgb(200, 200, 200)"; // #c8c8c8
 const caretAt = (page: Page, from: number, to = from) =>
   editorOf(page).evaluate(
     (el: any, [from, to]) => el.editor.commands.setTextSelection({ from, to }),
@@ -452,13 +452,13 @@ test("高亮颜色（VS Code 浅色）、当前匹配盖住选区、失焦时为
   shot = await shoot(page, clip);
   expect(near(at(shot, clip, cur.x + 2, cur.y + 2), "#b3a39d", 4)).toBe(true);
   expect(near(at(shot, clip, space.x, space.y), "#97c6eb", 3)).toBe(true);
-  // 焦点回查找框：1/3 × #ea5c00 + 2/3 × #d5dde6 ≈ #dcb299；空格处为 #d5dde6。
+  // 焦点回查找框：1/3 × #ea5c00 + 2/3 × #c8c8c8 ≈ #d3a485；空格处为 #c8c8c8。
   await findBox(page).focus();
   expect(await selectionFill(page)).toBe(INACTIVE);
   await frames(page);
   shot = await shoot(page, clip);
-  expect(near(at(shot, clip, cur.x + 2, cur.y + 2), "#dcb299", 4)).toBe(true);
-  expect(near(at(shot, clip, space.x, space.y), "#d5dde6", 3)).toBe(true);
+  expect(near(at(shot, clip, cur.x + 2, cur.y + 2), "#d3a485", 4)).toBe(true);
+  expect(near(at(shot, clip, space.x, space.y), "#c8c8c8", 3)).toBe(true);
   await caretAt(page, 1);
   await page.keyboard.press("Control+h");
   await page.screenshot({ path: test.info().outputPath("find-replace.png") });
@@ -476,7 +476,7 @@ test("高亮颜色（VS Code 浅色）、当前匹配盖住选区、失焦时为
   });
   const band = { x: 0, y: line2.top - 4, width: line2.x + 40, height: 40 };
   shot = await shoot(page, band);
-  expect(near(at(shot, band, line2.x, line2.y), "#d5dde6", 3)).toBe(true);
+  expect(near(at(shot, band, line2.x, line2.y), "#c8c8c8", 3)).toBe(true);
   await page.screenshot({ path: test.info().outputPath("find-visual-blurred-no-widget.png") });
   await editorOf(page).evaluate((el: any) => el.editor.view.focus());
   expect(await selectionFill(page)).toBe(ACTIVE);

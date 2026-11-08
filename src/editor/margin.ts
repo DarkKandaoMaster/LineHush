@@ -13,7 +13,7 @@ import type { MarginSelection } from "../core/settings.ts";
  * 里，与自绘光标、选区层同处）接收鼠标，不进 ProseMirror。
  *
  * - 单击：选中点击处的一行，从行首到下一行行首（包含换行，`selectedNewlines` 据此在行尾
- *   多画半个字宽）；文档最后一行没有换行，只到行尾。首行上方选首行，末行下方（底部 40vh
+ *   多画一个空格宽）；文档最后一行没有换行，只到行尾。首行上方选首行，末行下方（底部 40vh
  *   空白）选末行。
  * - “行”的口径是设置“左栏选行”（`marginSelection`）：`line` 整个逻辑行（一个文字段落，
  *   或一整行图片：从 newline 的首图到下一个 newline 之前），`visualLine` 只选指针所在的
