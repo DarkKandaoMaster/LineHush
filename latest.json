@@ -1,6 +1,6 @@
 {
-  "version": "0.17.0",
-  "notes": "1. 状态栏可以显示选中字数。\n2. 鼠标在最后一行下方往左拖，可以从文末开始选。\n3. 未保存标记改为标签页右端的小圆点。\n4. 标签页加了描边。",
-  "pub_date": "2026-11-08T14:53:09Z",
-  "url": "https://github.com/DarkKandaoMaster/LineHush/releases/download/LineHush_v0.17.0/LineHush_0.17.0_x64-setup.exe"
+  "version": "0.18.0",
+  "notes": "1. 选中多行时，每行末尾表示换行的那一小段选区略微加宽。",
+  "pub_date": "2026-11-13T17:40:11Z",
+  "url": "https://github.com/DarkKandaoMaster/LineHush/releases/download/LineHush_v0.18.0/LineHush_0.18.0_x64-setup.exe"
 }
